@@ -54,11 +54,13 @@ it('rejects an unknown log driver', function () {
 
 it('uses the configured redis stream and log size for the redis driver', function () {
     [, $key, $url] = redisStream();
+    $prefix = 'murmur:';
     config([
         'murmur.driver' => 'redis',
         'murmur.redis.url' => $url,
-        'murmur.redis.stream' => $key,
+        'murmur.redis.stream' => substr($key, strlen($prefix)),
         'murmur.server.log_size' => 1,
+        'database.redis.options.prefix' => $prefix,
     ]);
     $first = xadd($key, 'news', 'first');
     $id = xadd($key, 'news', 'updated', maxLength: 1);

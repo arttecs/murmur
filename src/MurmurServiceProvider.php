@@ -6,9 +6,11 @@ use Arttecs\Murmur\Broadcasting\MurmurBroadcaster;
 use Arttecs\Murmur\Console\Commands\ServeCommand;
 use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Publishers\HttpPublisher;
+use Arttecs\Murmur\Publishers\RedisPublisher;
 use Arttecs\Murmur\Server\Auth\Secret;
 use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
@@ -39,11 +41,25 @@ class MurmurServiceProvider extends ServiceProvider
                     $config->get('murmur.http.timeout'),
                     $config->get('murmur.http.connect_timeout'),
                 ),
+                'redis' => new RedisPublisher(
+                    $app->make(RedisFactory::class),
+                    $config->get('murmur.redis.connection'),
+                    static::fullStreamKey(),
+                    $config->get('murmur.server.log_size'),
+                ),
                 default => throw new InvalidArgumentException("Unsupported Murmur publisher driver [{$driver}]."),
             };
         });
 
         $this->app->singleton(MurmurManager::class);
+    }
+
+    /**
+     * Get the Redis stream key with Laravel's configured prefix.
+     */
+    public static function fullStreamKey(): string
+    {
+        return config('database.redis.options.prefix').config('murmur.redis.stream');
     }
 
     /**

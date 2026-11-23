@@ -1,0 +1,53 @@
+<?php
+
+namespace Arttecs\Murmur\Publishers;
+
+use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Exceptions\PublishFailed;
+use Arttecs\Murmur\Server\Event;
+use Arttecs\Murmur\Server\EventId;
+use Illuminate\Contracts\Redis\Factory;
+use Illuminate\Redis\Connections\PhpRedisConnection;
+use RuntimeException;
+use Throwable;
+
+/**
+ * Publish events to a Redis stream.
+ */
+class RedisPublisher implements Publisher
+{
+    /**
+     * Create a publisher for the given connection and fully prefixed stream key.
+     */
+    public function __construct(
+        protected Factory $redis,
+        protected string $connection,
+        protected string $stream,
+        protected int $maxLength,
+    ) {}
+
+    /**
+     * Append the given event to the Redis stream.
+     *
+     * @throws PublishFailed
+     */
+    public function publish(Event $event): void
+    {
+        try {
+            $data = json_encode($event->data, JSON_THROW_ON_ERROR);
+            $connection = $this->redis->connection($this->connection);
+            $id = $connection->executeRaw([
+                'XADD', $this->stream, 'MAXLEN', '~', $this->maxLength, '*',
+                'topic', $event->topic, 'name', $event->name, 'data', $data,
+            ]);
+
+            if (! is_string($id) || EventId::tryParse($id) === null) {
+                $error = $connection instanceof PhpRedisConnection ? $connection->getLastError() : $id;
+
+                throw new RuntimeException(is_string($error) ? $error : 'Redis did not return a stream entry ID.');
+            }
+        } catch (Throwable $exception) {
+            throw new PublishFailed('The publish request to Redis failed.', 0, $exception);
+        }
+    }
+}
