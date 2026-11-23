@@ -10,9 +10,6 @@ export class MurmurStream {
   /** The callbacks registered for data and control events. */
   protected readonly listeners = new Map<string, Set<(data?: unknown) => void>>()
 
-  /** The number of consecutive failures since the last accepted connection or received message. */
-  protected failures = 0
-
   /** Whether the stream has stopped permanently. */
   protected closed = false
 
@@ -32,13 +29,8 @@ export class MurmurStream {
       retryMs,
       (_signal, lastEventId) => this.connectionUrl(lastEventId),
       (event, data) => this.receive(event, data),
-      status => {
-        if (status === 'connected') {
-          this.failures = 0
-          return
-        }
-        this.failures++
-        if (this.failures === 3) {
+      (status, failures) => {
+        if (status === 'disconnected' && failures === 3) {
           this.finish('expired')
         }
       },
@@ -116,7 +108,7 @@ export class MurmurStream {
 
   /** Resets the failure count and delivers control events or unwrapped data. */
   protected receive(event: string, data: string): void {
-    this.failures = 0
+    this.transport.resetFailures()
     if (event === 'murmur.end') {
       this.finish('end')
       return

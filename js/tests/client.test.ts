@@ -79,6 +79,7 @@ it('fetches a fresh token when the cached one is about to expire', async () => {
   m.private('a')
   await flush()
   assert.isDefined(FakeEventSource.instances[0])
+  FakeEventSource.instances[0].dispatchEvent(new Event('open'))
   FakeEventSource.instances[0].fail()
   await wait(20)
   expect(fetch.calls).toHaveLength(2)
@@ -90,9 +91,30 @@ it('reuses a token that is still valid', async () => {
   m.private('a')
   await flush()
   assert.isDefined(FakeEventSource.instances[0])
+  FakeEventSource.instances[0].dispatchEvent(new Event('open'))
   FakeEventSource.instances[0].fail()
   await wait(20)
   expect(fetch.calls).toHaveLength(1)
+})
+
+it('fetches a fresh token after a connection fails before opening', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>()
+    .mockResolvedValueOnce(Response.json({ token: 'rejected', expires_at: nowSeconds() + 900 }))
+    .mockResolvedValueOnce(Response.json({ token: 'fresh', expires_at: nowSeconds() + 900 }))
+  const m = client({ fetch, retryMs: 10 })
+  m.private('orders')
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  expect(new URL(first.url).searchParams.get('token')).toBe('rejected')
+
+  first.fail()
+  await wait(10)
+
+  expect(fetch).toHaveBeenCalledTimes(2)
+  const retry = FakeEventSource.instances[1]
+  assert.isDefined(retry)
+  expect(new URL(retry.url).searchParams.get('token')).toBe('fresh')
 })
 
 it('keeps retrying when authorization fails', async () => {
@@ -101,6 +123,69 @@ it('keeps retrying when authorization fails', async () => {
   m.private('a')
   await wait(30)
   expect(FakeEventSource.instances).toHaveLength(1)
+})
+
+it('backs off consecutive authorization failures with jitter and caps the base delay', async () => {
+  vi.spyOn(Math, 'random').mockReturnValue(0.5)
+  let attempts = 0
+  const m = client({
+    fetch: async () => {
+      attempts++
+      return new Response(null, { status: 403 })
+    },
+  })
+  m.private('orders')
+  await flush()
+  expect(attempts).toBe(1)
+
+  const delays = [3000, 6750, 13500, 27000, 33750, 33750]
+  for (const [index, delay] of delays.entries()) {
+    await wait(delay - 1)
+    expect(attempts).toBe(index + 1)
+    await wait(1)
+    expect(attempts).toBe(index + 2)
+  }
+})
+
+it('resets channel retry backoff when the connection opens', async () => {
+  vi.spyOn(Math, 'random').mockReturnValue(0.5)
+  client({ retryMs: 100 }).channel('news')
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  first.fail()
+
+  await wait(100)
+  const second = FakeEventSource.instances[1]
+  assert.isDefined(second)
+  second.fail()
+
+  await wait(224)
+  expect(FakeEventSource.instances).toHaveLength(2)
+  await wait(1)
+  const third = FakeEventSource.instances[2]
+  assert.isDefined(third)
+  third.dispatchEvent(new Event('open'))
+  third.fail()
+
+  await wait(99)
+  expect(FakeEventSource.instances).toHaveLength(3)
+  await wait(1)
+  expect(FakeEventSource.instances).toHaveLength(4)
+})
+
+it('emits unauthorized with each 4xx authorization status and skips server errors', async () => {
+  vi.spyOn(Math, 'random').mockReturnValue(0)
+  const responses = [401, 403, 419, 422, 500]
+  const fetch: typeof globalThis.fetch = async () => new Response(null, { status: responses.shift() ?? 500 })
+  const statuses: number[] = []
+  const m = client({ fetch, retryMs: 10 })
+  m.on('unauthorized', status => statuses.push(status))
+  m.private('orders')
+
+  await flush()
+  await wait(150)
+  expect(statuses).toEqual([401, 403, 419, 422])
 })
 
 it('emits gap', async () => {

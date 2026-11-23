@@ -18,7 +18,7 @@ export interface MurmurOptions {
   /** The dotted namespace for unqualified event names. */
   namespace?: string
 
-  /** The delay before retrying a failed connection, in milliseconds. */
+  /** The initial delay before retrying a failed connection, in milliseconds. */
   retryMs?: number
 
   /** The fetch implementation used for authorization requests. */
@@ -28,7 +28,17 @@ export interface MurmurOptions {
   EventSource?: typeof EventSource
 }
 
-type ClientEvent = 'gap' | 'connected' | 'disconnected'
+/** The arguments delivered to listeners for each client event. */
+type ClientEventArgs = {
+  gap: []
+  connected: []
+  disconnected: []
+  unauthorized: [status: number]
+}
+
+/** The names of events emitted by the client. */
+type ClientEvent = keyof ClientEventArgs
+
 type Subscription = { channel: Channel; listeners: ChannelListeners }
 type CachedToken = { topics: string; token: string; expiresAt: number }
 
@@ -40,7 +50,14 @@ export class Murmur {
   protected readonly channels = new Map<string, Subscription>()
 
   /** The callbacks registered for client events. */
-  protected readonly listeners = new Map<ClientEvent, Set<() => void>>()
+  protected readonly listeners: {
+    [Event in ClientEvent]: Set<(...args: ClientEventArgs[Event]) => void>
+  } = {
+    gap: new Set(),
+    connected: new Set(),
+    disconnected: new Set(),
+    unauthorized: new Set(),
+  }
 
   /** The transport for the shared event stream. */
   protected readonly transport: Transport
@@ -65,6 +82,11 @@ export class Murmur {
       (signal, lastEventId) => this.connectionUrl(signal, lastEventId),
       (event, data) => this.receive(event, data),
       event => this.emit(event),
+      url => {
+        if (this.cachedToken && new URL(url).searchParams.get('token') === this.cachedToken.token) {
+          this.cachedToken = undefined
+        }
+      },
     )
   }
 
@@ -102,11 +124,10 @@ export class Murmur {
   }
 
   /** Registers a client event listener and returns a function that removes it. */
-  public on(event: ClientEvent, listener: () => void): () => void {
-    const listeners = this.listeners.get(event) ?? new Set<() => void>()
+  public on<Event extends ClientEvent>(event: Event, listener: (...args: ClientEventArgs[Event]) => void): () => void {
+    const listeners = this.listeners[event]
     if (!this.closed) {
       listeners.add(listener)
-      this.listeners.set(event, listeners)
     }
     return () => {
       listeners.delete(listener)
@@ -124,10 +145,9 @@ export class Murmur {
       listeners.clear()
     }
     this.channels.clear()
-    for (const listeners of this.listeners.values()) {
+    for (const listeners of Object.values(this.listeners)) {
       listeners.clear()
     }
-    this.listeners.clear()
     this.cachedToken = undefined
     this.updateEvents()
   }
@@ -225,6 +245,9 @@ export class Murmur {
       signal,
     })
     if (!response.ok) {
+      if (!signal.aborted && response.status >= 400 && response.status < 500) {
+        this.emit('unauthorized', response.status)
+      }
       throw new Error('Murmur authorization failed')
     }
 
@@ -268,9 +291,9 @@ export class Murmur {
   }
 
   /** Notifies listeners of a client event. */
-  protected emit(event: ClientEvent): void {
-    for (const listener of this.listeners.get(event) ?? []) {
-      invokeListener(listener)
+  protected emit<Event extends ClientEvent>(event: Event, ...args: ClientEventArgs[Event]): void {
+    for (const listener of this.listeners[event]) {
+      invokeListener(listener, ...args)
     }
   }
 }

@@ -20,6 +20,9 @@ export class Transport {
   /** The time scheduled for the next attempt. */
   protected retryTimer?: ReturnType<typeof setTimeout>
 
+  /** The number of failures since the last successful connection. */
+  protected failures = 0
+
   /** The ID of the last received data event. */
   protected lastEventId?: string
 
@@ -32,13 +35,19 @@ export class Transport {
     protected readonly retryMs: number,
     protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | Promise<string>,
     protected readonly onMessage: (event: string, data: string) => void,
-    protected readonly onStatus: (event: 'connected' | 'disconnected') => void,
+    protected readonly onStatus: (event: 'connected' | 'disconnected', failures: number) => void,
+    protected readonly onUnopenedError?: (url: string) => void,
   ) {}
 
   /** Replaces the active connection with a new attempt. */
   public connect(): void {
     this.close()
     void this.open()
+  }
+
+  /** Restarts the retry sequence after a successful connection or stream message. */
+  public resetFailures(): void {
+    this.failures = 0
   }
 
   /** Updates named listeners on the active connection and future attempts. */
@@ -100,7 +109,7 @@ export class Transport {
       }
 
       const EventSource = this.eventSource ?? globalThis.EventSource
-      this.attach(new EventSource(url))
+      this.attach(new EventSource(url), url)
     } catch {
       if (!attempt.signal.aborted) {
         this.handleFailure()
@@ -113,16 +122,22 @@ export class Transport {
   }
 
   /** Binds listeners to the active source, including polyfills without currentTarget. */
-  protected attach(source: EventSource): void {
+  protected attach(source: EventSource, url: string): void {
+    let opened = false
     const connection: Connection = {
       source,
       open: event => {
         if (this.connection === connection && !isMessage(event)) {
-          this.onStatus('connected')
+          opened = true
+          this.resetFailures()
+          this.onStatus('connected', 0)
         }
       },
       error: event => {
         if (this.connection === connection && !isMessage(event)) {
+          if (!opened) {
+            this.onUnopenedError?.(url)
+          }
           this.handleFailure()
         }
       },
@@ -140,19 +155,25 @@ export class Transport {
     }
   }
 
-  /** Schedules a replacement connection after the retry delay. */
+  /** Schedules a replacement connection with capped exponential backoff and jitter. */
   protected retry(): void {
+    let delay = this.retryMs
+    if (this.failures > 1) {
+      delay = Math.min(this.retryMs * 2 ** (this.failures - 1), 30_000)
+      delay += delay * 0.25 * Math.random()
+    }
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined
       void this.open()
-    }, this.retryMs)
+    }, delay)
   }
 
   /** Closes the failed connection, schedules a retry, and reports the failure. */
   protected handleFailure(): void {
     this.close()
+    this.failures++
     this.retry()
-    this.onStatus('disconnected')
+    this.onStatus('disconnected', this.failures)
   }
 
   /** Captures the resume cursor and dispatches named stream data. */

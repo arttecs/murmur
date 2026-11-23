@@ -63,10 +63,38 @@ it('gives up after three consecutive failures', async () => {
     const source = FakeEventSource.instances[i]
     assert.isDefined(source)
     source.fail()
-    await wait(10)
+    await wait(13)
   }
   expect(expired).toBe(1)
   expect(FakeEventSource.instances).toHaveLength(3)
+})
+
+it('backs off stream retries with jitter and stops on the third failure', async () => {
+  vi.spyOn(Math, 'random').mockReturnValue(0.5)
+  const expired = vi.fn()
+  client({ retryMs: 100 }).stream(URL_1).on('expired', expired)
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  first.fail()
+
+  await wait(99)
+  expect(FakeEventSource.instances).toHaveLength(1)
+  await wait(1)
+  const second = FakeEventSource.instances[1]
+  assert.isDefined(second)
+  second.fail()
+
+  await wait(224)
+  expect(FakeEventSource.instances).toHaveLength(2)
+  await wait(1)
+  const third = FakeEventSource.instances[2]
+  assert.isDefined(third)
+  expect(expired).not.toHaveBeenCalled()
+  third.fail()
+
+  expect(expired).toHaveBeenCalledExactlyOnceWith()
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 it('changes only the replay cursor on reconnect', async () => {
@@ -116,7 +144,7 @@ it('emits gap and resets the failure count after receiving it', async () => {
     const source = FakeEventSource.instances[i]
     assert.isDefined(source)
     source.fail()
-    await wait(5)
+    await wait(13)
   }
 
   const third = FakeEventSource.instances[2]
@@ -158,7 +186,7 @@ it('resets the failure count when an event is received', async () => {
     const source = FakeEventSource.instances[i]
     assert.isDefined(source)
     source.fail()
-    await wait(5)
+    await wait(13)
   }
   const third = FakeEventSource.instances[2]
   assert.isDefined(third)
