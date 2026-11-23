@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Server\Auth;
 
 use InvalidArgumentException;
+use SensitiveParameter;
 
 /**
  * Validate the shared Murmur secret.
@@ -14,7 +15,7 @@ class Secret
      *
      * @throws InvalidArgumentException
      */
-    public static function assertValid(string $secret): void
+    public static function assertValid(#[SensitiveParameter] string $secret): void
     {
         if (strlen($secret) < 32) {
             throw new InvalidArgumentException('The Murmur secret must be at least 32 bytes long.');

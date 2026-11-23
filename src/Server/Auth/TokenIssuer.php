@@ -5,6 +5,7 @@ namespace Arttecs\Murmur\Server\Auth;
 use Closure;
 use Firebase\JWT\JWT;
 use InvalidArgumentException;
+use SensitiveParameter;
 
 /**
  * Issue signed tokens for topic subscriptions.
@@ -23,7 +24,7 @@ class TokenIssuer
      *
      * @throws InvalidArgumentException
      */
-    public function __construct(protected string $secret, ?callable $clock = null)
+    public function __construct(#[SensitiveParameter] protected string $secret, ?callable $clock = null)
     {
         Secret::assertValid($secret);
 

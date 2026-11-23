@@ -7,6 +7,7 @@ use Closure;
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 use InvalidArgumentException;
+use SensitiveParameter;
 use Throwable;
 
 /**
@@ -26,7 +27,7 @@ class TokenVerifier
      *
      * @throws InvalidArgumentException
      */
-    public function __construct(protected string $secret, ?callable $clock = null)
+    public function __construct(#[SensitiveParameter] protected string $secret, ?callable $clock = null)
     {
         Secret::assertValid($secret);
 
@@ -42,14 +43,17 @@ class TokenVerifier
     {
         $now = ($this->clock)();
         $previousTimestamp = JWT::$timestamp;
+        $previousLeeway = JWT::$leeway;
 
         try {
             JWT::$timestamp = $now;
+            JWT::$leeway = 0;
             $claims = JWT::decode($jwt, new Key($this->secret, 'HS256'));
         } catch (Throwable $exception) {
             throw new InvalidToken('Invalid subscription token.', 0, $exception);
         } finally {
             JWT::$timestamp = $previousTimestamp;
+            JWT::$leeway = $previousLeeway;
         }
 
         $topics = $claims->topics ?? null;

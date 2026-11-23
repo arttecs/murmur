@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Server\Auth;
 
 use InvalidArgumentException;
+use SensitiveParameter;
 
 /**
  * Sign and verify timestamped publish requests.
@@ -14,7 +15,7 @@ class Signature
      *
      * @throws InvalidArgumentException
      */
-    public static function sign(string $secret, int $timestamp, string $body): string
+    public static function sign(#[SensitiveParameter] string $secret, int $timestamp, string $body): string
     {
         Secret::assertValid($secret);
 
@@ -26,7 +27,7 @@ class Signature
      *
      * @throws InvalidArgumentException
      */
-    public static function verify(string $secret, int $timestamp, string $body, string $signature, int $now, int $toleranceSeconds = 60): bool
+    public static function verify(#[SensitiveParameter] string $secret, int $timestamp, string $body, string $signature, int $now, int $toleranceSeconds = 60): bool
     {
         $expected = self::sign($secret, $timestamp, $body);
         $age = abs($now - $timestamp);
