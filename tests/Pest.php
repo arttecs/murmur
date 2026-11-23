@@ -1,7 +1,14 @@
 <?php
 
 use Arttecs\Murmur\Server\Connection;
+use Arttecs\Murmur\Tests\Support\ServerHarness;
+use Arttecs\Murmur\Tests\Support\SseReader;
 use React\Stream\ThroughStream;
+
+pest()->in('Feature')->afterEach(function () {
+    SseReader::closeAll();
+    ServerHarness::stopAll();
+});
 
 /**
  * Create a connection and capture the frames it writes.
