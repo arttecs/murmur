@@ -17,11 +17,13 @@ use React\EventLoop\LoopInterface;
 use React\EventLoop\TimerInterface;
 use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
+use React\Promise\Timer\TimeoutException;
 use RuntimeException;
 use Throwable;
 
 use function React\Promise\reject;
 use function React\Promise\resolve;
+use function React\Promise\Timer\timeout;
 
 /**
  * Replay and subscribe to events stored in a Redis stream.
@@ -105,6 +107,7 @@ class RedisEventLog implements EventLog
         int $maxLength = 10000,
         ?LoopInterface $loop = null,
         protected int $maxPayloadBytes = 65536,
+        protected float $queryTimeoutSeconds = 5.0,
     ) {
         if ($maxLength < 1) {
             throw new InvalidArgumentException('The event log capacity must be at least 1.');
@@ -127,7 +130,7 @@ class RedisEventLog implements EventLog
      */
     public function since(EventId $after, array $topics, int $limit): PromiseInterface
     {
-        return $this->replay->xrevrange($this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $newest) use ($after, $topics, $limit): PromiseInterface {
+        return $this->query($this->replay, 'xrevrange', $this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $newest) use ($after, $topics, $limit): PromiseInterface {
             $tail = isset($newest[0]) ? EventId::tryParse($newest[0][0]) : null;
 
             return $this->readReplayPage((string) $after, $topics, $limit)->then(function (?array $events) use ($after, $tail): PromiseInterface|Replay {
@@ -149,7 +152,7 @@ class RedisEventLog implements EventLog
      */
     protected function readReplayPage(string $cursor, array $topics, int $limit, array $events = []): PromiseInterface
     {
-        return $this->replay->xrange($this->streamKey, '('.$cursor, '+', 'COUNT', 500)->then(function (array $entries) use ($topics, $limit, $events): PromiseInterface|array|null {
+        return $this->query($this->replay, 'xrange', $this->streamKey, '('.$cursor, '+', 'COUNT', 500)->then(function (array $entries) use ($topics, $limit, $events): PromiseInterface|array|null {
             foreach ($entries as $entry) {
                 $event = $this->decode($entry);
 
@@ -177,7 +180,7 @@ class RedisEventLog implements EventLog
      */
     protected function hasGap(?EventId $after, Client $client): PromiseInterface
     {
-        return $client->xinfo('STREAM', $this->streamKey)->then(function (array $fields) use ($after): bool {
+        return $this->query($client, 'xinfo', 'STREAM', $this->streamKey)->then(function (array $fields) use ($after): bool {
             $info = array_column(array_chunk($fields, 2), 1, 0);
             $firstEntry = $info['first-entry'];
 
@@ -195,6 +198,35 @@ class RedisEventLog implements EventLog
 
             throw $error;
         });
+    }
+
+    /**
+     * Run a non-blocking Redis command with a deadline for its reply.
+     *
+     * @return PromiseInterface<array>
+     */
+    protected function query(Client $client, string $command, string|int ...$arguments): PromiseInterface
+    {
+        return timeout($client->{$command}(...$arguments), $this->queryTimeoutSeconds, $this->loop)
+            ->catch(function (TimeoutException $error) use ($client): never {
+                $this->disconnect($client);
+
+                throw $error;
+            });
+    }
+
+    /**
+     * Replace a timed-out lazy client and close its outstanding operations.
+     */
+    protected function disconnect(Client $client): void
+    {
+        if ($client === $this->reader) {
+            $this->reader = (new Factory($this->loop))->createLazyClient($this->redisUrl);
+        } elseif ($client === $this->replay) {
+            $this->replay = (new Factory($this->loop))->createLazyClient($this->redisUrl);
+        }
+
+        $client->close();
     }
 
     /**
@@ -280,7 +312,7 @@ class RedisEventLog implements EventLog
         }
 
         if ($this->cursor === null) {
-            $this->reader->xrevrange($this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $entries): void {
+            $this->query($this->reader, 'xrevrange', $this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $entries): void {
                 $this->cursor = $entries[0][0] ?? '0-0';
                 $this->reportReaderRecovery();
                 $this->read();
@@ -292,11 +324,7 @@ class RedisEventLog implements EventLog
         }
 
         $blockMs = 5000;
-        $this->readDeadline = $this->loop->addTimer($blockMs / 1000 + 5.0, function (): void {
-            $reader = $this->reader;
-            $this->reader = (new Factory($this->loop))->createLazyClient($this->redisUrl);
-            $reader->close();
-        });
+        $this->readDeadline = $this->loop->addTimer($blockMs / 1000 + 5.0, fn () => $this->disconnect($this->reader));
 
         $this->reader->xread('BLOCK', $blockMs, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
             $this->cancelReadDeadline();
