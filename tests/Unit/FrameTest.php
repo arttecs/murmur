@@ -29,3 +29,23 @@ it('encodes control frames', function () {
     expect(Frame::retry(3000))->toBe("retry: 3000\n\n");
     expect(Frame::gap())->toBe("event: murmur.gap\ndata: {}\n\n");
 });
+
+it('rejects invalid topics', function () {
+    new Event('a b', 'x');
+})->throws(InvalidArgumentException::class);
+
+it('copies an event with an id', function () {
+    $event = (new Event('news', 'x', ['a' => 1]))->withId(new EventId(7, 2));
+
+    expect((string) $event->id)->toBe('7-2');
+    expect($event->topic)->toBe('news');
+    expect($event->data)->toBe(['a' => 1]);
+});
+
+it('omits the id line for an event without an id', function () {
+    expect(Frame::event(new Event('news', 'x')))->toBe("event: x\ndata: {\"topic\":\"news\",\"data\":null}\n\n");
+});
+
+it('keeps comments on a single line', function () {
+    expect(Frame::comment("a\nb"))->toBe(": a b\n\n");
+});

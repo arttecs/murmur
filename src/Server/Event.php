@@ -6,6 +6,11 @@ use InvalidArgumentException;
 
 class Event
 {
+    /**
+     * Create a new event.
+     *
+     * @throws InvalidArgumentException
+     */
     public function __construct(
         public readonly string $topic,
         public readonly string $name,
@@ -21,11 +26,17 @@ class Event
         }
     }
 
+    /**
+     * Get a copy of the event with the given identifier.
+     */
     public function withId(EventId $id): Event
     {
         return new self($this->topic, $this->name, $this->data, $id);
     }
 
+    /**
+     * Determine if the given event name is valid.
+     */
     public static function isValidName(string $name): bool
     {
         return preg_match('/^[^\r\n]{1,200}\z/', $name) === 1;

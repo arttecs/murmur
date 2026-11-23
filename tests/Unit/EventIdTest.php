@@ -8,6 +8,7 @@ it('parses and prints ids', function () {
     expect(EventId::tryParse('abc'))->toBeNull();
     expect(EventId::tryParse('12-'))->toBeNull();
     expect(EventId::tryParse(''))->toBeNull();
+    expect(EventId::tryParse('99999999999999999999-0'))->toBeNull();
 });
 
 it('orders ids by ms then seq', function () {

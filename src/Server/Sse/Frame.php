@@ -6,6 +6,11 @@ use Arttecs\Murmur\Server\Event;
 
 class Frame
 {
+    /**
+     * Encode an event as a server-sent event frame.
+     *
+     * @throws \JsonException
+     */
     public static function event(Event $event): string
     {
         $data = json_encode(
@@ -18,16 +23,27 @@ class Frame
         return "{$id}event: {$event->name}\ndata: {$data}\n\n";
     }
 
+    /**
+     * Encode a comment frame, used as a heartbeat.
+     */
     public static function comment(string $text = 'ping'): string
     {
+        $text = str_replace(["\r", "\n"], ' ', $text);
+
         return ": {$text}\n\n";
     }
 
+    /**
+     * Encode the reconnection delay frame.
+     */
     public static function retry(int $ms): string
     {
         return "retry: {$ms}\n\n";
     }
 
+    /**
+     * Encode the frame that signals missed events that can no longer be replayed.
+     */
     public static function gap(): string
     {
         return "event: murmur.gap\ndata: {}\n\n";
