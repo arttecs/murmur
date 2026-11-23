@@ -2,6 +2,8 @@
 
 namespace Arttecs\Murmur\Http\Controllers;
 
+use Arttecs\Murmur\Server\Topic;
+use Closure;
 use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,9 +22,17 @@ class AuthController
      */
     public function __invoke(Request $request, BroadcastManager $broadcast): JsonResponse
     {
+        if ($request->user() === null) {
+            throw new AccessDeniedHttpException;
+        }
+
         $validator = Validator::make($request->all(), [
             'channels' => ['required', 'array', 'list', 'max:'.config('murmur.server.max_topics_per_connection')],
-            'channels.*' => ['required', 'string', 'starts_with:private-'],
+            'channels.*' => ['required', 'string', 'starts_with:private-', function (string $attribute, mixed $value, Closure $fail): void {
+                if (! is_string($value) || ! Topic::isValid($value)) {
+                    $fail("The {$attribute} field must be a valid channel name.");
+                }
+            }],
         ]);
 
         if ($validator->fails()) {

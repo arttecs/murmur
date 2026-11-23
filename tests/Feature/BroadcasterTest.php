@@ -4,6 +4,7 @@ use Arttecs\Murmur\Exceptions\PresenceNotSupported;
 use Arttecs\Murmur\Tests\Fixtures\NewsUpdated;
 use Arttecs\Murmur\Tests\Fixtures\OrderShipped;
 use Arttecs\Murmur\Tests\Fixtures\SomeoneJoined;
+use Illuminate\Support\Facades\Broadcast;
 
 beforeEach(function () {
     config(['broadcasting.default' => 'murmur', 'broadcasting.connections.murmur' => ['driver' => 'murmur']]);
@@ -29,3 +30,18 @@ it('refuses presence channels', function () {
     fakePublisher();
     broadcast(new SomeoneJoined);
 })->throws(PresenceNotSupported::class);
+
+it('removes the socket id from the payload', function () {
+    $publisher = fakePublisher();
+    Broadcast::connection('murmur')->broadcast(['news'], 'updated', ['id' => 7, 'socket' => 'abc.123']);
+
+    expect($publisher->events[0]->data)->toBe(['id' => 7]);
+});
+
+it('publishes nothing when one of the channels is a presence channel', function () {
+    $publisher = fakePublisher();
+
+    expect(fn () => Broadcast::connection('murmur')->broadcast(['news', 'presence-room.1'], 'updated'))
+        ->toThrow(PresenceNotSupported::class);
+    expect($publisher->events)->toBe([]);
+});
