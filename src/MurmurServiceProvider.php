@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur;
 
 use Arttecs\Murmur\Broadcasting\MurmurBroadcaster;
+use Arttecs\Murmur\Console\Commands\ServeCommand;
 use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Publishers\HttpPublisher;
 use Arttecs\Murmur\Server\Auth\Secret;
@@ -46,7 +47,7 @@ class MurmurServiceProvider extends ServiceProvider
     }
 
     /**
-     * Register the broadcast driver, authorization route and publishable configuration.
+     * Register the broadcast driver, authorization route, configuration, and command.
      */
     public function boot(): void
     {
@@ -59,5 +60,9 @@ class MurmurServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../config/murmur.php' => $this->app->configPath('murmur.php'),
         ], 'murmur-config');
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([ServeCommand::class]);
+        }
     }
 }
