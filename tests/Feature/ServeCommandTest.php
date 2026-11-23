@@ -115,7 +115,7 @@ it('runs murmur serve and exits cleanly on SIGTERM', function (string $driver) {
     $listening = "Murmur is listening on {$address}";
     $ready = $driver === 'redis' ? $waiting : $listening;
     $root = dirname(__DIR__, 2);
-    $process = new Process([PHP_BINARY, $root.'/vendor/bin/testbench', 'murmur:serve', "--port={$port}"], $root, [
+    $process = new Process([PHP_BINARY, '-d', 'error_log=', $root.'/vendor/bin/testbench', 'murmur:serve', "--port={$port}"], $root, [
         'MURMUR_DRIVER' => $driver,
         'MURMUR_HOST' => '127.0.0.1',
         'MURMUR_SECRET' => config('murmur.secret'),

@@ -127,7 +127,7 @@ class HeldConnection extends Connection
             if (is_array($item)) {
                 [$event, $frame] = $item;
                 $this->writeEvent($event, $frame);
-            } else {
+            } elseif (! $gap || $item !== Frame::gap()) {
                 $this->sendImmediately($item);
             }
         }

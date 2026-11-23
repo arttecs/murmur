@@ -17,6 +17,17 @@ it('selects the redis publisher from config', function () {
     expect(app(Publisher::class))->toBeInstanceOf(RedisPublisher::class);
 });
 
+it('uses the redis client requested by the environment', function () {
+    $client = env('REDIS_CLIENT');
+
+    if (! is_string($client) || $client === '') {
+        $this->markTestSkipped('REDIS_CLIENT is not set.');
+    }
+
+    expect(config('database.redis.client'))->toBe($client);
+    expect(get_class(app('redis')->connection()))->toContain($client === 'predis' ? 'Predis' : 'PhpRedis');
+});
+
 it('writes entries the server log can read, despite the laravel key prefix', function () {
     [$client, $key, $url] = redisStream();
     config([

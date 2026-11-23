@@ -114,3 +114,29 @@ it('delivers the next memory event even when the cursor is ahead of the log', fu
 
     expect($this->frames)->toBe([Frame::event($live)]);
 })->with(['empty log' => [true], 'nonempty log' => [false]]);
+
+it('reports a gap once when a gap frame arrives while a replay that has a gap is pending', function () {
+    $stream = new ThroughStream;
+    $output = '';
+    $stream->on('data', function (string $data) use (&$output): void {
+        $output .= $data;
+    });
+    $connection = new HeldConnection($stream, 1048576);
+    $connection->send(Frame::gap());
+    $connection->release(new Replay(true, [], null));
+
+    expect(substr_count($output, 'event: murmur.gap'))->toBe(1);
+});
+
+it('keeps a gap frame that arrives while a replay without a gap is pending', function () {
+    $stream = new ThroughStream;
+    $output = '';
+    $stream->on('data', function (string $data) use (&$output): void {
+        $output .= $data;
+    });
+    $connection = new HeldConnection($stream, 1048576);
+    $connection->send(Frame::gap());
+    $connection->release(new Replay(false, [], null));
+
+    expect(substr_count($output, 'event: murmur.gap'))->toBe(1);
+});
