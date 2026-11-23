@@ -1,13 +1,26 @@
 {
   "name": "@arttecs/murmur",
   "version": "0.1.0",
+  "description": "JavaScript client for Murmur server-sent events.",
   "type": "module",
   "license": "MIT",
+  "keywords": [
+    "sse",
+    "server-sent-events",
+    "eventsource",
+    "laravel",
+    "realtime",
+    "murmur"
+  ],
   "types": "./dist/index.d.ts",
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -16,6 +29,7 @@
   },
   "scripts": {
     "build": "tsup && tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
