@@ -92,3 +92,55 @@ it('closes every connection', function () {
     expect($b->isClosed())->toBeTrue();
     expect($hub->connectionCount())->toBe(0);
 });
+
+it('closes a failed connection, reports its error and continues fan-out', function () {
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
+
+    try {
+        $hub = new Hub;
+        [$failing, , $stream] = fakeConnection();
+        $stream->on('data', fn () => throw new RuntimeException('The subscriber write failed.'));
+        [$healthy, $output] = fakeConnection();
+        $hub->attach($failing, ['news']);
+        $hub->attach($healthy, ['news']);
+
+        $hub->dispatch(new Event('news', 'updated'));
+
+        expect($failing->isClosed())->toBeTrue();
+        expect($hub->connectionCount())->toBe(1);
+        expect($output())->toContain("event: updated\n");
+        expect(file_get_contents($errorLog))->toContain('The subscriber write failed.');
+    } finally {
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
+});
+
+it('encodes a dispatched event once across held and live connections', function () {
+    $payload = new class implements JsonSerializable
+    {
+        public int $encodes = 0;
+
+        public function jsonSerialize(): string
+        {
+            $this->encodes++;
+
+            return 'data';
+        }
+    };
+
+    $hub = new Hub;
+    [$live, $liveOutput] = fakeConnection();
+    [, $heldOutput, $stream] = fakeConnection();
+    $held = new HeldConnection($stream);
+    $hub->attach($live, ['news']);
+    $hub->attach($held, ['news']);
+
+    $hub->dispatch(new Event('news', 'updated', $payload));
+    $held->release();
+
+    expect($liveOutput())->toContain('event: updated');
+    expect($heldOutput())->toBe($liveOutput());
+    expect($payload->encodes)->toBe(1);
+});

@@ -1,5 +1,7 @@
 <?php
 
+use Arttecs\Murmur\Server\Server;
+use Arttecs\Murmur\Server\ServerConfig;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
 
@@ -47,4 +49,25 @@ it('does not repeat an event that the replay already delivered', function () {
     $live = xadd($key, 'news', 'c');
     $frame = $r->next(3.0);
     expect($frame['event'])->toBe('c')->and($frame['id'])->toBe($live);
+});
+
+it('binds only after redis is ready and delivers an immediate publish to a new subscriber', function () {
+    [$log, $key] = redisLog();
+    $server = new Server(
+        new ServerConfig('test-secret-with-at-least-32-bytes', port: 0),
+        $log,
+    );
+
+    try {
+        $listening = $server->listen();
+        expect($server->address(...))->toThrow(LogicException::class, 'not listening');
+        await(React\Promise\Timer\timeout($listening, 2.0));
+
+        $r = SseReader::open($server->address().'/sse?topics=news');
+        $id = xadd($key, 'news', 'immediate');
+        expect($r->next()['retry'])->toBe('3000');
+        expect($r->next()['id'])->toBe($id);
+    } finally {
+        $server->close();
+    }
 });

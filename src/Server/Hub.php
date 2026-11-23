@@ -2,14 +2,18 @@
 
 namespace Arttecs\Murmur\Server;
 
+use Arttecs\Murmur\Server\Concerns\ReportsErrors;
 use Arttecs\Murmur\Server\Sse\Frame;
 use SplObjectStorage;
+use Throwable;
 
 /**
  * Distribute server-sent events to subscribed connections.
  */
 class Hub
 {
+    use ReportsErrors;
+
     /**
      * The connections subscribed to each topic.
      *
@@ -93,8 +97,20 @@ class Hub
             return;
         }
 
+        $frame = Frame::event($event);
+
         foreach (iterator_to_array($connections, false) as $connection) {
-            $connection->sendEvent($event);
+            try {
+                $connection->sendEvent($event, $frame);
+            } catch (Throwable $error) {
+                $this->reportError($error);
+
+                try {
+                    $connection->close();
+                } catch (Throwable $closeError) {
+                    $this->reportError($closeError);
+                }
+            }
         }
     }
 

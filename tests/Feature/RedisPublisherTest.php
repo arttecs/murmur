@@ -6,6 +6,8 @@ use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Facades\Murmur;
 use Arttecs\Murmur\Publishers\RedisPublisher;
 use Arttecs\Murmur\Server\Event;
+use Arttecs\Murmur\Tests\Support\ServerHarness;
+use Arttecs\Murmur\Tests\Support\SseReader;
 
 use function React\Async\await;
 use function React\Async\delay;
@@ -40,7 +42,7 @@ it('writes entries the server log can read, despite the laravel key prefix', fun
         expect($seen)->toHaveCount(1);
         expect($seen[0]->topic)->toBe('news');
         expect($seen[0]->name)->toBe('updated');
-        expect($seen[0]->data)->toBe(['id' => 7]);
+        expect($seen[0]->data)->toEqual((object) ['id' => 7]);
     } finally {
         await($client->del('app_'.$key));
     }
@@ -96,3 +98,28 @@ it('rejects an encoded redis payload above the configured limit', function () {
     expect(fn () => Murmur::publish('news', 'oversized', '1234567'))->toThrow(PublishFailed::class);
     expect(await($client->xlen($key)))->toBe(1);
 });
+
+it('delivers the same data frame through http and redis', function (string $json) {
+    [, $key, $url] = redisStream();
+    config([
+        'murmur.driver' => 'redis',
+        'murmur.redis.url' => $url,
+        'murmur.redis.stream' => $key,
+        'database.redis.default' => ['url' => $url],
+        'database.redis.options.prefix' => '',
+    ]);
+
+    $redis = ServerHarness::start(log: app(ServeCommand::class)->makeLog());
+    $http = ServerHarness::start();
+    $redisSubscriber = SseReader::open($redis->url('/sse?topics=news'));
+    $httpSubscriber = SseReader::open($http->url('/sse?topics=news'));
+    $redisSubscriber->next();
+    $httpSubscriber->next();
+
+    expect($http->rawPublish('{"topic":"news","event":"updated","data":'.$json.'}')->getStatusCode())->toBe(202);
+    Murmur::publish('news', 'updated', json_decode($json, flags: JSON_THROW_ON_ERROR));
+
+    $expected = '{"topic":"news","data":'.$json.'}';
+    expect($httpSubscriber->next()['data'])->toBe($expected);
+    expect($redisSubscriber->next()['data'])->toBe($expected);
+})->with(['{"meta":{}}', '{"list":[]}', '{"list":[{},[],{"nested":[]}]}', 'null', '42', '"hello"']);

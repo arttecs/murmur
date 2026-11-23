@@ -32,19 +32,18 @@ class HttpPublisher implements Publisher
      * Sign and send the given event to the publish endpoint.
      *
      * @throws InvalidArgumentException
-     * @throws JsonException
      * @throws PublishFailed
      */
     public function publish(Event $event): void
     {
-        $body = json_encode([
-            'topic' => $event->topic,
-            'event' => $event->name,
-            'data' => $event->data,
-        ], JSON_THROW_ON_ERROR);
-        $timestamp = time();
-
         try {
+            $body = json_encode([
+                'topic' => $event->topic,
+                'event' => $event->name,
+                'data' => $event->data,
+            ], JSON_THROW_ON_ERROR);
+            $timestamp = time();
+
             $response = $this->http
                 ->withHeaders([
                     'X-Murmur-Timestamp' => (string) $timestamp,
@@ -55,7 +54,7 @@ class HttpPublisher implements Publisher
                 ->connectTimeout($this->connectTimeout)
                 ->withoutRedirecting()
                 ->post(rtrim($this->publishUrl, '/').'/publish');
-        } catch (HttpClientException $exception) {
+        } catch (HttpClientException|JsonException $exception) {
             throw new PublishFailed('The publish request to the Murmur server failed.', 0, $exception);
         }
 

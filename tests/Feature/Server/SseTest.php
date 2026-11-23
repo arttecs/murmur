@@ -45,13 +45,13 @@ it('replays missed events after reconnecting', function () {
     expect($r->next()['event'])->toBe('b');
 });
 
-it('skips live events at the reconnect cursor even when there is nothing to replay', function () {
+it('skips the event at the reconnect cursor when there is nothing to replay', function () {
     $log = new MemoryEventLog(ids: new EventIdGenerator(fn (): int => 1000));
     $h = ServerHarness::start(log: $log);
-    $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => '1000-1']);
+    $seen = $log->append(new Event('news', 'already-seen'));
+    $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => (string) $seen->id]);
     expect($r->next()['retry'])->toBe('3000');
 
-    $log->append(new Event('news', 'already-seen'));
     $log->append(new Event('news', 'fresh'));
 
     expect($r->next()['event'])->toBe('fresh');
@@ -210,3 +210,25 @@ it('continues serving sse after the request deadline', function () {
     expect($h->publish('news', 'live')->getStatusCode())->toBe(202);
     expect($r->next()['event'])->toBe('live');
 });
+
+it('delivers live events with a cursor ahead of the memory log', function () {
+    $h = ServerHarness::start();
+    $h->log->append(new Event('news', 'old'));
+    $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => '999999999999999999-0']);
+    expect($r->next()['retry'])->toBe('3000');
+
+    $h->publish('news', 'live');
+
+    expect($r->next()['event'])->toBe('live');
+});
+
+it('varies an sse response when the origin is absent or disallowed', function (array $headers) {
+    $h = ServerHarness::start(['allowedOrigins' => ['https://app.test']]);
+    $r = SseReader::open($h->url('/sse?topics=news'), $headers);
+
+    expect($r->header('Access-Control-Allow-Origin'))->toBeNull();
+    expect($r->header('Vary'))->toBe('Origin');
+})->with([
+    'absent' => [[]],
+    'disallowed' => [['Origin' => 'https://other.test']],
+]);

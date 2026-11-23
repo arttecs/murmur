@@ -12,5 +12,5 @@ class Replay
      *
      * @param  list<Event>  $events
      */
-    public function __construct(public readonly bool $gap, public readonly array $events) {}
+    public function __construct(public readonly bool $gap, public readonly array $events, public readonly ?EventId $tail) {}
 }

@@ -53,7 +53,6 @@ class SseHandler
             $headers['Access-Control-Allow-Origin'] = '*';
         } elseif ($origin !== '' && in_array($origin, $this->config->allowedOrigins, true)) {
             $headers['Access-Control-Allow-Origin'] = $origin;
-            $headers['Vary'] = 'Origin';
         }
 
         $query = $request->getQueryParams();
@@ -130,7 +129,7 @@ class SseHandler
 
             try {
                 $replay = $this->log->since($cursor, $topics, $this->config->maxReplayEvents)->then(function (Replay $replay) use ($connection): void {
-                    $connection->release($replay->events, $replay->gap);
+                    $connection->release($replay);
                 });
             } catch (Throwable) {
                 $endStream();

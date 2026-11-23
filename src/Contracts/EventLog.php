@@ -13,7 +13,7 @@ use React\Promise\PromiseInterface;
 interface EventLog
 {
     /**
-     * Replay retained events after the given identifier for the requested topics.
+     * Replay up to the given number of events after the cursor, or report a gap.
      *
      * @param  list<string>  $topics
      * @return PromiseInterface<Replay>
@@ -26,6 +26,13 @@ interface EventLog
      * @param  callable(Event): void  $listener
      */
     public function subscribe(callable $listener): void;
+
+    /**
+     * Wait until the log can deliver live events to its subscribers.
+     *
+     * @return PromiseInterface<null>
+     */
+    public function ready(): PromiseInterface;
 
     /**
      * Close the event log.

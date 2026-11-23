@@ -42,7 +42,6 @@ class TokenIssuer
 
         return JWT::encode([
             'topics' => array_values($topics),
-            'iat' => $now,
             'exp' => $now + $ttlSeconds,
         ], $this->secret, 'HS256');
     }

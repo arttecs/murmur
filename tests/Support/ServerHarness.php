@@ -53,7 +53,7 @@ class ServerHarness
 
         $log ??= new MemoryEventLog;
         $server = new Server($config, $log);
-        $server->listen();
+        await($server->listen());
 
         return self::$running[] = new self($server, $config, $log);
     }

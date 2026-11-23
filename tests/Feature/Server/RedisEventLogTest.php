@@ -2,6 +2,7 @@
 
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
+use Arttecs\Murmur\Server\Http\HeldConnection;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
 use Clue\React\Redis\Factory;
 use React\EventLoop\StreamSelectLoop;
@@ -31,7 +32,7 @@ it('delivers entries added by another client', function () {
     expect((string) $seen[0]->id)->toBe($id);
     expect($seen[0]->topic)->toBe('news');
     expect($seen[0]->name)->toBe('updated');
-    expect($seen[0]->data)->toBe(['id' => 7]);
+    expect($seen[0]->data)->toEqual((object) ['id' => 7]);
 });
 
 it('replays later entries of the requested topics', function () {
@@ -49,7 +50,17 @@ it('reports a gap only after the stream has been trimmed', function () {
     xadd($key, 'news', 'a');
     expect(await($log->since(new EventId(1, 0), ['news'], 1000))->gap)->toBeFalse();
     xadd($key, 'news', 'b', maxLength: 2);
+    expect(await($log->since(new EventId(1, 0), ['news'], 1000))->gap)->toBeFalse();
     xadd($key, 'news', 'c', maxLength: 2);
+    expect(await($log->since(new EventId(1, 0), ['news'], 1000))->gap)->toBeTrue();
+});
+
+it('reports trimming even when the configured redis length has been raised', function () {
+    [$log, $key] = redisLog(maxLength: 100);
+    xadd($key, 'news', 'first');
+    xadd($key, 'news', 'second');
+    xadd($key, 'news', 'third', maxLength: 2);
+
     expect(await($log->since(new EventId(1, 0), ['news'], 1000))->gap)->toBeTrue();
 });
 
@@ -341,7 +352,15 @@ it('pages through interleaved redis topics and limits matching replay events', f
     await(React\Promise\all($writes));
     $limited = await($log->since(EventId::tryParse($first), ['news'], 1));
     expect($limited->gap)->toBeTrue()->and($limited->events)->toBe([]);
+    $rangeCalls = function () use ($client): int {
+        preg_match('/cmdstat_xrange:calls=(\d+)/', await($client->info('commandstats')), $matches);
+
+        return (int) ($matches[1] ?? 0);
+    };
+
+    $before = $rangeCalls();
     $replay = await($log->since(EventId::tryParse($first), ['news'], 2));
+    expect($rangeCalls() - $before)->toBeGreaterThanOrEqual(2);
     expect($replay->gap)->toBeFalse();
     expect(array_map(fn (Event $event) => $event->name, $replay->events))->toBe(['entry-2', 'entry-502']);
 });
@@ -370,3 +389,24 @@ it('skips oversized redis payloads in live delivery and replay', function () {
     $replay = await($log->since(EventId::tryParse($first), ['news'], 10));
     expect(array_map(fn (Event $event) => $event->name, $replay->events))->toBe(['fits']);
 });
+
+it('delivers the next redis event through a held connection when its cursor is ahead', function (bool $empty) {
+    [$log, $key] = redisLog();
+    $tail = $empty ? null : xadd($key, 'news', 'old');
+    $cursor = new EventId(999999999999999999, 0);
+    [, $output, $stream] = fakeConnection();
+    $connection = new HeldConnection($stream, cursor: $cursor);
+    $log->subscribe($connection->sendEvent(...));
+    await(timeout($log->ready(), 2.0));
+    $replay = await($log->since($cursor, ['news'], 1000));
+
+    expect($replay->tail === null ? null : (string) $replay->tail)->toBe($tail);
+    $connection->release($replay);
+
+    $delivered = new Deferred;
+    $log->subscribe(fn (Event $event) => $delivered->resolve($event));
+    $id = xadd($key, 'news', 'live');
+    await(timeout($delivered->promise(), 2.0));
+
+    expect($output())->toContain("id: {$id}\nevent: live\n");
+})->with(['empty log' => [true], 'nonempty log' => [false]]);

@@ -60,9 +60,9 @@ class Connection
      *
      * @throws \JsonException
      */
-    public function sendEvent(Event $event): void
+    public function sendEvent(Event $event, ?string $frame = null): void
     {
-        $this->send(Frame::event($event));
+        $this->send($frame ?? Frame::event($event));
     }
 
     /**
@@ -75,13 +75,15 @@ class Connection
         }
 
         $this->closed = true;
-        $this->stream->close();
+        try {
+            $this->stream->close();
+        } finally {
+            $listeners = $this->closeListeners;
+            $this->closeListeners = [];
 
-        $listeners = $this->closeListeners;
-        $this->closeListeners = [];
-
-        foreach ($listeners as $listener) {
-            $listener();
+            foreach ($listeners as $listener) {
+                $listener();
+            }
         }
     }
 

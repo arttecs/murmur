@@ -3,26 +3,32 @@
 namespace Arttecs\Murmur\Server\Log;
 
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Server\Concerns\ReportsErrors;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
-use Arttecs\Murmur\Server\Log\Concerns\ReportsListenerErrors;
 use Arttecs\Murmur\Server\Replay;
 use Clue\React\Redis\Client;
 use Clue\React\Redis\Factory;
+use Clue\Redis\Protocol\Model\ErrorReply;
 use InvalidArgumentException;
 use JsonException;
 use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;
 use React\EventLoop\TimerInterface;
+use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
+use RuntimeException;
 use Throwable;
+
+use function React\Promise\reject;
+use function React\Promise\resolve;
 
 /**
  * Replay and subscribe to events stored in a Redis stream.
  */
 class RedisEventLog implements EventLog
 {
-    use ReportsListenerErrors;
+    use ReportsErrors;
 
     /**
      * The connection reserved for blocking stream reads.
@@ -43,6 +49,13 @@ class RedisEventLog implements EventLog
      * The last stream identifier processed by the reader.
      */
     protected ?string $cursor = null;
+
+    /**
+     * The pending wait for the starting cursor.
+     *
+     * @var Deferred<null>|null
+     */
+    protected ?Deferred $readiness = null;
 
     /**
      * The pending timer for resuming stream reads after a Redis error.
@@ -69,7 +82,7 @@ class RedisEventLog implements EventLog
     public function __construct(
         string $redisUrl,
         protected string $streamKey,
-        protected int $maxLength = 10000,
+        int $maxLength = 10000,
         ?LoopInterface $loop = null,
         protected int $maxPayloadBytes = 65536,
     ) {
@@ -86,28 +99,23 @@ class RedisEventLog implements EventLog
     /**
      * Replay retained events after the given identifier for the requested topics.
      *
-     * Read the replay range before the oldest entry and length so a concurrent
-     * trim at the configured retention length can flag a spurious gap but cannot
-     * hide events missing from the range.
+     * Read the tail before the replay range and check for trimming afterward.
+     * A concurrent trim can flag a spurious gap but cannot hide missing events.
      *
      * @param  list<string>  $topics
      * @return PromiseInterface<Replay>
      */
     public function since(EventId $after, array $topics, int $limit): PromiseInterface
     {
-        return $this->readReplayPage((string) $after, $topics, $limit)->then(function (?array $events) use ($after): PromiseInterface|Replay {
-            if ($events === null) {
-                return new Replay(true, []);
-            }
+        return $this->replay->xrevrange($this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $newest) use ($after, $topics, $limit): PromiseInterface {
+            $tail = isset($newest[0]) ? EventId::tryParse($newest[0][0]) : null;
 
-            return $this->replay->xrange($this->streamKey, '-', '+', 'COUNT', 1)->then(function (array $oldest) use ($after, $events): PromiseInterface {
-                $first = isset($oldest[0]) ? EventId::tryParse($oldest[0][0]) : null;
+            return $this->readReplayPage((string) $after, $topics, $limit)->then(function (?array $events) use ($after, $tail): PromiseInterface|Replay {
+                if ($events === null) {
+                    return new Replay(true, [], $tail);
+                }
 
-                return $this->replay->xlen($this->streamKey)->then(function (int $length) use ($after, $events, $oldest, $first): Replay {
-                    $gap = isset($oldest[0]) && ($first === null || ($length >= $this->maxLength && $after->compare($first) < 0));
-
-                    return new Replay($gap, $events);
-                });
+                return $this->hasGap($after)->then(fn (bool $gap): Replay => new Replay($gap, $events, $tail));
             });
         });
     }
@@ -141,6 +149,33 @@ class RedisEventLog implements EventLog
     }
 
     /**
+     * Check whether Redis removed entries before the requested cursor.
+     *
+     * @return PromiseInterface<bool>
+     */
+    protected function hasGap(EventId $after): PromiseInterface
+    {
+        return $this->replay->xinfo('STREAM', $this->streamKey)->then(function (array $fields) use ($after): bool {
+            $info = array_column(array_chunk($fields, 2), 1, 0);
+            $firstEntry = $info['first-entry'];
+
+            if ($firstEntry === null) {
+                return false;
+            }
+
+            $first = EventId::tryParse($firstEntry[0]);
+
+            return $first === null || ($info['entries-added'] > $info['length'] && $after->compare($first) < 0);
+        }, function (Throwable $error): bool {
+            if ($error instanceof ErrorReply && $error->getMessage() === 'ERR no such key') {
+                return false;
+            }
+
+            throw $error;
+        });
+    }
+
+    /**
      * Register a listener and start reading the stream on the first subscription.
      *
      * @param  callable(Event): void  $listener
@@ -156,6 +191,24 @@ class RedisEventLog implements EventLog
         if (count($this->listeners) === 1) {
             $this->read();
         }
+    }
+
+    /**
+     * Wait until the live reader has established its starting cursor.
+     *
+     * @return PromiseInterface<null>
+     */
+    public function ready(): PromiseInterface
+    {
+        if ($this->closed) {
+            return reject(new RuntimeException('The Redis event log is closed.'));
+        }
+
+        if ($this->cursor !== null) {
+            return resolve(null);
+        }
+
+        return ($this->readiness ??= new Deferred)->promise();
     }
 
     /**
@@ -177,6 +230,8 @@ class RedisEventLog implements EventLog
 
         $this->reader->close();
         $this->replay->close();
+        $this->readiness?->reject(new RuntimeException('The Redis event log closed before it was ready.'));
+        $this->readiness = null;
     }
 
     /**
@@ -192,6 +247,8 @@ class RedisEventLog implements EventLog
             $this->reader->xrevrange($this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $entries): void {
                 $this->cursor = $entries[0][0] ?? '0-0';
                 $this->read();
+                $this->readiness?->resolve(null);
+                $this->readiness = null;
             }, $this->retryRead(...));
 
             return;
@@ -211,7 +268,7 @@ class RedisEventLog implements EventLog
                         try {
                             $listener($event);
                         } catch (Throwable $error) {
-                            $this->reportListenerError($error);
+                            $this->reportError($error);
                         }
 
                         if ($this->closed) {
@@ -260,7 +317,7 @@ class RedisEventLog implements EventLog
         }
 
         try {
-            return new Event($values['topic'], $values['name'], json_decode($values['data'], true, flags: JSON_THROW_ON_ERROR), $id);
+            return new Event($values['topic'], $values['name'], json_decode($values['data'], flags: JSON_THROW_ON_ERROR), $id);
         } catch (InvalidArgumentException|JsonException) {
             return null;
         }

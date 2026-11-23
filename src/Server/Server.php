@@ -19,6 +19,7 @@ use React\Promise\PromiseInterface;
 use React\Socket\ConnectionInterface;
 use React\Socket\SocketServer;
 
+use function React\Promise\reject;
 use function React\Promise\resolve;
 
 /**
@@ -40,6 +41,13 @@ class Server
      * The listening socket.
      */
     protected ?SocketServer $socket = null;
+
+    /**
+     * The pending or established listener.
+     *
+     * @var PromiseInterface<null>|null
+     */
+    protected ?PromiseInterface $listening = null;
 
     /**
      * The accepted HTTP sockets keyed by their local and remote addresses.
@@ -75,14 +83,35 @@ class Server
     }
 
     /**
-     * Start listening for HTTP requests and dispatching live events.
+     * Start listening for HTTP requests once the live event log is ready.
+     *
+     * @return PromiseInterface<null>
      */
-    public function listen(): void
+    public function listen(): PromiseInterface
     {
-        if ($this->closed || $this->socket !== null) {
-            return;
+        if ($this->closed) {
+            return reject(new LogicException('The server has closed.'));
         }
 
+        if ($this->listening === null) {
+            $this->log->subscribe($this->hub->dispatch(...));
+            $this->listening = $this->log->ready()->then(function (): void {
+                if ($this->closed) {
+                    throw new LogicException('The server closed before it started listening.');
+                }
+
+                $this->bind();
+            });
+        }
+
+        return $this->listening;
+    }
+
+    /**
+     * Bind the HTTP routes and start sending periodic heartbeats.
+     */
+    protected function bind(): void
+    {
         $sse = new SseHandler($this->config, $this->log, $this->hub, $this->loop);
         $publish = $this->config->publishEnabled && $this->log instanceof MemoryEventLog
             ? new PublishHandler($this->config, $this->log)
@@ -97,7 +126,7 @@ class Server
                 return resolve($publish($request))->then(function (ResponseInterface $response) use ($client): ResponseInterface {
                     $this->cancelRequestDeadline($client);
 
-                    return $response->withHeader('Connection', 'close');
+                    return $this->withResponseHeaders($response);
                 });
             }
 
@@ -112,7 +141,7 @@ class Server
                 default => new Response(404),
             };
 
-            return $response->withHeader('Connection', 'close');
+            return $this->withResponseHeaders($response);
         });
 
         $this->socket = new SocketServer($this->config->host.':'.$this->config->port, [], $this->loop);
@@ -139,8 +168,21 @@ class Server
         });
 
         $http->listen($this->socket);
-        $this->log->subscribe($this->hub->dispatch(...));
         $this->heartbeat = $this->loop->addPeriodicTimer($this->config->heartbeatSeconds, $this->hub->heartbeat(...));
+    }
+
+    /**
+     * Close HTTP connections after one response and vary listed origins.
+     */
+    protected function withResponseHeaders(ResponseInterface $response): ResponseInterface
+    {
+        $response = $response->withHeader('Connection', 'close');
+
+        if (! in_array('*', $this->config->allowedOrigins, true)) {
+            $response = $response->withAddedHeader('Vary', 'Origin');
+        }
+
+        return $response;
     }
 
     /**

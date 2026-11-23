@@ -5,6 +5,7 @@ namespace Arttecs\Murmur\Server\Http;
 use Arttecs\Murmur\Server\Connection;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
+use Arttecs\Murmur\Server\Replay;
 use Arttecs\Murmur\Server\Sse\Frame;
 use React\Stream\WritableStreamInterface;
 
@@ -16,7 +17,7 @@ class HeldConnection extends Connection
     /**
      * The live events and heartbeat frames held until replay finishes, or null once delivery is live.
      *
-     * @var list<Event|string>|null
+     * @var list<array{Event, string}|string>|null
      */
     protected ?array $held = [];
 
@@ -26,9 +27,14 @@ class HeldConnection extends Connection
     protected int $heldBytes = 0;
 
     /**
-     * Create a held connection starting at the client's last received event ID.
+     * The last event ID written to the subscriber.
      */
-    public function __construct(WritableStreamInterface $stream, int $maxBufferBytes = 1048576, protected ?EventId $lastWrittenId = null)
+    protected ?EventId $lastWrittenId = null;
+
+    /**
+     * Create a held connection with the subscriber's requested replay cursor.
+     */
+    public function __construct(WritableStreamInterface $stream, int $maxBufferBytes = 1048576, protected ?EventId $cursor = null)
     {
         parent::__construct($stream, $maxBufferBytes);
     }
@@ -52,17 +58,16 @@ class HeldConnection extends Connection
      *
      * @throws \JsonException
      */
-    public function sendEvent(Event $event): void
+    public function sendEvent(Event $event, ?string $frame = null): void
     {
         if ($this->held === null) {
-            $this->writeEvent($event);
+            $this->writeEvent($event, $frame);
 
             return;
         }
 
-        if (! $this->hasWritten($event)) {
-            $this->hold($event, strlen(Frame::event($event)));
-        }
+        $frame ??= Frame::event($event);
+        $this->hold([$event, $frame], strlen($frame));
     }
 
     /**
@@ -76,20 +81,25 @@ class HeldConnection extends Connection
     /**
      * Write replayed events, drain held events and frames, and switch to live delivery.
      *
-     * @param  list<Event>  $replay
-     *
      * @throws \JsonException
      */
-    public function release(array $replay = [], bool $gap = false): void
+    public function release(?Replay $replay = null): void
     {
         if ($this->held === null) {
             return;
         }
 
+        $tail = $replay?->tail;
+
+        if ($this->cursor !== null && $tail !== null) {
+            $this->lastWrittenId = $this->cursor->compare($tail) <= 0 ? $this->cursor : $tail;
+        }
+
         $frames = [];
         $bytes = 0;
+        $gap = $replay?->gap ?? false;
 
-        foreach ($replay as $event) {
+        foreach ($replay?->events ?? [] as $event) {
             $frame = Frame::event($event);
             $bytes += strlen($frame);
 
@@ -114,8 +124,9 @@ class HeldConnection extends Connection
         for ($index = 0; isset($this->held[$index]); $index++) {
             $item = $this->held[$index];
 
-            if ($item instanceof Event) {
-                $this->writeEvent($item);
+            if (is_array($item)) {
+                [$event, $frame] = $item;
+                $this->writeEvent($event, $frame);
             } else {
                 $this->sendImmediately($item);
             }
@@ -151,8 +162,10 @@ class HeldConnection extends Connection
 
     /**
      * Queue an event or heartbeat, closing the connection if the queue exceeds its byte limit.
+     *
+     * @param  array{Event, string}|string  $item
      */
-    protected function hold(Event|string $item, int $bytes): void
+    protected function hold(array|string $item, int $bytes): void
     {
         $this->heldBytes += $bytes;
 

@@ -3,10 +3,10 @@
 namespace Arttecs\Murmur\Server\Log;
 
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Server\Concerns\ReportsErrors;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\EventIdGenerator;
-use Arttecs\Murmur\Server\Log\Concerns\ReportsListenerErrors;
 use Arttecs\Murmur\Server\Replay;
 use InvalidArgumentException;
 use React\Promise\PromiseInterface;
@@ -19,7 +19,7 @@ use function React\Promise\resolve;
  */
 class MemoryEventLog implements EventLog
 {
-    use ReportsListenerErrors;
+    use ReportsErrors;
 
     /**
      * The generator used to assign event identifiers.
@@ -83,7 +83,7 @@ class MemoryEventLog implements EventLog
             try {
                 $listener($event);
             } catch (Throwable $error) {
-                $this->reportListenerError($error);
+                $this->reportError($error);
             }
         }
 
@@ -101,20 +101,21 @@ class MemoryEventLog implements EventLog
         $events = [];
         $count = count($this->events);
         $oldest = $count === $this->capacity ? $this->next : 0;
+        $tail = $count === 0 ? null : $this->events[($this->next + $this->capacity - 1) % $this->capacity]->id;
 
         for ($offset = 0; $offset < $count; $offset++) {
             $event = $this->events[($oldest + $offset) % $this->capacity];
 
             if ($event->id->compare($after) > 0 && in_array($event->topic, $topics, true)) {
                 if (count($events) === $limit) {
-                    return resolve(new Replay(true, []));
+                    return resolve(new Replay(true, [], $tail));
                 }
 
                 $events[] = $event;
             }
         }
 
-        return resolve(new Replay($after->compare($this->floor) < 0, $events));
+        return resolve(new Replay($after->compare($this->floor) < 0, $events, $tail));
     }
 
     /**
@@ -125,6 +126,16 @@ class MemoryEventLog implements EventLog
     public function subscribe(callable $listener): void
     {
         $this->listeners[] = $listener;
+    }
+
+    /**
+     * Indicate that the in-memory log can deliver live events immediately.
+     *
+     * @return PromiseInterface<null>
+     */
+    public function ready(): PromiseInterface
+    {
+        return resolve(null);
     }
 
     /**

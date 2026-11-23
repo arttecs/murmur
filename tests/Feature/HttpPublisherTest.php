@@ -59,3 +59,18 @@ it('publishes its config file', function () {
     expect(array_values($paths))->toBe([config_path('murmur.php')]);
     expect(realpath(array_key_first($paths)))->toBe(realpath(__DIR__.'/../../config/murmur.php'));
 });
+
+it('reports an unencodable http payload as a publish failure', function () {
+    Http::fake();
+
+    try {
+        app(Publisher::class)->publish(new Event('news', 'updated', INF));
+    } catch (PublishFailed $error) {
+        expect($error->getPrevious())->toBeInstanceOf(JsonException::class);
+        Http::assertNothingSent();
+
+        return;
+    }
+
+    $this->fail('The publish did not fail.');
+});

@@ -11,6 +11,7 @@ use Arttecs\Murmur\Server\ServerConfig;
 use Illuminate\Console\Command;
 use InvalidArgumentException;
 use React\EventLoop\Loop;
+use Throwable;
 
 /**
  * Start the Murmur SSE server from a Laravel application.
@@ -49,14 +50,20 @@ class ServeCommand extends Command
             $loop->stop();
         };
 
+        $exitCode = self::SUCCESS;
+
         try {
-            $server->listen();
+            $server->listen()->then(function () use ($server): void {
+                $this->info('Murmur is listening on '.$server->address());
+            }, function (Throwable $error) use (&$exitCode, $loop): void {
+                $this->error($error->getMessage());
+                $exitCode = self::FAILURE;
+                $loop->futureTick($loop->stop(...));
+            });
 
             foreach ($signals as $signal) {
                 $loop->addSignal($signal, $shutdown);
             }
-
-            $this->info('Murmur is listening on '.$server->address());
 
             $loop->run();
         } finally {
@@ -67,7 +74,7 @@ class ServeCommand extends Command
             $server->close();
         }
 
-        return self::SUCCESS;
+        return $exitCode;
     }
 
     /**

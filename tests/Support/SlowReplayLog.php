@@ -68,6 +68,14 @@ class SlowReplayLog implements EventLog
     }
 
     /**
+     * Indicate that live delivery can start immediately.
+     */
+    public function ready(): PromiseInterface
+    {
+        return $this->log->ready();
+    }
+
+    /**
      * Close the underlying event log.
      */
     public function close(): void

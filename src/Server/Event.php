@@ -42,6 +42,6 @@ class Event
      */
     public static function isValidName(string $name): bool
     {
-        return preg_match('/^[^\r\n]{1,200}\z/', $name) === 1;
+        return preg_match('/\A[^\r\n]{1,200}\z/', $name) === 1;
     }
 }
