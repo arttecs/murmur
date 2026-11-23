@@ -4,16 +4,16 @@ use Arttecs\Murmur\Facades\Murmur;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
 
-it('delivers a laravel broadcast to a browser subscription end to end', function () {
+it('delivers a signed publish to a subscriber of a Laravel-issued stream URL', function () {
     $h = ServerHarness::start();
     config(['murmur.publish_url' => $h->url(''), 'murmur.public_url' => $h->url(''), 'murmur.stream_cursor_margin_ms' => 0]);
     $stream = Murmur::stream('private-chat.42');
     $r = SseReader::open($stream->url());
     $r->next();
-    publishFromSubprocess($h, 'private-chat.42', 'token', ['text' => 'Olá']);
+    publishFromSubprocess($h, 'private-chat.42', 'token', ['text' => 'Résumé']);
     $frame = $r->next();
     expect($frame['event'])->toBe('token');
-    expect(json_decode($frame['data'], true)['data'])->toBe(['text' => 'Olá']);
+    expect(json_decode($frame['data'], true)['data'])->toBe(['text' => 'Résumé']);
 });
 
 it('reports an oversized publish as a publish failure', function () {

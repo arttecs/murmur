@@ -7,7 +7,7 @@ use Illuminate\Support\Carbon;
 it('emits stream events and an end marker', function () {
     $publisher = fakePublisher();
     $stream = Murmur::stream('private-chat.42');
-    $stream->emit('token', ['text' => 'Olá']);
+    $stream->emit('token', ['text' => 'Hello']);
     $stream->close();
     expect($publisher->events)->toHaveCount(2);
     expect($publisher->events[0]->name)->toBe('token');

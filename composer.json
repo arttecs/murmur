@@ -1,6 +1,14 @@
 {
     "name": "arttecs/murmur",
     "description": "A ReactPHP Server-Sent Events server with a Laravel bridge.",
+    "keywords": [
+        "laravel",
+        "sse",
+        "server-sent-events",
+        "reactphp",
+        "broadcasting",
+        "realtime"
+    ],
     "type": "library",
     "license": "MIT",
     "require": {
@@ -16,13 +24,25 @@
         "illuminate/broadcasting": "^12.0|^13.0",
         "illuminate/console": "^12.0|^13.0",
         "illuminate/http": "^12.0|^13.0",
-        "illuminate/redis": "^12.0|^13.0"
+        "illuminate/redis": "^12.0|^13.0",
+        "illuminate/auth": "^12.0|^13.0",
+        "illuminate/contracts": "^12.0|^13.0",
+        "illuminate/routing": "^12.0|^13.0",
+        "illuminate/validation": "^12.0|^13.0"
     },
     "require-dev": {
         "pestphp/pest": "^4.0|^5.0",
         "orchestra/testbench": "^10.0|^11.0",
         "react/async": "^4",
-        "laravel/pint": "^1.32"
+        "laravel/pint": "^1.32",
+        "react/promise-timer": "^1.11"
+    },
+    "suggest": {
+        "ext-pcntl": "Drain connections on SIGTERM and SIGINT.",
+        "ext-redis": "Use the Redis driver from Laravel. Alternatively, install predis/predis.",
+        "ext-uv": "Support more than about 1000 concurrent connections.",
+        "ext-ev": "Support more than about 1000 concurrent connections.",
+        "ext-event": "Support more than about 1000 concurrent connections."
     },
     "autoload": {
         "psr-4": {

@@ -80,8 +80,13 @@ function redisStream(): array
 
     try {
         await(timeout($client->ping(), 1.0));
-    } catch (Exception) {
+    } catch (Exception $error) {
         $client->close();
+
+        if (getenv('CI') !== false) {
+            throw new RuntimeException('Redis is unreachable in CI.', 0, $error);
+        }
+
         test()->markTestSkipped('Redis is unreachable.');
     }
 

@@ -53,7 +53,7 @@ BROADCAST_CONNECTION=murmur
 
 Events implementing `ShouldBroadcast` publish to their Laravel channel names as SSE topics. A `Channel('news')` publishes to `news`, and a `PrivateChannel('orders.42')` publishes to `private-orders.42`. Run your Laravel queue worker if your broadcasts are queued.
 
-Register private channel callbacks with Laravel's `Broadcast::channel()` using channel patterns such as `orders.{orderId}`. An authenticated client can send `{"channels":["private-orders.42"]}` to `POST /murmur/auth`. Laravel checks access to each requested channel and returns `token` and `expires_at` on success. Use the token in the `token` query parameter on `/sse` along with the requested `topics`. The auth route uses the `web` middleware by default, so include the session credentials and CSRF token required by your application.
+Register private channel callbacks with Laravel's `Broadcast::channel()` using channel patterns such as `orders.{orderId}`. An authenticated client can send `{"channels":["private-orders.42"]}` to `POST /murmur/auth`. Laravel checks access against each channel's configured guard and returns `token` and `expires_at` on success. Channel names in one request may total up to 2048 bytes. Use the token in the `token` query parameter on `/sse` along with the requested `topics`. The auth route uses the `web` middleware by default, so include the session credentials and CSRF token required by your application.
 
 ## Stream API
 
@@ -70,6 +70,8 @@ $stream->close();
 ```
 
 Pass `$url` to the subscriber. `emit()` publishes an event, and `close()` publishes a `murmur.end` event that the subscriber can use to close its connection. You can also publish directly with `Murmur::publish('news', 'updated', $data)`.
+
+Use a distinct topic for each stream run. Reusing a topic can replay the previous run's end marker to the next subscriber. Event names starting with `murmur.` are reserved for the protocol.
 
 ## JavaScript client
 
@@ -88,15 +90,18 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `server.heartbeat` | | `20` | Seconds between SSE heartbeats |
 | `server.retry_ms` | | `3000` | Reconnect interval sent to subscribers, in milliseconds |
 | `server.log_size` | | `10000` | Maximum in-memory history for `http`, or approximate stream length for `redis` |
-| `server.max_connections` | | `10000` | Maximum number of concurrent SSE connections |
+| `server.max_connections` | | `900` | Maximum number of concurrent SSE connections |
+| `server.max_sockets` | | `1000` | Maximum number of accepted sockets, including incomplete requests. Must be at least `server.max_connections`. |
+| `server.request_timeout` | | `10.0` | Seconds to receive request headers and, for HTTP publishes, the body |
+| `server.max_replay_events` | | `1000` | Maximum number of matching events in a replay |
 | `server.max_topics_per_connection` | | `50` | Maximum number of topics on a subscription |
-| `server.max_payload_bytes` | | `65536` | Maximum size of the HTTP publish request body in bytes |
+| `server.max_payload_bytes` | | `65536` | Maximum size of the HTTP publish body or encoded Redis event data, in bytes |
 | `server.max_buffer_bytes` | | `1048576` | Maximum queued output per subscriber in bytes |
 | `server.allowed_origins` | | `['*']` | Allowed origins for cross-origin SSE requests |
 | `public_url` | `MURMUR_PUBLIC_URL` | `http://127.0.0.1:8080` | Base URL subscribers use to reach the SSE server |
 | `publish_url` | `MURMUR_PUBLISH_URL` | `http://127.0.0.1:8080` | Base URL Laravel uses with the `http` driver |
 | `token_ttl` | | `900` | Subscription token lifetime in seconds |
-| `stream_cursor_margin_ms` | | `1000` | Milliseconds subtracted from stream creation time for the initial cursor |
+| `stream_cursor_margin_ms` | | `1000` | Clock skew in milliseconds allowed when computing the initial stream cursor |
 | `http.timeout` | | `2.0` | Publish request timeout in seconds |
 | `http.connect_timeout` | | `1.0` | Publish connection timeout in seconds |
 | `redis.connection` | `MURMUR_REDIS_CONNECTION` | `default` | Laravel Redis connection used to append events |
@@ -105,14 +110,23 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `auth.path` | | `murmur/auth` | Laravel route path for private channel authorization |
 | `auth.middleware` | | `['web']` | Middleware for the authorization route |
 
+A subscriber receives `murmur.gap` in place of a replay if the requested history exceeds `server.max_replay_events` matching events or if the encoded replay frames exceed half of `server.max_buffer_bytes`. The connection continues delivering live events.
+
 ## Deployment
+
+Run Murmur behind a reverse proxy. Keep `POST /publish` on a trusted network. A signed request is replayable within the default 60-second timestamp tolerance.
+
+ReactPHP's default event loop uses `stream_select()` and supports about 1024 file descriptors. The defaults cap SSE connections at 900 and accepted sockets at 1000 to leave room for other descriptors. To scale beyond the default loop's limit, use `ext-uv`, `ext-ev`, or `ext-event` and raise `ulimit -n` before increasing the connection and socket limits.
+
+`GET /health` returns HTTP 200 with a JSON object containing `"status":"ok"` and `connections`, the current number of SSE subscriptions.
 
 ### Nginx
 
-Proxy `/sse` to Murmur and disable buffering so events reach subscribers as they arrive. Set `MURMUR_PUBLIC_URL` to the external base URL. With the `http` driver, point `MURMUR_PUBLISH_URL` at the internal server address.
+Proxy `/sse` to Murmur and disable buffering so events reach subscribers as they arrive. Set `MURMUR_PUBLIC_URL` to the external base URL. With the `http` driver, point `MURMUR_PUBLISH_URL` at the internal server address. Subscription tokens travel in the `/sse` query string. Exclude that query string from proxy and load balancer logs and from traces.
 
 ```nginx
 location = /sse {
+    access_log off;
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
@@ -123,7 +137,7 @@ location = /sse {
 
 ### Supervisor
 
-Run `murmur:serve` under Supervisor to start it at boot and restart it after an exit. Adjust the paths and application user for your deployment. With `ext-pcntl` enabled in CLI PHP, Murmur closes its connections and stops the event loop on `SIGTERM` or `SIGINT`.
+Run `murmur:serve` under Supervisor to start it at boot and restart it after an exit. Adjust the paths and application user for your deployment. With `ext-pcntl` enabled in CLI PHP, Murmur stops accepting connections on `SIGTERM` or `SIGINT` and allows up to 5 seconds for open streams to flush and in-flight requests to finish. It closes any remaining sockets before stopping the event loop.
 
 ```ini
 [program:murmur]
@@ -139,7 +153,7 @@ stdout_logfile=/var/log/murmur.log
 
 ## Scaling with Redis
 
-Use Redis 6.2 or later to share live events and replay history across Murmur nodes. Set `MURMUR_DRIVER=redis` and the same `MURMUR_SECRET` in the Laravel application and on every Murmur node. Point each node at the shared Redis instance and database with `MURMUR_REDIS_URL`.
+Use Redis 7.0 or later to share live events and replay history across Murmur nodes. The Laravel app needs a Redis client, either the phpredis extension or `predis/predis`. Murmur uses raw Redis commands and supports non-cluster connections. Set `MURMUR_DRIVER=redis` and the same `MURMUR_SECRET` in the Laravel application and on every Murmur node. Point each node at the shared Redis instance and database with `MURMUR_REDIS_URL`.
 
 ```dotenv
 MURMUR_DRIVER=redis
@@ -147,14 +161,20 @@ MURMUR_REDIS_URL=redis://redis.internal:6379/0
 MURMUR_PUBLIC_URL=https://events.example.com
 ```
 
-Configure the Laravel connection named by `MURMUR_REDIS_CONNECTION` to reach the same Redis instance and database. Laravel appends events to the stream using that connection. Both sides use `database.redis.options.prefix` followed by `murmur.redis.stream` as the stream key. Keep both settings identical in the app and on every node, and enter the stream name without the prefix in `murmur.redis.stream`. Keep `murmur.server.log_size` identical as well: the app trims the stream with its value and each node uses its own to decide whether a reconnecting client missed events.
+Configure the Laravel connection named by `MURMUR_REDIS_CONNECTION` to reach the same Redis instance and database. Laravel appends events to the stream using that connection. Both sides use `database.redis.options.prefix` followed by `murmur.redis.stream` as the stream key. Keep both settings identical in the app and on every node, and enter the stream name without the prefix in `murmur.redis.stream`. The app uses `murmur.server.log_size` to trim the stream. Each Murmur node uses Redis stream metadata to detect whether a reconnecting subscriber's cursor predates the retained history.
 
 Run `php artisan murmur:serve` on each node and route `/sse` through a load balancer with response buffering disabled. A node listens on `127.0.0.1` by default, so set `MURMUR_HOST` to an address the load balancer can reach. Set `MURMUR_PUBLIC_URL` to the load balancer's public base URL. Each node reads the same stream, so a reconnect can resume on any node while its cursor is retained. The Redis driver disables the server's `POST /publish` endpoint and leaves `MURMUR_PUBLISH_URL` unused.
 
-Replay history is one global log shared by all topics. Redis trims it approximately to `murmur.server.log_size` entries. During a Redis outage, each server retries its stream read one second after a failure. Murmur does not log these failures, so monitor Redis directly.
+Replay history is one global log shared by all topics. Redis trims it approximately to `murmur.server.log_size` entries. During a Redis outage, each server retries its stream read one second after a failure. Murmur logs when the reader loses its connection and when it recovers. If an outage outlasts the retained history, already connected subscribers can miss events without receiving a gap signal.
+
+Synchronize clocks across the Laravel application, Murmur nodes, and Redis. `stream_cursor_margin_ms` sets how much skew to allow in stream start cursors.
 
 ## Version 1 limits
 
 - Murmur supports SSE subscriptions. WebSockets and Laravel presence channels are unsupported.
 - The `http` driver runs on a single Murmur node and keeps its bounded history in memory. Restarting that node clears its history. The `redis` driver supports multiple Murmur nodes with a shared history in Redis.
 - With the `http` driver and the default cursor margin, a stream created during the server's first second may receive a spurious `murmur.gap` event because its initial cursor predates the in-memory history.
+
+## License
+
+Murmur is released under the [MIT License](LICENSE).

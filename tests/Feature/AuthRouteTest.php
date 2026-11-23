@@ -95,7 +95,7 @@ it('authorizes with the channel guard when the default guard has no user', funct
 it('limits the total channel name size in bytes', function () {
     Broadcast::channel('orders.{id}', fn () => true);
     $channels = array_map(fn (int $i) => "private-orders.{$i}".str_repeat('x', 180 - strlen((string) $i)), range(1, 10));
-    $channels[] = 'private-orders.'.str_repeat('é', 41).'x';
+    $channels[] = 'private-orders.'.str_repeat("\u{00E9}", 41).'x';
     expect(array_sum(array_map(strlen(...), $channels)))->toBe(2048);
 
     $this->actingAs(new User(['id' => 9]));
