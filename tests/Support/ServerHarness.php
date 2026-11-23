@@ -10,8 +10,12 @@ use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Psr\Http\Message\ResponseInterface;
 use React\Http\Browser;
+use React\Socket\ConnectionInterface;
+use React\Socket\Connector;
+use ReflectionProperty;
 
 use function React\Async\await;
+use function React\Async\delay;
 
 /**
  * Run an HTTP server on an ephemeral port for feature tests.
@@ -23,14 +27,14 @@ class ServerHarness
      *
      * @var list<ServerHarness>
      */
-    private static array $running = [];
+    protected static array $running = [];
 
     /**
      * Create a harness for a listening server.
      */
-    private function __construct(
-        private Server $server,
-        private ServerConfig $config,
+    protected function __construct(
+        protected Server $server,
+        protected ServerConfig $config,
         public readonly EventLog $log,
     ) {}
 
@@ -60,6 +64,47 @@ class ServerHarness
     public function url(string $path): string
     {
         return $this->server->address().$path;
+    }
+
+    /**
+     * Count the TCP sockets still tracked by the server.
+     */
+    public function trackedSocketCount(): int
+    {
+        return count((new ReflectionProperty(Server::class, 'clients'))->getValue($this->server));
+    }
+
+    /**
+     * Open a raw subscription without reading its response.
+     */
+    public function subscribeWithoutReading(string $path): ConnectionInterface
+    {
+        $client = await((new Connector)->connect(substr($this->server->address(), strlen('http://'))));
+        $client->pause();
+        $client->write("GET {$path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+        return $client;
+    }
+
+    /**
+     * Poll health until it shows the expected connection count or the deadline passes.
+     */
+    public function pollHealth(int $connections, float $timeout = 1.0): ResponseInterface
+    {
+        $browser = (new Browser)->withTimeout($timeout);
+        $deadline = hrtime(true) + (int) ($timeout * 1_000_000_000);
+
+        do {
+            $response = await($browser->get($this->url('/health'), ['Connection' => 'close']));
+
+            if (json_decode((string) $response->getBody(), true)['connections'] === $connections) {
+                break;
+            }
+
+            delay(0.01);
+        } while (hrtime(true) < $deadline);
+
+        return $response;
     }
 
     /**

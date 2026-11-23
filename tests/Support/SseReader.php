@@ -21,31 +21,31 @@ class SseReader
      *
      * @var list<SseReader>
      */
-    private static array $readers = [];
+    protected static array $readers = [];
 
     /**
      * The incomplete frame at the end of the last chunk.
      */
-    private string $buffer = '';
+    protected string $buffer = '';
 
     /**
      * The complete frames waiting to be read.
      *
      * @var list<string>
      */
-    private array $frames = [];
+    protected array $frames = [];
 
     /**
      * The pending wait for a complete frame.
      *
      * @var Deferred<null>|null
      */
-    private ?Deferred $pending = null;
+    protected ?Deferred $pending = null;
 
     /**
      * Start listening to the response body before the first data arrives.
      */
-    private function __construct(private ResponseInterface $response)
+    protected function __construct(protected ResponseInterface $response)
     {
         $body = $response->getBody();
         assert($body instanceof ReadableStreamInterface);

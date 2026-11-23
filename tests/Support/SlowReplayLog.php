@@ -20,12 +20,12 @@ class SlowReplayLog implements EventLog
     /**
      * The log used for storage and live delivery.
      */
-    private MemoryEventLog $log;
+    protected MemoryEventLog $log;
 
     /**
      * Create a log with the given delay before a replay resolves.
      */
-    public function __construct(private float $delaySeconds)
+    public function __construct(protected float $delaySeconds)
     {
         $this->log = new MemoryEventLog;
     }
@@ -39,18 +39,17 @@ class SlowReplayLog implements EventLog
     }
 
     /**
-     * Capture a replay and resolve it after the configured delay.
+     * Capture and resolve a replay after the configured delay.
      *
      * @param  list<string>  $topics
      * @return PromiseInterface<Replay>
      */
     public function since(EventId $after, array $topics): PromiseInterface
     {
-        $replay = $this->log->since($after, $topics);
         $timer = null;
 
-        return new Promise(function (callable $resolve) use ($replay, &$timer): void {
-            $timer = Loop::addTimer($this->delaySeconds, fn () => $resolve($replay));
+        return new Promise(function (callable $resolve) use ($after, $topics, &$timer): void {
+            $timer = Loop::addTimer($this->delaySeconds, fn () => $resolve($this->log->since($after, $topics)));
         }, function () use (&$timer): void {
             Loop::cancelTimer($timer);
 

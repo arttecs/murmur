@@ -23,7 +23,7 @@ class PublishHandler
     /**
      * Create a handler for the server's in-memory log.
      */
-    public function __construct(private ServerConfig $config, private MemoryEventLog $log) {}
+    public function __construct(protected ServerConfig $config, protected MemoryEventLog $log) {}
 
     /**
      * Read the request body within the configured limit and validate its signature.
@@ -85,7 +85,7 @@ class PublishHandler
     /**
      * Verify the raw body and append a valid event.
      */
-    private function publish(string $body, int $timestamp, string $signature): ResponseInterface
+    protected function publish(string $body, int $timestamp, string $signature): ResponseInterface
     {
         if (strlen($body) > $this->config->maxPayloadBytes) {
             return new Response(413);
@@ -111,6 +111,8 @@ class PublishHandler
 
         $event = $this->log->append(new Event($payload->topic, $payload->event, $data));
 
-        return Response::json(['id' => (string) $event->id])->withStatus(202);
+        return new Response(202, ['Content-Type' => 'application/json'], json_encode([
+            'id' => (string) $event->id,
+        ], JSON_THROW_ON_ERROR));
     }
 }

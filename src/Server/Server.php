@@ -27,39 +27,39 @@ class Server
     /**
      * The loop used for HTTP and connection timers.
      */
-    private LoopInterface $loop;
+    protected LoopInterface $loop;
 
     /**
      * The hub shared by subscriptions and the event log.
      */
-    private Hub $hub;
+    protected Hub $hub;
 
     /**
      * The listening socket.
      */
-    private ?SocketServer $socket = null;
+    protected ?SocketServer $socket = null;
 
     /**
-     * The accepted HTTP sockets that have yet to close.
+     * The accepted HTTP sockets keyed by their local and remote addresses.
      *
-     * @var array<int, ConnectionInterface>
+     * @var array<string, ConnectionInterface>
      */
-    private array $clients = [];
+    protected array $clients = [];
 
     /**
      * The timer that sends periodic heartbeats.
      */
-    private ?TimerInterface $heartbeat = null;
+    protected ?TimerInterface $heartbeat = null;
 
     /**
      * Indicates whether the server has shut down.
      */
-    private bool $closed = false;
+    protected bool $closed = false;
 
     /**
      * Create a server using the given configuration, log, and loop.
      */
-    public function __construct(private ServerConfig $config, private EventLog $log, ?LoopInterface $loop = null)
+    public function __construct(protected ServerConfig $config, protected EventLog $log, ?LoopInterface $loop = null)
     {
         $this->loop = $loop ?? Loop::get();
         $this->hub = new Hub;
@@ -87,8 +87,11 @@ class Server
             }
 
             $response = match ($route) {
-                'GET /sse' => $sse($request),
-                'GET /health' => Response::json(['status' => 'ok', 'connections' => $this->hub->connectionCount()]),
+                'GET /sse' => $sse($request, $this->clientFor($request)),
+                'GET /health' => new Response(200, ['Content-Type' => 'application/json'], json_encode([
+                    'status' => 'ok',
+                    'connections' => $this->hub->connectionCount(),
+                ], JSON_THROW_ON_ERROR)),
                 default => new Response(404),
             };
 
@@ -97,24 +100,32 @@ class Server
                 : $response->withHeader('Connection', 'close');
         });
 
-        $host = $this->config->host;
-
-        if (str_contains($host, ':') && ! str_starts_with($host, '[')) {
-            $host = '['.$host.']';
-        }
-
-        $this->socket = new SocketServer($host.':'.$this->config->port, [], $this->loop);
+        $this->socket = new SocketServer($this->config->host.':'.$this->config->port, [], $this->loop);
         $this->socket->on('connection', function (ConnectionInterface $client): void {
-            $id = spl_object_id($client);
-            $this->clients[$id] = $client;
-            $client->on('close', function () use ($id): void {
-                unset($this->clients[$id]);
+            $key = $client->getLocalAddress().' '.$client->getRemoteAddress();
+            $this->clients[$key] = $client;
+            $client->once('close', function () use ($key): void {
+                unset($this->clients[$key]);
             });
         });
 
         $http->listen($this->socket);
         $this->log->subscribe($this->hub->dispatch(...));
         $this->heartbeat = $this->loop->addPeriodicTimer($this->config->heartbeatSeconds, $this->hub->heartbeat(...));
+    }
+
+    /**
+     * Find the accepted socket using the endpoints recorded by the HTTP parser.
+     *
+     * @throws LogicException
+     */
+    protected function clientFor(ServerRequestInterface $request): ConnectionInterface
+    {
+        $params = $request->getServerParams();
+        $local = 'tcp://'.($params['SERVER_ADDR'] ?? '').':'.($params['SERVER_PORT'] ?? '');
+        $remote = 'tcp://'.($params['REMOTE_ADDR'] ?? '').':'.($params['REMOTE_PORT'] ?? '');
+
+        return $this->clients[$local.' '.$remote] ?? throw new LogicException('No TCP socket matches the HTTP request.');
     }
 
     /**

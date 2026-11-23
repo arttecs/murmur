@@ -4,9 +4,7 @@ use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SlowReplayLog;
 use Arttecs\Murmur\Tests\Support\SseReader;
-use React\Http\Browser;
 
-use function React\Async\await;
 use function React\Async\delay;
 
 it('streams a published event to a public subscriber', function () {
@@ -54,6 +52,15 @@ it('accepts the cursor in the query string', function () {
     expect($r->next()['event'])->toBe('b');
 });
 
+it('falls back to the query cursor when the header is invalid', function (string $header) {
+    $h = ServerHarness::start();
+    $first = $h->log->append(new Event('news', 'a'));
+    $h->log->append(new Event('news', 'b'));
+    $r = SseReader::open($h->url("/sse?topics=news&lastEventId={$first->id}"), ['Last-Event-ID' => $header]);
+    expect($r->next()['retry'])->toBe('3000');
+    expect($r->next()['event'])->toBe('b');
+})->with(['', 'nonsense']);
+
 it('signals a gap when the cursor predates the log', function () {
     $h = ServerHarness::start();
     $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => '1-0']);
@@ -80,7 +87,7 @@ it('delivers an event published during replay exactly once and in order', functi
     $log->append(new Event('news', 'c'));
     $r->next();
     expect([$r->next()['event'], $r->next()['event']])->toBe(['b', 'c']);
-    expect(fn () => $r->next(0.2))->toThrow(Exception::class);
+    expect(fn () => $r->next(0.2))->toThrow(RuntimeException::class, 'Timed out');
 });
 
 it('sends heartbeats', function () {
@@ -92,10 +99,11 @@ it('sends heartbeats', function () {
 
 it('closes the connection when its token expires', function () {
     $h = ServerHarness::start();
-    $token = $h->token(['private-a'], ttl: 1);
+    $token = $h->token(['private-a'], ttl: 2);
     $r = SseReader::open($h->url("/sse?topics=private-a&token={$token}"));
+    expect($r->status())->toBe(200);
     $r->next();
-    expect(fn () => $r->next(2.0))->toThrow(Exception::class, 'closed');
+    expect(fn () => $r->next(3.0))->toThrow(RuntimeException::class, 'closed');
 });
 
 it('releases the connection when the client disconnects', function () {
@@ -103,9 +111,51 @@ it('releases the connection when the client disconnects', function () {
     $r = SseReader::open($h->url('/sse?topics=news'));
     $r->next();
     $r->close();
-    delay(0.05);
-    $body = (string) await((new Browser)->get($h->url('/health')))->getBody();
-    expect(json_decode($body, true))->toBe(['status' => 'ok', 'connections' => 0]);
+
+    $health = $h->pollHealth(0);
+    expect($health->getStatusCode())->toBe(200);
+    expect($health->getHeaderLine('Content-Type'))->toBe('application/json');
+    expect((string) $health->getBody())->toBe('{"status":"ok","connections":0}');
+});
+
+it('releases the TCP socket when a non-reading subscriber is evicted', function () {
+    $h = ServerHarness::start(['maxBufferBytes' => 65536]);
+    $client = $h->subscribeWithoutReading('/sse?topics=news');
+
+    try {
+        expect((string) $h->pollHealth(1)->getBody())->toBe('{"status":"ok","connections":1}');
+        expect($h->trackedSocketCount())->toBe(1);
+
+        $h->log->append(new Event('news', 'large', str_repeat('x', 131072)));
+
+        expect($h->trackedSocketCount())->toBe(0);
+    } finally {
+        $client->close();
+    }
+});
+
+it('force-closes a stalled subscriber after the token expiry grace period', function () {
+    $h = ServerHarness::start(['maxBufferBytes' => 16 * 1024 * 1024]);
+    $token = $h->token(['private-a'], ttl: 2);
+    $client = $h->subscribeWithoutReading("/sse?topics=private-a&token={$token}");
+
+    try {
+        expect((string) $h->pollHealth(1)->getBody())->toBe('{"status":"ok","connections":1}');
+        $h->log->append(new Event('private-a', 'large', str_repeat('x', 8 * 1024 * 1024)));
+
+        expect((string) $h->pollHealth(0, timeout: 2.5)->getBody())->toBe('{"status":"ok","connections":0}');
+        expect($h->trackedSocketCount())->toBe(1);
+
+        $deadline = hrtime(true) + 1_500_000_000;
+
+        while ($h->trackedSocketCount() > 0 && hrtime(true) < $deadline) {
+            delay(0.01);
+        }
+
+        expect($h->trackedSocketCount())->toBe(0);
+    } finally {
+        $client->close();
+    }
 });
 
 it('refuses connections above the limit', function () {
@@ -118,4 +168,5 @@ it('echoes an allowed origin', function () {
     $h = ServerHarness::start(['allowedOrigins' => ['https://app.test']]);
     $r = SseReader::open($h->url('/sse?topics=news'), ['Origin' => 'https://app.test']);
     expect($r->header('Access-Control-Allow-Origin'))->toBe('https://app.test');
+    expect($r->header('Vary'))->toBe('Origin');
 });
