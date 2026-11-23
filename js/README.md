@@ -66,3 +66,9 @@ Stream event names are literal, and callbacks receive the event payload. The nam
 The first connection uses the URL as supplied. On reconnect, the client updates only `lastEventId` to the last ID it received. Until it has received an ID, it reconnects with the URL unchanged, so the initial cursor still applies. For both channels and streams, the reconnect cursor only advances on event names the client listens to.
 
 Call `stream.close()` to stop the stream and cancel any pending retry.
+
+## Development
+
+- `npm test` runs the unit tests.
+- `npm run test:integration` runs the client against the real Murmur server. It requires PHP on `PATH` and `composer install` at the repository root.
+- `npm run build` builds the ESM package and its TypeScript declarations.
