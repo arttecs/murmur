@@ -9,6 +9,13 @@ jobs:
       matrix:
         php: ['8.3', '8.4', '8.5']
         laravel: ['12', '13']
+        redis_client: [phpredis]
+        include:
+          - php: '8.5'
+            laravel: '13'
+            redis_client: predis
+    env:
+      REDIS_CLIENT: ${{ matrix.redis_client }}
     services:
       redis:
         image: redis:7
@@ -27,6 +34,8 @@ jobs:
           extensions: redis
           coverage: none
       - run: composer update --with illuminate/support:^${{ matrix.laravel }} --no-interaction --no-progress
+      - if: matrix.redis_client == 'predis'
+        run: composer require --dev predis/predis --no-interaction --no-progress
       - run: vendor/bin/pint --test
       - run: vendor/bin/pest
 
