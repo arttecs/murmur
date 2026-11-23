@@ -6,8 +6,8 @@ use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Server\Auth\Signature;
 use Arttecs\Murmur\Server\Event;
-use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory;
+use Illuminate\Http\Client\HttpClientException;
 use InvalidArgumentException;
 use JsonException;
 use SensitiveParameter;
@@ -55,8 +55,8 @@ class HttpPublisher implements Publisher
                 ->connectTimeout($this->connectTimeout)
                 ->withoutRedirecting()
                 ->post(rtrim($this->publishUrl, '/').'/publish');
-        } catch (ConnectionException $exception) {
-            throw new PublishFailed('Could not connect to the Murmur server.', 0, $exception);
+        } catch (HttpClientException $exception) {
+            throw new PublishFailed('The publish request to the Murmur server failed.', 0, $exception);
         }
 
         if ($response->status() !== 202) {

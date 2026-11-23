@@ -1,6 +1,8 @@
 <?php
 
 use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Facades\Murmur;
+use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\Server\Connection;
 use Arttecs\Murmur\Tests\Support\FakePublisher;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
@@ -23,6 +25,8 @@ function fakePublisher(): FakePublisher
     $publisher = new FakePublisher;
 
     app()->instance(Publisher::class, $publisher);
+    app()->forgetInstance(MurmurManager::class);
+    Murmur::clearResolvedInstance(MurmurManager::class);
 
     return $publisher;
 }

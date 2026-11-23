@@ -32,3 +32,21 @@ it('honours a custom ttl', function () {
     parse_str(parse_url(Murmur::stream('private-x')->url(ttl: 3600), PHP_URL_QUERY), $q);
     expect((new TokenVerifier('test-secret-with-at-least-32-bytes', fn () => now()->timestamp))->verify($q['token'])->expiresAt)->toBe(now()->timestamp + 3600);
 });
+
+it('sends the end marker without data', function () {
+    $publisher = fakePublisher();
+    Murmur::stream('progress.9')->close();
+
+    expect($publisher->events[0]->topic)->toBe('progress.9');
+    expect($publisher->events[0]->data)->toBeNull();
+});
+
+it('fixes the start cursor when the stream is created', function () {
+    Carbon::setTestNow(Carbon::createFromTimestampMs(1732360005000));
+    $stream = Murmur::stream('progress.9');
+    Carbon::setTestNow(Carbon::createFromTimestampMs(1732360099000));
+
+    parse_str(parse_url($stream->url(), PHP_URL_QUERY), $q);
+
+    expect($q['lastEventId'])->toBe('1732360004000-0');
+});

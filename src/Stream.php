@@ -2,6 +2,7 @@
 
 namespace Arttecs\Murmur;
 
+use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Server\Topic;
 
 /**
@@ -24,6 +25,9 @@ class Stream
 
     /**
      * Publish an event to the stream topic.
+     *
+     * @throws \InvalidArgumentException
+     * @throws PublishFailed
      */
     public function emit(string $event, mixed $data = null): void
     {
@@ -32,6 +36,8 @@ class Stream
 
     /**
      * Publish the end marker for the stream.
+     *
+     * @throws PublishFailed
      */
     public function close(): void
     {

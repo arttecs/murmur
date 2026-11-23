@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur;
 
 use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Server\Auth\TokenIssuer;
 use Arttecs\Murmur\Server\Event;
 use Illuminate\Contracts\Config\Repository;
@@ -30,6 +31,9 @@ class MurmurManager
 
     /**
      * Publish an event to the given topic.
+     *
+     * @throws InvalidArgumentException
+     * @throws PublishFailed
      */
     public function publish(string $topic, string $event, mixed $data = null): void
     {

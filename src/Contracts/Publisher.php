@@ -2,6 +2,7 @@
 
 namespace Arttecs\Murmur\Contracts;
 
+use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Server\Event;
 
 /**
@@ -11,6 +12,8 @@ interface Publisher
 {
     /**
      * Publish the given event.
+     *
+     * @throws PublishFailed
      */
     public function publish(Event $event): void;
 }
