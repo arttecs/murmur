@@ -18,6 +18,7 @@
         "react/stream": "^1.4",
         "react/event-loop": "^1.6",
         "react/promise": "^3",
+        "react/promise-timer": "^1.11",
         "firebase/php-jwt": "^7.2",
         "clue/redis-react": "^2.8",
         "illuminate/support": "^12.0|^13.0",
@@ -34,8 +35,7 @@
         "pestphp/pest": "^4.0|^5.0",
         "orchestra/testbench": "^10.0|^11.0",
         "react/async": "^4",
-        "laravel/pint": "^1.32",
-        "react/promise-timer": "^1.11"
+        "laravel/pint": "^1.32"
     },
     "suggest": {
         "ext-pcntl": "Drain connections on SIGTERM and SIGINT.",
