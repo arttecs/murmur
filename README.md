@@ -71,6 +71,10 @@ $stream->close();
 
 Pass `$url` to the subscriber. `emit()` publishes an event, and `close()` publishes a `murmur.end` event that the subscriber can use to close its connection. You can also publish directly with `Murmur::publish('news', 'updated', $data)`.
 
+## JavaScript client
+
+Use `@arttecs/murmur` to subscribe to channels and consume streams in the browser. See the [JavaScript client README](js/README.md) for installation and usage.
+
 ## Configuration
 
 Edit `config/murmur.php` after publishing it. The environment variables shown below map to the corresponding configuration keys.

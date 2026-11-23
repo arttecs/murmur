@@ -30,7 +30,7 @@ export class Transport {
   public constructor(
     protected readonly eventSource: typeof EventSource | undefined,
     protected readonly retryMs: number,
-    protected readonly connectionUrl: (signal: AbortSignal) => Promise<URL>,
+    protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | Promise<string>,
     protected readonly onMessage: (event: string, data: string) => void,
     protected readonly onStatus: (event: 'connected' | 'disconnected') => void,
   ) {}
@@ -94,17 +94,13 @@ export class Transport {
     const attempt = new AbortController()
     this.pending = attempt
     try {
-      const url = await this.connectionUrl(attempt.signal)
+      const url = await this.connectionUrl(attempt.signal, this.lastEventId)
       if (attempt.signal.aborted) {
         return
       }
 
-      url.searchParams.delete('lastEventId')
-      if (this.lastEventId !== undefined) {
-        url.searchParams.set('lastEventId', this.lastEventId)
-      }
       const EventSource = this.eventSource ?? globalThis.EventSource
-      this.attach(new EventSource(url.href))
+      this.attach(new EventSource(url))
     } catch {
       if (!attempt.signal.aborted) {
         this.handleFailure()

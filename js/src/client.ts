@@ -1,8 +1,9 @@
 import { Channel, type ChannelListeners } from './channel.js'
 import { invokeListener } from './invoke-listener.js'
+import { MurmurStream } from './stream.js'
 import { Transport } from './transport.js'
 
-/** Configures the Murmur channel client. */
+/** Configures the Murmur client. */
 export interface MurmurOptions {
   /** The full server-sent events endpoint. */
   url: string
@@ -29,7 +30,7 @@ type CachedToken = { topics: string; token: string; expiresAt: number }
 
 const privatePrefix = 'private-'
 
-/** Multiplexes channel subscriptions over one resumable event stream. */
+/** Multiplexes channel subscriptions and opens independent streams. */
 export class Murmur {
   /** The joined channels and their callbacks, indexed by subscription name and kind. */
   protected readonly channels = new Map<string, Subscription>()
@@ -39,6 +40,9 @@ export class Murmur {
 
   /** The transport for the shared event stream. */
   protected readonly transport: Transport
+
+  /** The active streams created by this client. */
+  protected readonly streams = new Set<MurmurStream>()
 
   /** The most recent token and the private topics it authorizes. */
   protected cachedToken?: CachedToken
@@ -54,7 +58,7 @@ export class Murmur {
     this.transport = new Transport(
       options.EventSource,
       options.retryMs ?? 3000,
-      signal => this.connectionUrl(signal),
+      (signal, lastEventId) => this.connectionUrl(signal, lastEventId),
       (event, data) => this.receive(event, data),
       event => this.emit(event),
     )
@@ -68,6 +72,19 @@ export class Murmur {
   /** Joins a private channel and authorizes its topic before connecting. */
   public private(name: string): Channel {
     return this.join('private:' + name, privatePrefix + name)
+  }
+
+  /** Opens an independent stream using a server-issued subscription URL. */
+  public stream(url: string): MurmurStream {
+    const stream = new MurmurStream(url, this.options.EventSource, this.options.retryMs ?? 3000, closed => {
+      this.streams.delete(closed)
+    })
+    if (this.closed) {
+      stream.close()
+    } else {
+      this.streams.add(stream)
+    }
+    return stream
   }
 
   /** Leaves the subscriptions joined with the given name. */
@@ -92,10 +109,13 @@ export class Murmur {
     }
   }
 
-  /** Closes the stream and cancels outstanding connection attempts. */
+  /** Closes channels and streams and cancels outstanding connection attempts. */
   public close(): void {
     this.closed = true
     this.transport.close()
+    for (const stream of this.streams) {
+      stream.close()
+    }
     for (const { listeners } of this.channels.values()) {
       listeners.clear()
     }
@@ -156,7 +176,7 @@ export class Murmur {
   }
 
   /** Builds the stream URL for the current subscriptions. */
-  protected async connectionUrl(signal: AbortSignal): Promise<URL> {
+  protected async connectionUrl(signal: AbortSignal, lastEventId: string | undefined): Promise<string> {
     const topics = [...new Set(Array.from(this.channels.values(), ({ channel }) => channel.name))]
     const privateTopics = topics.filter(topic => topic.startsWith(privatePrefix))
     const url = new URL(this.options.url, globalThis.location?.href)
@@ -165,7 +185,11 @@ export class Murmur {
     if (privateTopics.length > 0) {
       url.searchParams.set('token', await this.tokenFor(privateTopics, signal))
     }
-    return url
+    url.searchParams.delete('lastEventId')
+    if (lastEventId !== undefined) {
+      url.searchParams.set('lastEventId', lastEventId)
+    }
+    return url.href
   }
 
   /** Reuses a token for the same private topics or requests a fresh one. */
