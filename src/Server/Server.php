@@ -19,6 +19,7 @@ use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use React\Socket\ConnectionInterface;
 use React\Socket\SocketServer;
+use Throwable;
 
 use function React\Promise\reject;
 use function React\Promise\resolve;
@@ -145,14 +146,20 @@ class Server
 
             $this->cancelRequestDeadline($client);
 
-            $response = match ($route) {
-                'GET /sse' => $this->shutdown === null ? $sse($request, $client) : new Response(503),
-                'GET /health' => new Response(200, ['Content-Type' => 'application/json'], json_encode([
-                    'status' => 'ok',
-                    'connections' => $this->hub->connectionCount(),
-                ], JSON_THROW_ON_ERROR)),
-                default => new Response(404),
-            };
+            try {
+                $response = match ($route) {
+                    'GET /sse' => $this->shutdown === null ? $sse($request, $client) : new Response(503),
+                    'GET /health' => new Response(200, ['Content-Type' => 'application/json'], json_encode([
+                        'status' => 'ok',
+                        'connections' => $this->hub->connectionCount(),
+                    ], JSON_THROW_ON_ERROR)),
+                    default => new Response(404),
+                };
+            } catch (Throwable $error) {
+                ErrorReporter::report($error);
+
+                $response = new Response(500);
+            }
 
             return $this->withResponseHeaders($response);
         });
