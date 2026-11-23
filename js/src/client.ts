@@ -1,4 +1,5 @@
 import { Channel, type ChannelListeners } from './channel.js'
+import { invokeListener } from './invoke-listener.js'
 import { Transport } from './transport.js'
 
 /** Configures the Murmur channel client. */
@@ -242,7 +243,7 @@ export class Murmur {
     }
     for (const subscription of subscriptions) {
       for (const callback of subscription?.listeners.get(event) ?? []) {
-        callback(payload)
+        invokeListener(callback, payload)
       }
     }
   }
@@ -250,7 +251,7 @@ export class Murmur {
   /** Notifies listeners of a client event. */
   protected emit(event: ClientEvent): void {
     for (const listener of this.listeners.get(event) ?? []) {
-      listener()
+      invokeListener(listener)
     }
   }
 }

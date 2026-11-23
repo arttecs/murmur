@@ -51,12 +51,16 @@ export class FakeEventSource extends EventTarget implements EventSource {
 
   /** Delivers a named event with a JSON payload and cursor. */
   public emit(type: string, data: unknown, lastEventId: string): void {
-    this.dispatchEvent(new MessageEvent(type, { data: JSON.stringify(data), lastEventId }))
+    if (!this.closed) {
+      this.dispatchEvent(new MessageEvent(type, { data: JSON.stringify(data), lastEventId }))
+    }
   }
 
   /** Delivers a connection error. */
   public fail(): void {
-    this.dispatchEvent(new Event('error'))
+    if (!this.closed) {
+      this.dispatchEvent(new Event('error'))
+    }
   }
 
   /** Marks this connection as closed. */
