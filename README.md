@@ -147,11 +147,11 @@ MURMUR_REDIS_URL=redis://redis.internal:6379/0
 MURMUR_PUBLIC_URL=https://events.example.com
 ```
 
-Configure the Laravel connection named by `MURMUR_REDIS_CONNECTION` to reach the same Redis instance and database. Laravel appends events to the stream using that connection. Both sides use `database.redis.options.prefix` followed by `murmur.redis.stream` as the stream key. Keep both settings identical in the app and on every node, and enter the stream name without the prefix in `murmur.redis.stream`.
+Configure the Laravel connection named by `MURMUR_REDIS_CONNECTION` to reach the same Redis instance and database. Laravel appends events to the stream using that connection. Both sides use `database.redis.options.prefix` followed by `murmur.redis.stream` as the stream key. Keep both settings identical in the app and on every node, and enter the stream name without the prefix in `murmur.redis.stream`. Keep `murmur.server.log_size` identical as well: the app trims the stream with its value and each node uses its own to decide whether a reconnecting client missed events.
 
-Run `php artisan murmur:serve` on each node and route `/sse` through a load balancer with response buffering disabled. Set `MURMUR_PUBLIC_URL` to the load balancer's public base URL. Each node reads the same stream, so a reconnect can resume on any node while its cursor is retained. The Redis driver disables the server's `POST /publish` endpoint and leaves `MURMUR_PUBLISH_URL` unused.
+Run `php artisan murmur:serve` on each node and route `/sse` through a load balancer with response buffering disabled. A node listens on `127.0.0.1` by default, so set `MURMUR_HOST` to an address the load balancer can reach. Set `MURMUR_PUBLIC_URL` to the load balancer's public base URL. Each node reads the same stream, so a reconnect can resume on any node while its cursor is retained. The Redis driver disables the server's `POST /publish` endpoint and leaves `MURMUR_PUBLISH_URL` unused.
 
-Replay history is one global log shared by all topics. Redis trims it approximately to `murmur.server.log_size` entries. During a Redis outage, each server retries its stream read one second after a failure. PHP's error log is the only source of any underlying PHP error messages during these retries.
+Replay history is one global log shared by all topics. Redis trims it approximately to `murmur.server.log_size` entries. During a Redis outage, each server retries its stream read one second after a failure. Murmur does not log these failures, so monitor Redis directly.
 
 ## Version 1 limits
 

@@ -2,6 +2,7 @@
 
 use Arttecs\Murmur\Console\Commands\ServeCommand;
 use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Facades\Murmur;
 use Arttecs\Murmur\Publishers\RedisPublisher;
 use Arttecs\Murmur\Server\Event;
@@ -37,6 +38,8 @@ it('writes entries the server log can read, despite the laravel key prefix', fun
         Murmur::publish('news', 'updated', ['id' => 7]);
         delay(0.1);
         expect($seen)->toHaveCount(1);
+        expect($seen[0]->topic)->toBe('news');
+        expect($seen[0]->name)->toBe('updated');
         expect($seen[0]->data)->toBe(['id' => 7]);
     } finally {
         await($client->del('app_'.$key));
@@ -47,3 +50,34 @@ it('rejects an unknown driver', function () {
     config(['murmur.driver' => 'carrier-pigeon']);
     app(Publisher::class);
 })->throws(InvalidArgumentException::class);
+
+it('reports a payload that cannot be encoded as a publish failure', function () {
+    [, $key, $url] = redisStream();
+    config(['murmur.driver' => 'redis', 'murmur.redis.stream' => $key, 'database.redis.default' => ['url' => $url], 'database.redis.options.prefix' => '']);
+
+    try {
+        Murmur::publish('news', 'updated', ['value' => INF]);
+    } catch (PublishFailed $exception) {
+        expect($exception->getPrevious())->toBeInstanceOf(JsonException::class);
+
+        return;
+    }
+
+    $this->fail('The publish did not fail.');
+});
+
+it('reports a redis error reply as a publish failure', function () {
+    [$client, $key, $url] = redisStream();
+    config(['murmur.driver' => 'redis', 'murmur.redis.stream' => $key, 'database.redis.default' => ['url' => $url], 'database.redis.options.prefix' => '']);
+    await($client->set($key, 'not a stream'));
+
+    try {
+        Murmur::publish('news', 'updated');
+    } catch (PublishFailed $exception) {
+        expect($exception->getPrevious()->getMessage())->toContain('WRONGTYPE');
+
+        return;
+    }
+
+    $this->fail('The publish did not fail.');
+});
