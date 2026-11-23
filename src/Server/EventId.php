@@ -2,6 +2,9 @@
 
 namespace Arttecs\Murmur\Server;
 
+/**
+ * A position in the event log, ordered by milliseconds and then by sequence.
+ */
 class EventId
 {
     /**

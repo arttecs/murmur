@@ -4,6 +4,9 @@ namespace Arttecs\Murmur\Server;
 
 use Closure;
 
+/**
+ * Generate strictly increasing event identifiers.
+ */
 class EventIdGenerator
 {
     /**

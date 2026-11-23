@@ -4,6 +4,9 @@ namespace Arttecs\Murmur\Server\Log\Concerns;
 
 use Throwable;
 
+/**
+ * Report errors thrown by event log listeners.
+ */
 trait ReportsListenerErrors
 {
     /**

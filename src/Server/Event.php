@@ -4,6 +4,9 @@ namespace Arttecs\Murmur\Server;
 
 use InvalidArgumentException;
 
+/**
+ * An event published to a topic.
+ */
 class Event
 {
     /**

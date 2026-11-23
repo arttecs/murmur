@@ -222,15 +222,23 @@ it('shares one blocked xread connection between subscribers', function () {
     $readerId = redisReaderId($log);
     $first = new Deferred;
     $second = new Deferred;
-    $log->subscribe(fn (Event $event) => $first->resolve($event));
+    $deliveries = [0, 0];
+    $log->subscribe(function (Event $event) use ($first, &$deliveries): void {
+        $deliveries[0]++;
+        $first->resolve($event);
+    });
     waitForRedisReader($client, $readerId);
 
-    $log->subscribe(fn (Event $event) => $second->resolve($event));
+    $log->subscribe(function (Event $event) use ($second, &$deliveries): void {
+        $deliveries[1]++;
+        $second->resolve($event);
+    });
     $id = xadd($key, 'news', 'shared');
 
     expect((string) await(timeout($first->promise(), 2.0))->id)->toBe($id);
     expect((string) await(timeout($second->promise(), 2.0))->id)->toBe($id);
     waitForRedisReader($client, $readerId);
+    expect($deliveries)->toBe([1, 1]);
     preg_match_all('/^id=(\d+) [^\r\n]*\bflags=b [^\r\n]*\bcmd=xread\b/m', await($client->client('LIST')), $blockedReaders);
     expect(array_values(array_diff($blockedReaders[1], $existingClients[1])))->toBe([(string) $readerId]);
 });

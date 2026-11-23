@@ -2,6 +2,9 @@
 
 namespace Arttecs\Murmur\Server;
 
+/**
+ * Validate and classify topic names.
+ */
 class Topic
 {
     /**

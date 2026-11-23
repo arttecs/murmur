@@ -4,6 +4,9 @@ namespace Arttecs\Murmur\Server\Sse;
 
 use Arttecs\Murmur\Server\Event;
 
+/**
+ * Encode server-sent event frames.
+ */
 class Frame
 {
     /**
