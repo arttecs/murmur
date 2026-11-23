@@ -7,7 +7,7 @@ use Orchestra\Testbench\Foundation\Application;
 require __DIR__.'/../../vendor/autoload.php';
 
 [, $url, $secret] = $argv;
-$app = Application::create(options: ['providers' => [MurmurServiceProvider::class]]);
+$app = Application::create(options: ['extra' => ['providers' => [MurmurServiceProvider::class]]]);
 $app['config']->set([
     'broadcasting.default' => 'murmur',
     'broadcasting.connections.murmur' => ['driver' => 'murmur'],
