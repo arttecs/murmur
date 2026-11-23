@@ -33,7 +33,7 @@ class ServeCommand extends Command
         try {
             $config = $this->makeConfig();
         } catch (InvalidArgumentException $exception) {
-            $this->error($exception->getMessage().' Set MURMUR_SECRET before starting the server.');
+            $this->error($exception->getMessage());
 
             return self::FAILURE;
         }

@@ -37,7 +37,7 @@ curl -N 'http://127.0.0.1:8080/sse?topics=news'
 
 ## Laravel broadcasting
 
-Add a `murmur` entry to the `connections` array in `config/broadcasting.php`.
+If your application does not have a `config/broadcasting.php` file yet, publish it with `php artisan config:publish broadcasting`. Then add a `murmur` entry to its `connections` array.
 
 ```php
 'murmur' => [
@@ -45,7 +45,7 @@ Add a `murmur` entry to the `connections` array in `config/broadcasting.php`.
 ],
 ```
 
-Set your application's default broadcast connection in `.env`.
+Make Murmur your application's default broadcast connection in `.env`. This is required: Laravel registers the callbacks from `routes/channels.php` on the default connection, so `POST /murmur/auth` can only authorize channels when that connection is `murmur`.
 
 ```dotenv
 BROADCAST_CONNECTION=murmur

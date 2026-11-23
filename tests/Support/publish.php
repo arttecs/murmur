@@ -18,6 +18,8 @@ $context = stream_context_create(['http' => [
 $response = fopen($url, 'r', false, $context);
 
 if ($response === false) {
+    fwrite(STDERR, "Could not reach {$url}.\n");
+
     exit(1);
 }
 
