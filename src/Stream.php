@@ -1,0 +1,55 @@
+<?php
+
+namespace Arttecs\Murmur;
+
+use Arttecs\Murmur\Server\Topic;
+
+/**
+ * Publish events and build a subscription URL for a single topic.
+ */
+class Stream
+{
+    /**
+     * The time when the stream was created, in milliseconds.
+     */
+    protected int $createdAtMs;
+
+    /**
+     * Create a stream and capture its creation time.
+     */
+    public function __construct(protected MurmurManager $manager, protected string $topic, protected int $cursorMarginMs)
+    {
+        $this->createdAtMs = now()->getTimestampMs();
+    }
+
+    /**
+     * Publish an event to the stream topic.
+     */
+    public function emit(string $event, mixed $data = null): void
+    {
+        $this->manager->publish($this->topic, $event, $data);
+    }
+
+    /**
+     * Publish the end marker for the stream.
+     */
+    public function close(): void
+    {
+        $this->emit('murmur.end');
+    }
+
+    /**
+     * Build the subscription URL for the stream.
+     */
+    public function url(?int $ttl = null): string
+    {
+        $cursor = ($this->createdAtMs - $this->cursorMarginMs).'-0';
+        $url = $this->manager->publicUrl().'/sse?topics='.rawurlencode($this->topic).'&lastEventId='.rawurlencode($cursor);
+
+        if (Topic::isPrivate($this->topic)) {
+            $url .= '&token='.rawurlencode($this->manager->token([$this->topic], $ttl));
+        }
+
+        return $url;
+    }
+}
