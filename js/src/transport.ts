@@ -1,3 +1,4 @@
+/** The current source and the listeners registered on it. */
 type Connection = {
   source: EventSource
   open: (event: Event) => void
@@ -5,6 +6,7 @@ type Connection = {
   message: (event: Event) => void
 }
 
+/** Checks whether an event carries a stream payload. */
 function isMessage(event: Event): event is Event & { data: string; lastEventId?: unknown } {
   return typeof event === 'object' && event !== null && 'data' in event && typeof event.data === 'string'
 }

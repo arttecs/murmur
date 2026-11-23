@@ -39,9 +39,13 @@ type ClientEventArgs = {
 /** The names of events emitted by the client. */
 type ClientEvent = keyof ClientEventArgs
 
+/** A joined channel and its registered event callbacks. */
 type Subscription = { channel: Channel; listeners: ChannelListeners }
+
+/** A reusable authorization token for a specific list of private topics. */
 type CachedToken = { topics: string; token: string; expiresAt: number }
 
+/** The prefix that identifies a private topic on the server. */
 const privatePrefix = 'private-'
 
 /** Multiplexes channel subscriptions and opens independent streams. */

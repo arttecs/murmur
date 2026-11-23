@@ -2,6 +2,7 @@ import { afterEach, assert, beforeEach, expect, it, vi } from 'vitest'
 import { FakeEventSource } from './fake-event-source'
 import { client, flush, reset, wait } from './helpers'
 
+/** The initial URL for tests of an authorized stream. */
 const URL_1 = 'https://m.test/sse?topics=private-c&token=t&lastEventId=100-0'
 
 beforeEach(() => {
@@ -26,8 +27,8 @@ it('delivers literal event names with the envelope removed', async () => {
   client().stream(URL_1).on('token', d => seen.push(d))
   await flush()
   assert.isDefined(FakeEventSource.instances[0])
-  FakeEventSource.instances[0].emit('token', { topic: 'private-c', data: { text: 'Olá' } }, '101-0')
-  expect(seen).toEqual([{ text: 'Olá' }])
+  FakeEventSource.instances[0].emit('token', { topic: 'private-c', data: { text: 'Meet me at the café' } }, '101-0')
+  expect(seen).toEqual([{ text: 'Meet me at the café' }])
 })
 
 it('resumes from the last received id', async () => {

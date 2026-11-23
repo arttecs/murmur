@@ -2,7 +2,10 @@ import { vi } from 'vitest'
 import { Murmur, type MurmurOptions } from '../src/index'
 import { FakeEventSource } from './fake-event-source'
 
+/** Clients to close after the current test. */
 const clients: Murmur[] = []
+
+/** Authorization requests recorded during the current test. */
 const calls: { body: unknown }[] = []
 
 /** Creates a client with a fake EventSource and tracks it for cleanup. */

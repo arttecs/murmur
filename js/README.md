@@ -24,15 +24,24 @@ murmur.private('orders.42')
 
 `channel('news')` subscribes to `news` and `private('orders.42')` subscribes to `private-orders.42`. Each callback receives the event payload for its channel.
 
+Joining or leaving a channel reconnects with the full topic list and the shared replay cursor. When you join a channel on a live client, Murmur can replay earlier events on that channel from the shared cursor onward. Join the channels a page needs before it starts relying on events, or ignore events older than the page's current state.
+
 The default namespace is `App.Events`. The client resolves `OrderShipped` to `App\Events\OrderShipped`, converting namespace dots to backslashes. Set `namespace` to use a different namespace. Prefix an event name with a dot to use the literal name. For example, `.updated` listens for `updated`.
 
+Laravel Echo converts dots in relative class names such as `Sub.Event` to namespace separators. Murmur applies the configured namespace prefix and preserves those dots. To listen for a class in the `Sub` sub-namespace, pass `'Sub\\Event'` in JavaScript.
+
 Private channels get a token from `authEndpoint`, which defaults to `/murmur/auth`. The Laravel endpoint needs the session cookie and a CSRF token. The client sends the request with credentials and copies the URL-decoded `XSRF-TOKEN` cookie into the `X-XSRF-TOKEN` header when the cookie is readable by the page. Use a same-origin endpoint or configure CORS for credentialed requests and make both cookies available where needed.
+
+Set `fetch` to supply the Fetch API implementation used for authorization requests. Set `EventSource` to supply the constructor used for channel and stream connections, such as a polyfill. Both options default to the corresponding globals.
 
 Use `murmur.on(event, callback)` to listen for these client events. It returns a function that removes the listener.
 
 - `connected` fires when the channel connection opens.
-- `disconnected` fires when a connection attempt fails or an open connection reports an error. The client retries after `retryMs`, which defaults to 3000 milliseconds.
+- `disconnected` fires when a connection attempt fails or an open connection reports an error.
+- `unauthorized` fires with the numeric HTTP status when the authorization endpoint returns a 4xx response. The client keeps retrying so it can recover if authorization becomes available again.
 - `gap` fires when the server reports a gap in replay. Refresh any state that depends on the missing events.
+
+For both channels and streams, the first retry waits exactly `retryMs`, which defaults to 3000 milliseconds. Further consecutive failures double the base delay up to 30 seconds and add up to 25% jitter. A successful connection resets the retry sequence. Streams stop retrying after three consecutive failures.
 
 `news.stopListening('.updated')` removes the callbacks for that event. `murmur.leave('orders.42')` leaves channels joined under that name. `murmur.close()` closes the channel connection and all streams created by the client, and cancels their retries.
 

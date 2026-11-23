@@ -529,6 +529,7 @@ it('aborts pending authorization on close and ignores its late response', async 
   expect(vi.getTimerCount()).toBe(0)
 })
 
+/** Records pending authorization requests so tests can resolve them later. */
 function pendingAuthFetch() {
   const requests: { resolve: (response: Response) => void; signal?: AbortSignal | null }[] = []
   const fetch: typeof globalThis.fetch = (_input, init) => new Promise(resolve => {
