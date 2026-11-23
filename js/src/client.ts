@@ -1,0 +1,256 @@
+import { Channel, type ChannelListeners } from './channel.js'
+import { Transport } from './transport.js'
+
+/** Configures the Murmur channel client. */
+export interface MurmurOptions {
+  /** The full server-sent events endpoint. */
+  url: string
+
+  /** The endpoint that issues tokens for private topics. */
+  authEndpoint?: string
+
+  /** The dotted namespace for unqualified event names. */
+  namespace?: string
+
+  /** The delay before retrying a failed connection, in milliseconds. */
+  retryMs?: number
+
+  /** The fetch implementation used for authorization requests. */
+  fetch?: typeof fetch
+
+  /** The EventSource constructor used for streaming. */
+  EventSource?: typeof EventSource
+}
+
+type ClientEvent = 'gap' | 'connected' | 'disconnected'
+type Subscription = { channel: Channel; listeners: ChannelListeners }
+type CachedToken = { topics: string; token: string; expiresAt: number }
+
+const privatePrefix = 'private-'
+
+/** Multiplexes channel subscriptions over one resumable event stream. */
+export class Murmur {
+  /** The joined channels and their callbacks, indexed by subscription name and kind. */
+  protected readonly channels = new Map<string, Subscription>()
+
+  /** The callbacks registered for client events. */
+  protected readonly listeners = new Map<ClientEvent, Set<() => void>>()
+
+  /** The transport for the shared event stream. */
+  protected readonly transport: Transport
+
+  /** The most recent token and the private topics it authorizes. */
+  protected cachedToken?: CachedToken
+
+  /** Whether a channel change has queued a connection update. */
+  protected connectionQueued = false
+
+  /** Whether the client has been permanently closed. */
+  protected closed = false
+
+  /** Creates a client for the given streaming endpoint. */
+  public constructor(protected readonly options: MurmurOptions) {
+    this.transport = new Transport(
+      options.EventSource,
+      options.retryMs ?? 3000,
+      signal => this.connectionUrl(signal),
+      (event, data) => this.receive(event, data),
+      event => this.emit(event),
+    )
+  }
+
+  /** Joins a public channel. */
+  public channel(name: string): Channel {
+    return this.join('public:' + name, name)
+  }
+
+  /** Joins a private channel and authorizes its topic before connecting. */
+  public private(name: string): Channel {
+    return this.join('private:' + name, privatePrefix + name)
+  }
+
+  /** Leaves the subscriptions joined with the given name. */
+  public leave(name: string): void {
+    const leftPublic = this.channels.delete('public:' + name)
+    const leftPrivate = this.channels.delete('private:' + name)
+    if (leftPublic || leftPrivate) {
+      this.updateEvents()
+      this.scheduleConnection()
+    }
+  }
+
+  /** Registers a client event listener and returns a function that removes it. */
+  public on(event: ClientEvent, listener: () => void): () => void {
+    const listeners = this.listeners.get(event) ?? new Set<() => void>()
+    if (!this.closed) {
+      listeners.add(listener)
+      this.listeners.set(event, listeners)
+    }
+    return () => {
+      listeners.delete(listener)
+    }
+  }
+
+  /** Closes the stream and cancels outstanding connection attempts. */
+  public close(): void {
+    this.closed = true
+    this.transport.close()
+    for (const { listeners } of this.channels.values()) {
+      listeners.clear()
+    }
+    this.channels.clear()
+    for (const listeners of this.listeners.values()) {
+      listeners.clear()
+    }
+    this.listeners.clear()
+    this.cachedToken = undefined
+    this.updateEvents()
+  }
+
+  /** Creates a subscription or returns the existing channel for the same name and kind. */
+  protected join(key: string, topic: string): Channel {
+    const existing = this.channels.get(key)
+    if (existing) {
+      return existing.channel
+    }
+
+    const listeners: ChannelListeners = new Map()
+    const channel = new Channel(topic, this.options.namespace ?? 'App.Events', listeners, () => this.updateEvents())
+    if (!this.closed) {
+      this.channels.set(key, { channel, listeners })
+      this.scheduleConnection()
+    }
+    return channel
+  }
+
+  /** Applies channel changes together when the current tick ends. */
+  protected scheduleConnection(): void {
+    this.transport.cancelPending()
+    if (this.channels.size === 0) {
+      this.transport.close()
+      return
+    }
+    if (this.connectionQueued) {
+      return
+    }
+
+    this.connectionQueued = true
+    queueMicrotask(() => {
+      this.connectionQueued = false
+      if (!this.closed && this.channels.size > 0) {
+        this.transport.connect()
+      }
+    })
+  }
+
+  /** Synchronizes the stream's named events with the active channel listeners. */
+  protected updateEvents(): void {
+    const events = new Set<string>()
+    for (const { listeners } of this.channels.values()) {
+      for (const event of listeners.keys()) {
+        events.add(event)
+      }
+    }
+    this.transport.setEvents(events)
+  }
+
+  /** Builds the stream URL for the current subscriptions. */
+  protected async connectionUrl(signal: AbortSignal): Promise<URL> {
+    const topics = [...new Set(Array.from(this.channels.values(), ({ channel }) => channel.name))]
+    const privateTopics = topics.filter(topic => topic.startsWith(privatePrefix))
+    const url = new URL(this.options.url, globalThis.location?.href)
+    url.searchParams.set('topics', topics.join(','))
+    url.searchParams.delete('token')
+    if (privateTopics.length > 0) {
+      url.searchParams.set('token', await this.tokenFor(privateTopics, signal))
+    }
+    return url
+  }
+
+  /** Reuses a token for the same private topics or requests a fresh one. */
+  protected async tokenFor(channels: string[], signal: AbortSignal): Promise<string> {
+    const topics = JSON.stringify([...channels].sort())
+    const cached = this.cachedToken
+    if (cached?.topics === topics && cached.expiresAt - Date.now() / 1000 > 30) {
+      return cached.token
+    }
+
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    }
+    const xsrf = typeof document === 'undefined' ? undefined : document.cookie
+      .split(';')
+      .map(cookie => cookie.trim())
+      .find(cookie => cookie.startsWith('XSRF-TOKEN='))
+    if (xsrf !== undefined) {
+      headers['X-XSRF-TOKEN'] = decodeURIComponent(xsrf.slice('XSRF-TOKEN='.length))
+    }
+
+    const fetch = this.options.fetch ?? globalThis.fetch.bind(globalThis)
+    const response = await fetch(this.options.authEndpoint ?? '/murmur/auth', {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body: JSON.stringify({ channels }),
+      signal,
+    })
+    if (!response.ok) {
+      throw new Error('Murmur authorization failed')
+    }
+
+    const body: unknown = await response.json()
+    if (
+      body === null || typeof body !== 'object' ||
+      !('token' in body) || typeof body.token !== 'string' ||
+      !('expires_at' in body) || typeof body.expires_at !== 'number' || !Number.isFinite(body.expires_at)
+    ) {
+      throw new Error('Invalid Murmur authorization response')
+    }
+
+    if (!signal.aborted) {
+      this.cachedToken = { topics, token: body.token, expiresAt: body.expires_at }
+    }
+    return body.token
+  }
+
+  /** Dispatches a stream event to its channel or emits a gap notification. */
+  protected receive(event: string, data: string): void {
+    if (event === 'murmur.gap') {
+      this.emit('gap')
+      return
+    }
+
+    let envelope: unknown
+    try {
+      envelope = JSON.parse(data)
+    } catch {
+      return
+    }
+    if (
+      envelope === null || typeof envelope !== 'object' ||
+      !('topic' in envelope) || typeof envelope.topic !== 'string' ||
+      !('data' in envelope)
+    ) {
+      return
+    }
+
+    const { topic, data: payload } = envelope
+    const subscriptions = [this.channels.get('public:' + topic)]
+    if (topic.startsWith(privatePrefix)) {
+      subscriptions.push(this.channels.get('private:' + topic.slice(privatePrefix.length)))
+    }
+    for (const subscription of subscriptions) {
+      for (const callback of subscription?.listeners.get(event) ?? []) {
+        callback(payload)
+      }
+    }
+  }
+
+  /** Notifies listeners of a client event. */
+  protected emit(event: ClientEvent): void {
+    for (const listener of this.listeners.get(event) ?? []) {
+      listener()
+    }
+  }
+}
