@@ -19,6 +19,8 @@ use React\Promise\PromiseInterface;
 use React\Socket\ConnectionInterface;
 use React\Socket\SocketServer;
 
+use function React\Promise\resolve;
+
 /**
  * Serve Murmur's HTTP routes and manage the lifetime of its connections.
  */
@@ -45,6 +47,13 @@ class Server
      * @var array<string, ConnectionInterface>
      */
     protected array $clients = [];
+
+    /**
+     * The request deadlines keyed by client object ID.
+     *
+     * @var array<int, TimerInterface>
+     */
+    protected array $requestDeadlines = [];
 
     /**
      * The timer that sends periodic heartbeats.
@@ -82,12 +91,20 @@ class Server
         $http = new HttpServer($this->loop, new StreamingRequestMiddleware, function (ServerRequestInterface $request) use ($sse, $publish): ResponseInterface|PromiseInterface {
             $route = $request->getMethod().' '.$request->getUri()->getPath();
 
+            $client = $this->clientFor($request);
+
             if ($route === 'POST /publish' && $publish !== null) {
-                return $publish($request);
+                return resolve($publish($request))->then(function (ResponseInterface $response) use ($client): ResponseInterface {
+                    $this->cancelRequestDeadline($client);
+
+                    return $response->withHeader('Connection', 'close');
+                });
             }
 
+            $this->cancelRequestDeadline($client);
+
             $response = match ($route) {
-                'GET /sse' => $sse($request, $this->clientFor($request)),
+                'GET /sse' => $sse($request, $client),
                 'GET /health' => new Response(200, ['Content-Type' => 'application/json'], json_encode([
                     'status' => 'ok',
                     'connections' => $this->hub->connectionCount(),
@@ -95,16 +112,26 @@ class Server
                 default => new Response(404),
             };
 
-            return $request->getBody()->getSize() === 0
-                ? $response
-                : $response->withHeader('Connection', 'close');
+            return $response->withHeader('Connection', 'close');
         });
 
         $this->socket = new SocketServer($this->config->host.':'.$this->config->port, [], $this->loop);
         $this->socket->on('connection', function (ConnectionInterface $client): void {
+            if (count($this->clients) >= $this->config->maxSockets) {
+                $client->close();
+
+                return;
+            }
+
             $key = $client->getLocalAddress().' '.$client->getRemoteAddress();
             $this->clients[$key] = $client;
+            $this->requestDeadlines[spl_object_id($client)] = $this->loop->addTimer(
+                $this->config->requestTimeoutSeconds,
+                $client->close(...),
+            );
             $client->once('close', function () use ($key, $client): void {
+                $this->cancelRequestDeadline($client);
+
                 if (($this->clients[$key] ?? null) === $client) {
                     unset($this->clients[$key]);
                 }
@@ -114,6 +141,19 @@ class Server
         $http->listen($this->socket);
         $this->log->subscribe($this->hub->dispatch(...));
         $this->heartbeat = $this->loop->addPeriodicTimer($this->config->heartbeatSeconds, $this->hub->heartbeat(...));
+    }
+
+    /**
+     * Cancel the deadline after a request completes or its socket closes.
+     */
+    protected function cancelRequestDeadline(ConnectionInterface $client): void
+    {
+        $id = spl_object_id($client);
+
+        if (isset($this->requestDeadlines[$id])) {
+            $this->loop->cancelTimer($this->requestDeadlines[$id]);
+            unset($this->requestDeadlines[$id]);
+        }
     }
 
     /**

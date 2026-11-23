@@ -46,6 +46,7 @@ class MurmurServiceProvider extends ServiceProvider
                     $config->get('murmur.redis.connection'),
                     static::fullStreamKey(),
                     $config->get('murmur.server.log_size'),
+                    $config->get('murmur.server.max_payload_bytes'),
                 ),
                 default => throw new InvalidArgumentException("Unsupported Murmur publisher driver [{$driver}]."),
             };

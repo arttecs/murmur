@@ -18,7 +18,7 @@ interface EventLog
      * @param  list<string>  $topics
      * @return PromiseInterface<Replay>
      */
-    public function since(EventId $after, array $topics): PromiseInterface;
+    public function since(EventId $after, array $topics, int $limit): PromiseInterface;
 
     /**
      * Register a listener that receives events with their assigned identifiers.

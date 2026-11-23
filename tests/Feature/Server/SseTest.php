@@ -184,3 +184,29 @@ it('echoes an allowed origin', function () {
     expect($r->header('Access-Control-Allow-Origin'))->toBe('https://app.test');
     expect($r->header('Vary'))->toBe('Origin');
 });
+
+it('signals a gap for a replay above the byte budget and continues live', function () {
+    $h = ServerHarness::start();
+    $first = $h->log->append(new Event('news', 'first'));
+
+    for ($i = 0; $i < 900; $i++) {
+        $h->log->append(new Event('news', 'history', str_repeat('x', 1200)));
+    }
+
+    $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => (string) $first->id]);
+    expect($r->next()['retry'])->toBe('3000');
+    expect($r->next()['event'])->toBe('murmur.gap');
+    $h->publish('news', 'live');
+    expect($r->next()['event'])->toBe('live');
+});
+
+it('continues serving sse after the request deadline', function () {
+    $h = ServerHarness::start(['requestTimeoutSeconds' => 0.1]);
+    $r = SseReader::open($h->url('/sse?topics=news'));
+    expect($r->next()['retry'])->toBe('3000');
+
+    delay(0.15);
+
+    expect($h->publish('news', 'live')->getStatusCode())->toBe(202);
+    expect($r->next()['event'])->toBe('live');
+});

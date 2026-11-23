@@ -53,7 +53,7 @@ it('replays only later events of the requested topics', function () {
     $first = $log->append(new Event('news', 'a'));
     $log->append(new Event('other', 'b'));
     $third = $log->append(new Event('news', 'c'));
-    $replay = await($log->since($first->id, ['news']));
+    $replay = await($log->since($first->id, ['news'], 1000));
     expect($replay->gap)->toBeFalse();
     expect(array_map(fn (Event $e) => (string) $e->id, $replay->events))->toBe([(string) $third->id]);
 });
@@ -64,19 +64,19 @@ it('reports a gap when the cursor is older than the evicted history', function (
     $log->append(new Event('news', 'b'));
     $log->append(new Event('news', 'c'));
     $log->append(new Event('news', 'd'));
-    expect(await($log->since($first->id, ['news']))->gap)->toBeTrue();
+    expect(await($log->since($first->id, ['news'], 1000))->gap)->toBeTrue();
 });
 
 it('reports a gap for a cursor from before the log was created', function () {
     $log = logAt(start: 5000);
-    expect(await($log->since(new EventId(10, 0), ['news']))->gap)->toBeTrue();
+    expect(await($log->since(new EventId(10, 0), ['news'], 1000))->gap)->toBeTrue();
 });
 
 it('reports no gap for a cursor at the last evicted event', function () {
     $log = logAt(capacity: 1);
     $first = $log->append(new Event('news', 'a'));
     $second = $log->append(new Event('news', 'b'));
-    $replay = await($log->since($first->id, ['news']));
+    $replay = await($log->since($first->id, ['news'], 1000));
     expect($replay->gap)->toBeFalse();
     expect($replay->events)->toHaveCount(1);
 });
@@ -87,7 +87,7 @@ it('replays in order after the buffer wraps around', function () {
     $second = $log->append(new Event('news', 'b'));
     $third = $log->append(new Event('news', 'c'));
 
-    $replay = await($log->since($first->id, ['news']));
+    $replay = await($log->since($first->id, ['news'], 1000));
 
     expect($replay->gap)->toBeFalse();
     expect(array_map(fn (Event $e) => (string) $e->id, $replay->events))->toBe([(string) $second->id, (string) $third->id]);
@@ -103,9 +103,22 @@ it('drops listeners and keeps the history when closed', function () {
     $stored = $log->append(new Event('news', 'a'));
 
     expect($calls)->toBe(0);
-    expect(await($log->since(new EventId(1000, 0), ['news']))->events)->toBe([$stored]);
+    expect(await($log->since(new EventId(1000, 0), ['news'], 1000))->events)->toBe([$stored]);
 });
 
 it('rejects a capacity below one', function (int $capacity) {
     new MemoryEventLog($capacity);
 })->with([0, -1])->throws(InvalidArgumentException::class);
+
+it('returns a gap without events when the matching replay exceeds the limit', function () {
+    $log = logAt();
+    $first = $log->append(new Event('news', 'first'));
+    $second = $log->append(new Event('news', 'second'));
+    $log->append(new Event('other', 'ignored'));
+    $last = $log->append(new Event('news', 'last'));
+
+    $limited = await($log->since($first->id, ['news'], 1));
+    expect($limited->gap)->toBeTrue()->and($limited->events)->toBe([]);
+    $replay = await($log->since($first->id, ['news'], 2));
+    expect($replay->gap)->toBeFalse()->and($replay->events)->toBe([$second, $last]);
+});

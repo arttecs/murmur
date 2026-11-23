@@ -81,3 +81,18 @@ it('reports a redis error reply as a publish failure', function () {
 
     $this->fail('The publish did not fail.');
 });
+
+it('rejects an encoded redis payload above the configured limit', function () {
+    [$client, $key, $url] = redisStream();
+    config([
+        'murmur.driver' => 'redis',
+        'murmur.redis.stream' => $key,
+        'murmur.server.max_payload_bytes' => 8,
+        'database.redis.default' => ['url' => $url],
+        'database.redis.options.prefix' => '',
+    ]);
+
+    Murmur::publish('news', 'fits', '123456');
+    expect(fn () => Murmur::publish('news', 'oversized', '1234567'))->toThrow(PublishFailed::class);
+    expect(await($client->xlen($key)))->toBe(1);
+});

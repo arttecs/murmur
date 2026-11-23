@@ -50,3 +50,13 @@ it('fixes the start cursor when the stream is created', function () {
 
     expect($q['lastEventId'])->toBe('1732360004000-0');
 });
+
+it('rejects reserved event names when publishing or emitting application events', function () {
+    $publisher = fakePublisher();
+    $stream = Murmur::stream('progress.9');
+
+    expect(fn () => Murmur::publish('progress.9', 'murmur.gap'))
+        ->toThrow(InvalidArgumentException::class, 'Event names starting with "murmur." are reserved.');
+    expect(fn () => $stream->emit('murmur.end'))->toThrow(InvalidArgumentException::class);
+    expect($publisher->events)->toBe([]);
+});

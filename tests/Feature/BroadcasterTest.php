@@ -45,3 +45,11 @@ it('publishes nothing when one of the channels is a presence channel', function 
         ->toThrow(PresenceNotSupported::class);
     expect($publisher->events)->toBe([]);
 });
+
+it('rejects reserved event names when broadcasting', function () {
+    $publisher = fakePublisher();
+
+    expect(fn () => Broadcast::connection('murmur')->broadcast(['news'], 'murmur.end'))
+        ->toThrow(InvalidArgumentException::class, 'Event names starting with "murmur." are reserved.');
+    expect($publisher->events)->toBe([]);
+});

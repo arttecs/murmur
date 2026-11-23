@@ -38,6 +38,10 @@ class MurmurBroadcaster extends Broadcaster
      */
     public function broadcast(array $channels, $event, array $payload = []): void
     {
+        if (str_starts_with($event, 'murmur.')) {
+            throw new InvalidArgumentException('Event names starting with "murmur." are reserved.');
+        }
+
         $topics = $this->formatChannels($channels);
 
         foreach ($topics as $topic) {
@@ -63,16 +67,18 @@ class MurmurBroadcaster extends Broadcaster
      */
     public function authorizeChannels(Request $request, array $channels): array
     {
-        if ($request->user() === null) {
-            throw new AccessDeniedHttpException;
-        }
-
         foreach ($channels as $channel) {
             if (! is_string($channel)) {
                 throw new AccessDeniedHttpException;
             }
 
-            $this->verifyUserCanAccessChannel($request, Str::chopStart($channel, 'private-'));
+            $channel = Str::chopStart($channel, 'private-');
+
+            if ($this->retrieveUser($request, $channel) === null) {
+                throw new AccessDeniedHttpException;
+            }
+
+            $this->verifyUserCanAccessChannel($request, $channel);
         }
 
         $token = $this->manager->token($channels);

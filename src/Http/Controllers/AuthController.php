@@ -22,10 +22,6 @@ class AuthController
      */
     public function __invoke(Request $request, BroadcastManager $broadcast): JsonResponse
     {
-        if ($request->user() === null) {
-            throw new AccessDeniedHttpException;
-        }
-
         $validator = Validator::make($request->all(), [
             'channels' => ['required', 'array', 'list', 'max:'.config('murmur.server.max_topics_per_connection')],
             'channels.*' => ['required', 'string', 'starts_with:private-', function (string $attribute, mixed $value, Closure $fail): void {
@@ -34,6 +30,12 @@ class AuthController
                 }
             }],
         ]);
+
+        $validator->after(function (\Illuminate\Validation\Validator $validator): void {
+            if ($validator->errors()->isEmpty() && array_sum(array_map(strlen(...), $validator->getData()['channels'])) > 2048) {
+                $validator->errors()->add('channels', 'The channel names must total at most 2048 bytes.');
+            }
+        });
 
         if ($validator->fails()) {
             return response()->json([

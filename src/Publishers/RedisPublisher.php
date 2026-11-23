@@ -24,6 +24,7 @@ class RedisPublisher implements Publisher
         protected string $connection,
         protected string $stream,
         protected int $maxLength,
+        protected int $maxPayloadBytes,
     ) {}
 
     /**
@@ -35,6 +36,11 @@ class RedisPublisher implements Publisher
     {
         try {
             $data = json_encode($event->data, JSON_THROW_ON_ERROR);
+
+            if (strlen($data) > $this->maxPayloadBytes) {
+                throw new PublishFailed('The Redis event payload exceeds the configured size limit.');
+            }
+
             $connection = $this->redis->connection($this->connection);
             $id = $connection->executeRaw([
                 'XADD', $this->stream, 'MAXLEN', '~', $this->maxLength, '*',
@@ -46,6 +52,8 @@ class RedisPublisher implements Publisher
 
                 throw new RuntimeException(is_string($error) ? $error : 'Redis did not return a stream entry ID.');
             }
+        } catch (PublishFailed $exception) {
+            throw $exception;
         } catch (Throwable $exception) {
             throw new PublishFailed('The publish request to Redis failed.', 0, $exception);
         }

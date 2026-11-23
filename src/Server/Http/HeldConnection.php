@@ -80,18 +80,35 @@ class HeldConnection extends Connection
      *
      * @throws \JsonException
      */
-    public function release(array $replay = []): void
+    public function release(array $replay = [], bool $gap = false): void
     {
         if ($this->held === null) {
             return;
         }
 
+        $frames = [];
+        $bytes = 0;
+
         foreach ($replay as $event) {
-            if ($this->closed) {
-                return;
+            $frame = Frame::event($event);
+            $bytes += strlen($frame);
+
+            if ($bytes > $this->maxBufferBytes / 2) {
+                $gap = true;
+                $frames = [];
+
+                break;
             }
 
-            $this->writeEvent($event);
+            $frames[] = [$event, $frame];
+        }
+
+        if ($gap) {
+            $this->sendImmediately(Frame::gap());
+        }
+
+        foreach ($frames as [$event, $frame]) {
+            $this->writeEvent($event, $frame);
         }
 
         for ($index = 0; isset($this->held[$index]); $index++) {
@@ -121,13 +138,13 @@ class HeldConnection extends Connection
      *
      * @throws \JsonException
      */
-    protected function writeEvent(Event $event): void
+    protected function writeEvent(Event $event, ?string $frame = null): void
     {
         if ($this->closed || $this->hasWritten($event)) {
             return;
         }
 
-        $frame = Frame::event($event);
+        $frame ??= Frame::event($event);
         $this->lastWrittenId = $event->id ?? $this->lastWrittenId;
         parent::send($frame);
     }

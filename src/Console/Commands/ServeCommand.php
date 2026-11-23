@@ -89,6 +89,9 @@ class ServeCommand extends Command
             maxBufferBytes: (int) config('murmur.server.max_buffer_bytes'),
             allowedOrigins: config('murmur.server.allowed_origins'),
             publishEnabled: config('murmur.driver') !== 'redis',
+            maxSockets: (int) config('murmur.server.max_sockets', 1000),
+            requestTimeoutSeconds: (float) config('murmur.server.request_timeout', 10.0),
+            maxReplayEvents: (int) config('murmur.server.max_replay_events', 1000),
         );
     }
 
@@ -103,7 +106,12 @@ class ServeCommand extends Command
 
         return match ($driver) {
             'http' => new MemoryEventLog((int) config('murmur.server.log_size')),
-            'redis' => new RedisEventLog(config('murmur.redis.url'), MurmurServiceProvider::fullStreamKey(), config('murmur.server.log_size')),
+            'redis' => new RedisEventLog(
+                config('murmur.redis.url'),
+                MurmurServiceProvider::fullStreamKey(),
+                config('murmur.server.log_size'),
+                maxPayloadBytes: config('murmur.server.max_payload_bytes'),
+            ),
             default => throw new InvalidArgumentException("Unsupported Murmur server driver [{$driver}]."),
         };
     }

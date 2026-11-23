@@ -44,7 +44,7 @@ it('builds an in-memory log sized by the config for the http driver', function (
     $log->append(new Event('news', 'b'));
     $log->append(new Event('news', 'c'));
 
-    expect(await($log->since($first->id, ['news']))->gap)->toBeTrue();
+    expect(await($log->since($first->id, ['news'], 1000))->gap)->toBeTrue();
 });
 
 it('rejects an unknown log driver', function () {
@@ -68,7 +68,7 @@ it('uses the configured redis stream and log size for the redis driver', functio
 
     try {
         expect($log)->toBeInstanceOf(RedisEventLog::class);
-        $replay = await($log->since(EventId::tryParse($first), ['news']));
+        $replay = await($log->since(EventId::tryParse($first), ['news'], 1000));
         expect($replay->gap)->toBeTrue();
         expect(array_map(fn (Event $event) => (string) $event->id, $replay->events))->toBe([$id]);
     } finally {

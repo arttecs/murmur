@@ -97,10 +97,10 @@ function redisStream(): array
  *
  * @return array{RedisEventLog, string}
  */
-function redisLog(int $maxLength = 10000, ?LoopInterface $loop = null): array
+function redisLog(int $maxLength = 10000, ?LoopInterface $loop = null, int $maxPayloadBytes = 65536): array
 {
     [, $key, $url] = redisStream();
-    $log = new RedisEventLog($url, $key, $maxLength, $loop);
+    $log = new RedisEventLog($url, $key, $maxLength, $loop, maxPayloadBytes: $maxPayloadBytes);
     test()->target->redisFixtures[$key]['log'] = $log;
 
     return [$log, $key];

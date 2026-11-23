@@ -39,7 +39,7 @@ it('replays later entries of the requested topics', function () {
     $first = xadd($key, 'news', 'a');
     xadd($key, 'other', 'b');
     $third = xadd($key, 'news', 'c');
-    $replay = await($log->since(EventId::tryParse($first), ['news']));
+    $replay = await($log->since(EventId::tryParse($first), ['news'], 1000));
     expect($replay->gap)->toBeFalse();
     expect(array_map(fn (Event $e) => (string) $e->id, $replay->events))->toBe([$third]);
 });
@@ -47,15 +47,15 @@ it('replays later entries of the requested topics', function () {
 it('reports a gap only after the stream has been trimmed', function () {
     [$log, $key] = redisLog(maxLength: 2);
     xadd($key, 'news', 'a');
-    expect(await($log->since(new EventId(1, 0), ['news']))->gap)->toBeFalse();
+    expect(await($log->since(new EventId(1, 0), ['news'], 1000))->gap)->toBeFalse();
     xadd($key, 'news', 'b', maxLength: 2);
     xadd($key, 'news', 'c', maxLength: 2);
-    expect(await($log->since(new EventId(1, 0), ['news']))->gap)->toBeTrue();
+    expect(await($log->since(new EventId(1, 0), ['news'], 1000))->gap)->toBeTrue();
 });
 
 it('reports no gap on an empty stream', function () {
     [$log] = redisLog();
-    $replay = await($log->since(new EventId(1, 0), ['news']));
+    $replay = await($log->since(new EventId(1, 0), ['news'], 1000));
     expect($replay->gap)->toBeFalse();
     expect($replay->events)->toBe([]);
 });
@@ -65,7 +65,7 @@ it('reports a gap when the oldest entry has an unparseable id', function () {
     $client = $this->redisFixtures[$key]['client'];
     await($client->xadd($key, '1000000000000000000-0', 'topic', 'news', 'name', 'oversized', 'data', 'null'));
 
-    expect(await($log->since(new EventId(1, 0), ['news']))->gap)->toBeTrue();
+    expect(await($log->since(new EventId(1, 0), ['news'], 1000))->gap)->toBeTrue();
 });
 
 it('rejects a redis capacity below one', function (int $capacity) {
@@ -117,7 +117,7 @@ it('skips malformed entries and delivers valid entries that follow them', functi
 
     await(timeout($delivered->promise(), 2.0));
     expect($seen)->toBe([$id]);
-    $replay = await($log->since(new EventId(0, 0), ['news', 'invalid topic']));
+    $replay = await($log->since(new EventId(0, 0), ['news', 'invalid topic'], 1000));
     expect(array_map(fn (Event $event) => (string) $event->id, $replay->events))->toBe([$id]);
 });
 
@@ -126,7 +126,7 @@ it('rejects the replay promise when a redis command fails', function () {
     $client = $this->redisFixtures[$key]['client'];
     await($client->set($key, 'not a stream'));
 
-    $replay = $log->since(new EventId(0, 0), ['news']);
+    $replay = $log->since(new EventId(0, 0), ['news'], 1000);
 
     expect($replay)->toBeInstanceOf(PromiseInterface::class);
     expect(fn () => await($replay))->toThrow(Exception::class, 'WRONGTYPE');
@@ -209,7 +209,7 @@ it('rejects replay requests made after closing', function () {
     [$log] = redisLog();
     $log->close();
 
-    $replay = $log->since(new EventId(0, 0), ['news']);
+    $replay = $log->since(new EventId(0, 0), ['news'], 1000);
 
     expect($replay)->toBeInstanceOf(PromiseInterface::class);
     expect(fn () => await($replay))->toThrow(RuntimeException::class, 'Connection closed');
@@ -260,7 +260,7 @@ it('cleans later redis fixtures even if deleting an earlier fixture fails', func
 
         expect(await($observer->exists($key)))->toBe(0);
         expect(fn () => await($client->ping()))->toThrow(RuntimeException::class, 'Connection closed');
-        expect(fn () => await($log->since(new EventId(0, 0), ['news'])))->toThrow(RuntimeException::class, 'Connection closed');
+        expect(fn () => await($log->since(new EventId(0, 0), ['news'], 1000)))->toThrow(RuntimeException::class, 'Connection closed');
     } finally {
         $log->close();
         $client->close();
@@ -325,4 +325,48 @@ it('continues delivering a redis batch and subsequent reads after a listener thr
         ini_set('error_log', (string) $previousErrorLog);
         unlink($errorLog);
     }
+});
+
+it('pages through interleaved redis topics and limits matching replay events', function () {
+    [$log, $key] = redisLog();
+    $client = $this->redisFixtures[$key]['client'];
+    $first = xadd($key, 'news', 'first');
+    $writes = [];
+
+    for ($i = 1; $i <= 502; $i++) {
+        $topic = in_array($i, [2, 502], true) ? 'news' : 'other';
+        $writes[] = $client->xadd($key, '*', 'topic', $topic, 'name', "entry-{$i}", 'data', 'null');
+    }
+
+    await(React\Promise\all($writes));
+    $limited = await($log->since(EventId::tryParse($first), ['news'], 1));
+    expect($limited->gap)->toBeTrue()->and($limited->events)->toBe([]);
+    $replay = await($log->since(EventId::tryParse($first), ['news'], 2));
+    expect($replay->gap)->toBeFalse();
+    expect(array_map(fn (Event $event) => $event->name, $replay->events))->toBe(['entry-2', 'entry-502']);
+});
+
+it('skips oversized redis payloads in live delivery and replay', function () {
+    [$log, $key] = redisLog(maxPayloadBytes: 8);
+    $client = $this->redisFixtures[$key]['client'];
+    $first = xadd($key, 'news', 'first');
+    $readerId = redisReaderId($log);
+    $seen = [];
+    $delivered = new Deferred;
+
+    $log->subscribe(function (Event $event) use (&$seen, $delivered): void {
+        $seen[] = $event->name;
+
+        if ($event->name === 'fits') {
+            $delivered->resolve(null);
+        }
+    });
+    waitForRedisReader($client, $readerId);
+    xadd($key, 'news', 'oversized', '1234567');
+    xadd($key, 'news', 'fits', '123456');
+    await(timeout($delivered->promise(), 2.0));
+
+    expect($seen)->toBe(['fits']);
+    $replay = await($log->since(EventId::tryParse($first), ['news'], 10));
+    expect(array_map(fn (Event $event) => $event->name, $replay->events))->toBe(['fits']);
 });

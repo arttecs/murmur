@@ -129,12 +129,8 @@ class SseHandler
             }
 
             try {
-                $replay = $this->log->since($cursor, $topics)->then(function (Replay $replay) use ($connection): void {
-                    if ($replay->gap) {
-                        $connection->sendImmediately(Frame::gap());
-                    }
-
-                    $connection->release($replay->events);
+                $replay = $this->log->since($cursor, $topics, $this->config->maxReplayEvents)->then(function (Replay $replay) use ($connection): void {
+                    $connection->release($replay->events, $replay->gap);
                 });
             } catch (Throwable) {
                 $endStream();

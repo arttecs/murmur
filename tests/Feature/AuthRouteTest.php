@@ -3,6 +3,7 @@
 use Arttecs\Murmur\Server\Auth\TokenVerifier;
 use Arttecs\Murmur\Tests\Fixtures\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Broadcast;
 
 beforeEach(function () {
@@ -49,8 +50,8 @@ it('validates the channel list', function (array $channels) {
     'too many' => [array_map(fn (int $i) => "private-orders.{$i}", range(1, 51))],
 ]);
 
-it('denies guests before validating the channel list', function () {
-    $this->postJson('/murmur/auth', ['channels' => []])->assertForbidden();
+it('validates an invalid list before authorizing a guest', function () {
+    $this->postJson('/murmur/auth', ['channels' => []])->assertUnprocessable();
 });
 
 it('issues one token covering several channels', function () {
@@ -71,4 +72,37 @@ it('authorizes a single channel through the broadcaster auth method', function (
     $result = Broadcast::connection('murmur')->auth($request);
 
     expect((new TokenVerifier('test-secret-with-at-least-32-bytes'))->verify($result['token'])->topics)->toBe(['private-orders.1']);
+});
+
+it('requires the channel guard even when the default guard has a user', function () {
+    config(['auth.guards.api' => ['driver' => 'murmur-request']]);
+    Auth::viaRequest('murmur-request', fn () => null);
+    Broadcast::channel('orders.{id}', fn () => true, ['guards' => ['api']]);
+
+    $this->actingAs(new User(['id' => 9]))
+        ->postJson('/murmur/auth', ['channels' => ['private-orders.1']])
+        ->assertForbidden();
+});
+
+it('authorizes with the channel guard when the default guard has no user', function () {
+    config(['auth.guards.api' => ['driver' => 'murmur-request']]);
+    Auth::viaRequest('murmur-request', fn () => new User(['id' => 9]));
+    Broadcast::channel('orders.{id}', fn (User $user) => $user->id === 9, ['guards' => ['api']]);
+
+    $this->postJson('/murmur/auth', ['channels' => ['private-orders.1']])->assertOk();
+});
+
+it('limits the total channel name size in bytes', function () {
+    Broadcast::channel('orders.{id}', fn () => true);
+    $channels = array_map(fn (int $i) => "private-orders.{$i}".str_repeat('x', 180 - strlen((string) $i)), range(1, 10));
+    $channels[] = 'private-orders.'.str_repeat('é', 41).'x';
+    expect(array_sum(array_map(strlen(...), $channels)))->toBe(2048);
+
+    $this->actingAs(new User(['id' => 9]));
+    $this->postJson('/murmur/auth', ['channels' => $channels])->assertOk();
+
+    $channels[10] .= 'x';
+    $this->postJson('/murmur/auth', ['channels' => $channels])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('channels');
 });

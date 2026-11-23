@@ -2,7 +2,9 @@
 
 namespace Arttecs\Murmur;
 
+use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Exceptions\PublishFailed;
+use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\Topic;
 
 /**
@@ -18,8 +20,12 @@ class Stream
     /**
      * Create a stream and capture its creation time.
      */
-    public function __construct(protected MurmurManager $manager, protected string $topic, protected int $cursorMarginMs)
-    {
+    public function __construct(
+        protected MurmurManager $manager,
+        protected string $topic,
+        protected int $cursorMarginMs,
+        protected Publisher $publisher,
+    ) {
         $this->createdAtMs = now()->getTimestampMs();
     }
 
@@ -41,7 +47,7 @@ class Stream
      */
     public function close(): void
     {
-        $this->emit('murmur.end');
+        $this->publisher->publish(new Event($this->topic, 'murmur.end'));
     }
 
     /**

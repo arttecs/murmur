@@ -37,6 +37,10 @@ class MurmurManager
      */
     public function publish(string $topic, string $event, mixed $data = null): void
     {
+        if (str_starts_with($event, 'murmur.')) {
+            throw new InvalidArgumentException('Event names starting with "murmur." are reserved.');
+        }
+
         $this->publisher->publish(new Event($topic, $event, $data));
     }
 
@@ -45,7 +49,7 @@ class MurmurManager
      */
     public function stream(string $topic): Stream
     {
-        return new Stream($this, $topic, $this->config->get('murmur.stream_cursor_margin_ms'));
+        return new Stream($this, $topic, $this->config->get('murmur.stream_cursor_margin_ms'), $this->publisher);
     }
 
     /**

@@ -17,8 +17,6 @@ use React\EventLoop\TimerInterface;
 use React\Promise\PromiseInterface;
 use Throwable;
 
-use function React\Promise\all;
-
 /**
  * Replay and subscribe to events stored in a Redis stream.
  */
@@ -68,8 +66,13 @@ class RedisEventLog implements EventLog
      *
      * @throws InvalidArgumentException
      */
-    public function __construct(string $redisUrl, protected string $streamKey, protected int $maxLength = 10000, ?LoopInterface $loop = null)
-    {
+    public function __construct(
+        string $redisUrl,
+        protected string $streamKey,
+        protected int $maxLength = 10000,
+        ?LoopInterface $loop = null,
+        protected int $maxPayloadBytes = 65536,
+    ) {
         if ($maxLength < 1) {
             throw new InvalidArgumentException('The event log capacity must be at least 1.');
         }
@@ -90,27 +93,50 @@ class RedisEventLog implements EventLog
      * @param  list<string>  $topics
      * @return PromiseInterface<Replay>
      */
-    public function since(EventId $after, array $topics): PromiseInterface
+    public function since(EventId $after, array $topics, int $limit): PromiseInterface
     {
-        return all([
-            $this->replay->xrange($this->streamKey, '('.$after, '+'),
-            $this->replay->xrange($this->streamKey, '-', '+', 'COUNT', 1),
-            $this->replay->xlen($this->streamKey),
-        ])->then(function (array $results) use ($after, $topics): Replay {
-            [$entries, $oldest, $length] = $results;
-            $first = isset($oldest[0]) ? EventId::tryParse($oldest[0][0]) : null;
-            $gap = isset($oldest[0]) && ($first === null || ($length >= $this->maxLength && $after->compare($first) < 0));
-            $events = [];
+        return $this->readReplayPage((string) $after, $topics, $limit)->then(function (?array $events) use ($after): PromiseInterface|Replay {
+            if ($events === null) {
+                return new Replay(true, []);
+            }
 
+            return $this->replay->xrange($this->streamKey, '-', '+', 'COUNT', 1)->then(function (array $oldest) use ($after, $events): PromiseInterface {
+                $first = isset($oldest[0]) ? EventId::tryParse($oldest[0][0]) : null;
+
+                return $this->replay->xlen($this->streamKey)->then(function (int $length) use ($after, $events, $oldest, $first): Replay {
+                    $gap = isset($oldest[0]) && ($first === null || ($length >= $this->maxLength && $after->compare($first) < 0));
+
+                    return new Replay($gap, $events);
+                });
+            });
+        });
+    }
+
+    /**
+     * Read at most one page of Redis entries at a time and keep only matching events.
+     *
+     * @param  list<string>  $topics
+     * @param  list<Event>  $events
+     * @return PromiseInterface<list<Event>|null>
+     */
+    protected function readReplayPage(string $cursor, array $topics, int $limit, array $events = []): PromiseInterface
+    {
+        return $this->replay->xrange($this->streamKey, '('.$cursor, '+', 'COUNT', 500)->then(function (array $entries) use ($topics, $limit, $events): PromiseInterface|array|null {
             foreach ($entries as $entry) {
                 $event = $this->decode($entry);
 
                 if ($event !== null && in_array($event->topic, $topics, true)) {
+                    if (count($events) === $limit) {
+                        return null;
+                    }
+
                     $events[] = $event;
                 }
             }
 
-            return new Replay($gap, $events);
+            return count($entries) === 500
+                ? $this->readReplayPage($entries[499][0], $topics, $limit, $events)
+                : $events;
         });
     }
 
@@ -229,7 +255,7 @@ class RedisEventLog implements EventLog
             $values[$fields[$offset]] = $fields[$offset + 1];
         }
 
-        if ($id === null || ! isset($values['topic'], $values['name'], $values['data'])) {
+        if ($id === null || ! isset($values['topic'], $values['name'], $values['data']) || strlen($values['data']) > $this->maxPayloadBytes) {
             return null;
         }
 

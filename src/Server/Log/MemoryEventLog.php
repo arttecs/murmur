@@ -96,7 +96,7 @@ class MemoryEventLog implements EventLog
      * @param  list<string>  $topics
      * @return PromiseInterface<Replay>
      */
-    public function since(EventId $after, array $topics): PromiseInterface
+    public function since(EventId $after, array $topics, int $limit): PromiseInterface
     {
         $events = [];
         $count = count($this->events);
@@ -106,6 +106,10 @@ class MemoryEventLog implements EventLog
             $event = $this->events[($oldest + $offset) % $this->capacity];
 
             if ($event->id->compare($after) > 0 && in_array($event->topic, $topics, true)) {
+                if (count($events) === $limit) {
+                    return resolve(new Replay(true, []));
+                }
+
                 $events[] = $event;
             }
         }

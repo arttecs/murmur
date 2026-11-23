@@ -75,11 +75,19 @@ class ServerHarness
     }
 
     /**
+     * Connect a raw TCP client to the server.
+     */
+    public function connect(): ConnectionInterface
+    {
+        return await((new Connector)->connect(substr($this->server->address(), strlen('http://'))));
+    }
+
+    /**
      * Open a raw subscription without reading its response.
      */
     public function subscribeWithoutReading(string $path): ConnectionInterface
     {
-        $client = await((new Connector)->connect(substr($this->server->address(), strlen('http://'))));
+        $client = $this->connect();
         $client->pause();
         $client->write("GET {$path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
 
