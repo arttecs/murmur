@@ -5,6 +5,7 @@ namespace Arttecs\Murmur\Server\Log;
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
+use Arttecs\Murmur\Server\Log\Concerns\ReportsListenerErrors;
 use Arttecs\Murmur\Server\Replay;
 use Clue\React\Redis\Client;
 use Clue\React\Redis\Factory;
@@ -23,6 +24,8 @@ use function React\Promise\all;
  */
 class RedisEventLog implements EventLog
 {
+    use ReportsListenerErrors;
+
     /**
      * The connection reserved for blocking stream reads.
      */
@@ -182,7 +185,7 @@ class RedisEventLog implements EventLog
                         try {
                             $listener($event);
                         } catch (Throwable $error) {
-                            $this->loop->futureTick(fn () => throw $error);
+                            $this->reportListenerError($error);
                         }
 
                         if ($this->closed) {

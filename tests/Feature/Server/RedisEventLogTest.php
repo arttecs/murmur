@@ -265,8 +265,9 @@ it('continues delivering a redis batch and subsequent reads after a listener thr
     $client = (new Factory($loop))->createLazyClient(redisTestUrl());
     $error = new RuntimeException('The first Redis listener failed.');
     $seen = [];
-    $loopErrors = [];
     $unhandled = [];
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previousErrorLog = ini_set('error_log', $errorLog);
     $previousHandler = set_rejection_handler(function (Throwable $reason) use (&$unhandled): void {
         $unhandled[] = $reason;
     });
@@ -303,24 +304,17 @@ it('continues delivering a redis batch and subsequent reads after a listener thr
         })();
         $run->then($loop->stop(...), $loop->stop(...));
 
-        try {
-            $loop->run();
-        } catch (RuntimeException $caught) {
-            if ($caught !== $error) {
-                throw $caught;
-            }
-
-            $loopErrors[] = $caught;
-            $loop->run();
-        }
+        $loop->run();
 
         expect($seen)->toBe(['first', 'second', 'later']);
-        expect($loopErrors)->toBe([$error]);
+        expect(file_get_contents($errorLog))->toContain('The first Redis listener failed.');
         expect($unhandled)->toBe([]);
         await($run);
     } finally {
         $log->close();
         $client->close();
         set_rejection_handler($previousHandler);
+        ini_set('error_log', (string) $previousErrorLog);
+        unlink($errorLog);
     }
 });

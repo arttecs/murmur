@@ -6,9 +6,9 @@ use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\EventIdGenerator;
+use Arttecs\Murmur\Server\Log\Concerns\ReportsListenerErrors;
 use Arttecs\Murmur\Server\Replay;
 use InvalidArgumentException;
-use React\EventLoop\Loop;
 use React\Promise\PromiseInterface;
 use Throwable;
 
@@ -19,6 +19,8 @@ use function React\Promise\resolve;
  */
 class MemoryEventLog implements EventLog
 {
+    use ReportsListenerErrors;
+
     /**
      * The generator used to assign event identifiers.
      */
@@ -81,7 +83,7 @@ class MemoryEventLog implements EventLog
             try {
                 $listener($event);
             } catch (Throwable $error) {
-                Loop::futureTick(fn () => throw $error);
+                $this->reportListenerError($error);
             }
         }
 
