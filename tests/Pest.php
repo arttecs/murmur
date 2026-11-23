@@ -14,6 +14,7 @@ use Clue\React\Redis\Factory;
 use React\EventLoop\LoopInterface;
 use React\EventLoop\TimerInterface;
 use React\Stream\ThroughStream;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
 use function React\Async\await;
@@ -223,7 +224,7 @@ function publishFromSubprocess(ServerHarness $h, string $topic, string $event, m
         json_encode(compact('topic', 'event', 'data'), JSON_THROW_ON_ERROR),
     ]);
 
-    expect($process->getExitCode())->toBe(0, $process->getErrorOutput());
+    expect($process->getExitCode())->toBe(0, $process->getOutput().$process->getErrorOutput());
 }
 
 /**
@@ -234,11 +235,17 @@ function publishFromSubprocess(ServerHarness $h, string $topic, string $event, m
 function runPublishProcess(array $arguments): Process
 {
     $process = new Process([PHP_BINARY, ...$arguments], timeout: 5);
-    $process->start();
+    try {
+        $process->start();
 
-    while ($process->isRunning()) {
-        $process->checkTimeout();
-        delay(0.01);
+        while ($process->isRunning()) {
+            $process->checkTimeout();
+            delay(0.01);
+        }
+    } catch (ProcessTimedOutException $error) {
+        throw new RuntimeException($error->getMessage()."\n".$process->getOutput().$process->getErrorOutput(), 0, $error);
+    } finally {
+        $process->stop(0.1);
     }
 
     return $process;

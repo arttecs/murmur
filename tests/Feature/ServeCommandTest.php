@@ -5,9 +5,15 @@ use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
+use Arttecs\Murmur\Tests\Support\ServerHarness;
+use Arttecs\Murmur\Tests\Support\SseReader;
 use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Process\Process;
 
+use function React\Async\async;
 use function React\Async\await;
+use function React\Async\delay;
+use function React\Promise\Timer\timeout;
 
 it('maps laravel config and options onto the server config', function () {
     config([
@@ -101,3 +107,61 @@ it('reports an unknown driver and exits cleanly', function () {
         ->expectsOutputToContain('Unsupported Murmur server driver [carrier-pigeon].')
         ->assertExitCode(1);
 });
+
+it('runs murmur serve and exits cleanly on SIGTERM', function (string $driver) {
+    $port = ServerHarness::availablePort();
+    $address = "http://127.0.0.1:{$port}";
+    $waiting = 'Murmur is waiting for Redis.';
+    $listening = "Murmur is listening on {$address}";
+    $ready = $driver === 'redis' ? $waiting : $listening;
+    $root = dirname(__DIR__, 2);
+    $process = new Process([PHP_BINARY, $root.'/vendor/bin/testbench', 'murmur:serve', "--port={$port}"], $root, [
+        'MURMUR_DRIVER' => $driver,
+        'MURMUR_HOST' => '127.0.0.1',
+        'MURMUR_SECRET' => config('murmur.secret'),
+        'MURMUR_REDIS_URL' => 'redis://127.0.0.1:'.ServerHarness::availablePort(),
+    ]);
+    $output = fn (): string => $process->getOutput().$process->getErrorOutput();
+    $reader = null;
+
+    try {
+        $process->start();
+        $deadline = hrtime(true) + 5_000_000_000;
+
+        while ($process->isRunning() && ! str_contains($output(), $ready) && hrtime(true) < $deadline) {
+            delay(0.01);
+        }
+
+        expect(str_contains($output(), $ready))->toBeTrue($output());
+        expect($process->isRunning())->toBeTrue($output());
+
+        if ($driver === 'redis') {
+            delay(1.1);
+            expect($process->isRunning())->toBeTrue($output());
+            expect(substr_count($output(), $waiting))->toBe(1, $output());
+            expect(str_contains($output(), $listening))->toBeFalse($output());
+        } else {
+            try {
+                $reader = await(timeout(async(fn () => SseReader::open($address.'/sse?topics=news'))(), 2.0));
+                $frame = $reader->next(2.0);
+            } catch (Throwable $error) {
+                $this->fail($error->getMessage()."\n".$output());
+            }
+
+            expect($frame['retry'])->toBe('3000', $output());
+        }
+
+        $process->signal(SIGTERM);
+        $deadline = hrtime(true) + 5_000_000_000;
+
+        while ($process->isRunning() && hrtime(true) < $deadline) {
+            delay(0.01);
+        }
+
+        expect($process->isRunning())->toBeFalse($output());
+        expect($process->getExitCode())->toBe(0, $output());
+    } finally {
+        $process->stop(0.1, SIGKILL);
+        $reader?->close();
+    }
+})->with(['http', 'redis'])->skip(! extension_loaded('pcntl'), 'SIGTERM handling requires ext-pcntl.');

@@ -13,7 +13,7 @@ class OrderShipped implements ShouldBroadcastNow
     /**
      * Create an order shipment event.
      */
-    public function __construct(public int $orderId) {}
+    public function __construct(public int $orderId, public ?string $socket = null) {}
 
     /**
      * Get the private order channel.

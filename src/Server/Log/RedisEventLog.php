@@ -393,7 +393,7 @@ class RedisEventLog implements EventLog
 
         if (! $this->readerDisconnected) {
             $this->readerDisconnected = true;
-            error_log('Murmur Redis reader lost its connection.');
+            error_log($this->cursor === null ? 'Murmur is waiting for Redis.' : 'Murmur Redis reader lost its connection.');
         }
 
         $this->retry = $this->loop->addTimer(1.0, function (): void {
