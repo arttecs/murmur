@@ -2,9 +2,11 @@
 
 namespace Arttecs\Murmur;
 
+use Arttecs\Murmur\Broadcasting\MurmurBroadcaster;
 use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Publishers\HttpPublisher;
 use Arttecs\Murmur\Server\Auth\Secret;
+use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\ServiceProvider;
@@ -44,10 +46,16 @@ class MurmurServiceProvider extends ServiceProvider
     }
 
     /**
-     * Register the package configuration for publishing.
+     * Register the broadcast driver, authorization route and publishable configuration.
      */
     public function boot(): void
     {
+        $this->callAfterResolving(BroadcastManager::class, function (BroadcastManager $manager): void {
+            $manager->extend('murmur', fn (Application $app) => $app->make(MurmurBroadcaster::class));
+        });
+
+        $this->loadRoutesFrom(__DIR__.'/../routes/murmur.php');
+
         $this->publishes([
             __DIR__.'/../config/murmur.php' => $this->app->configPath('murmur.php'),
         ], 'murmur-config');
