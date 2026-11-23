@@ -6,7 +6,11 @@ export class Channel {
   /** The subscribed topic, including its prefix for private channels. */
   public readonly name: string
 
-  /** Creates a channel that reports changes to its event names. */
+  /**
+   * Creates a channel that reports changes to its event names.
+   *
+   * @internal
+   */
   public constructor(
     name: string,
     protected readonly namespace: string,

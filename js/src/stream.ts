@@ -16,7 +16,11 @@ export class MurmurStream {
   /** Releases the owning client's reference to this stream. */
   protected onClose?: (stream: MurmurStream) => void
 
-  /** Opens a stream and notifies its owning client when it closes. */
+  /**
+   * Opens a stream and notifies its owning client when it closes.
+   *
+   * @internal
+   */
   public constructor(
     protected readonly url: string,
     eventSource: typeof EventSource | undefined,

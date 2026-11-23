@@ -1,3 +1,3 @@
-export { Channel } from './channel.js'
+export type { Channel } from './channel.js'
 export { Murmur, type MurmurOptions } from './client.js'
-export { MurmurStream } from './stream.js'
+export type { MurmurStream } from './stream.js'
