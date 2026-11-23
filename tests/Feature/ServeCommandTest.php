@@ -53,10 +53,10 @@ it('rejects an unknown log driver', function () {
 })->throws(InvalidArgumentException::class);
 
 it('uses the configured redis stream and log size for the redis driver', function () {
-    [, $key] = redisLog();
+    [, $key, $url] = redisStream();
     config([
         'murmur.driver' => 'redis',
-        'murmur.redis.url' => getenv('MURMUR_TEST_REDIS_URL') ?: 'redis://127.0.0.1:6379',
+        'murmur.redis.url' => $url,
         'murmur.redis.stream' => $key,
         'murmur.server.log_size' => 1,
     ]);

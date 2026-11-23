@@ -3,7 +3,10 @@
 namespace Arttecs\Murmur\Server\Http;
 
 use Arttecs\Murmur\Server\Connection;
+use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
+use Arttecs\Murmur\Server\Sse\Frame;
+use React\Stream\WritableStreamInterface;
 
 /**
  * Hold frames from the hub until replay has caught up.
@@ -11,11 +14,11 @@ use Arttecs\Murmur\Server\EventId;
 class HeldConnection extends Connection
 {
     /**
-     * The live frames held until replay finishes, or null once delivery is live.
+     * The live events and heartbeat frames held until replay finishes, or null once delivery is live.
      *
-     * @var list<string>|null
+     * @var list<Event|string>|null
      */
-    protected ?array $heldFrames = [];
+    protected ?array $held = [];
 
     /**
      * The number of bytes queued while replay is pending.
@@ -23,29 +26,47 @@ class HeldConnection extends Connection
     protected int $heldBytes = 0;
 
     /**
+     * Create a held connection starting at the client's last received event ID.
+     */
+    public function __construct(WritableStreamInterface $stream, int $maxBufferBytes = 1048576, protected ?EventId $lastWrittenId = null)
+    {
+        parent::__construct($stream, $maxBufferBytes);
+    }
+
+    /**
      * Hold incoming hub frames during replay and send them directly afterward.
      */
     public function send(string $frame): void
     {
-        if ($this->heldFrames === null) {
+        if ($this->held === null) {
             parent::send($frame);
 
             return;
         }
 
-        $this->heldBytes += strlen($frame);
+        $this->hold($frame, strlen($frame));
+    }
 
-        if ($this->heldBytes > $this->maxBufferBytes) {
-            $this->close();
+    /**
+     * Hold an unseen live event during replay or write it directly afterward.
+     *
+     * @throws \JsonException
+     */
+    public function sendEvent(Event $event): void
+    {
+        if ($this->held === null) {
+            $this->writeEvent($event);
 
             return;
         }
 
-        $this->heldFrames[] = $frame;
+        if (! $this->hasWritten($event)) {
+            $this->hold($event, strlen(Frame::event($event)));
+        }
     }
 
     /**
-     * Write a protocol or replay frame ahead of the held live frames.
+     * Write an initial protocol frame ahead of replay and the held live events.
      */
     public function sendImmediately(string $frame): void
     {
@@ -53,35 +74,86 @@ class HeldConnection extends Connection
     }
 
     /**
-     * Drain held frames, discarding event IDs already covered by replay.
+     * Write replayed events, drain held events and frames, and switch to live delivery.
+     *
+     * @param  list<Event>  $replay
+     *
+     * @throws \JsonException
      */
-    public function release(?EventId $last): void
+    public function release(array $replay = []): void
     {
-        for ($index = 0; isset($this->heldFrames[$index]); $index++) {
-            $frame = $this->heldFrames[$index];
-
-            if ($last !== null && str_starts_with($frame, 'id: ')) {
-                $line = strstr($frame, "\n", true);
-                $id = EventId::tryParse(substr($line, 4));
-
-                if ($id !== null && $id->compare($last) <= 0) {
-                    continue;
-                }
-            }
-
-            $this->sendImmediately($frame);
+        if ($this->held === null) {
+            return;
         }
 
-        $this->heldFrames = null;
+        foreach ($replay as $event) {
+            if ($this->closed) {
+                return;
+            }
+
+            $this->writeEvent($event);
+        }
+
+        for ($index = 0; isset($this->held[$index]); $index++) {
+            $item = $this->held[$index];
+
+            if ($item instanceof Event) {
+                $this->writeEvent($item);
+            } else {
+                $this->sendImmediately($item);
+            }
+        }
+
+        $this->held = null;
         $this->heldBytes = 0;
     }
 
     /**
-     * Discard the held frames and close the stream.
+     * Determine if the event is at or before the last written ID.
+     */
+    protected function hasWritten(Event $event): bool
+    {
+        return $event->id !== null && $this->lastWrittenId !== null && $event->id->compare($this->lastWrittenId) <= 0;
+    }
+
+    /**
+     * Write an unseen event and advance the cursor for the rest of the connection.
+     *
+     * @throws \JsonException
+     */
+    protected function writeEvent(Event $event): void
+    {
+        if ($this->closed || $this->hasWritten($event)) {
+            return;
+        }
+
+        $frame = Frame::event($event);
+        $this->lastWrittenId = $event->id ?? $this->lastWrittenId;
+        parent::send($frame);
+    }
+
+    /**
+     * Queue an event or heartbeat, closing the connection if the queue exceeds its byte limit.
+     */
+    protected function hold(Event|string $item, int $bytes): void
+    {
+        $this->heldBytes += $bytes;
+
+        if ($this->heldBytes > $this->maxBufferBytes) {
+            $this->close();
+
+            return;
+        }
+
+        $this->held[] = $item;
+    }
+
+    /**
+     * Discard the held events and frames and close the stream.
      */
     public function close(): void
     {
-        $this->heldFrames = null;
+        $this->held = null;
         $this->heldBytes = 0;
 
         parent::close();

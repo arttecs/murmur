@@ -93,10 +93,8 @@ class Hub
             return;
         }
 
-        $frame = Frame::event($event);
-
         foreach (iterator_to_array($connections, false) as $connection) {
-            $connection->send($frame);
+            $connection->sendEvent($event);
         }
     }
 

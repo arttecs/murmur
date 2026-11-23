@@ -3,22 +3,30 @@
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
+use Clue\React\Redis\Factory;
+use React\EventLoop\StreamSelectLoop;
 use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 
+use function React\Async\async;
 use function React\Async\await;
+use function React\Promise\set_rejection_handler;
 use function React\Promise\Timer\sleep;
 use function React\Promise\Timer\timeout;
 
 it('delivers entries added by another client', function () {
     [$log, $key] = redisLog();
+    $client = $this->redisFixtures[$key]['client'];
+    $readerId = redisReaderId($log);
     $seen = [];
-    $log->subscribe(function (Event $e) use (&$seen) {
+    $delivered = new Deferred;
+    $log->subscribe(function (Event $e) use (&$seen, $delivered) {
         $seen[] = $e;
+        $delivered->resolve($e);
     });
-    await(sleep(0.05));
+    waitForRedisReader($client, $readerId);
     $id = xadd($key, 'news', 'updated', ['id' => 7]);
-    await(sleep(0.1));
+    await(timeout($delivered->promise(), 2.0));
     expect($seen)->toHaveCount(1);
     expect((string) $seen[0]->id)->toBe($id);
     expect($seen[0]->topic)->toBe('news');
@@ -52,12 +60,23 @@ it('reports no gap on an empty stream', function () {
     expect($replay->events)->toBe([]);
 });
 
+it('reports a gap when the oldest entry has an unparseable id', function () {
+    [$log, $key] = redisLog(maxLength: 2);
+    $client = $this->redisFixtures[$key]['client'];
+    await($client->xadd($key, '1000000000000000000-0', 'topic', 'news', 'name', 'oversized', 'data', 'null'));
+
+    expect(await($log->since(new EventId(1, 0), ['news']))->gap)->toBeTrue();
+});
+
+it('rejects a redis capacity below one', function (int $capacity) {
+    new RedisEventLog('redis://127.0.0.1:6379', 'unused', $capacity);
+})->with([0, -1])->throws(InvalidArgumentException::class, 'The event log capacity must be at least 1.');
+
 it('delivers entries written while the reader reconnects', function () {
     [$log, $key] = redisLog();
     xadd($key, 'news', 'before-subscribe');
     $client = $this->redisFixtures[$key]['client'];
-    $reader = (new ReflectionProperty(RedisEventLog::class, 'reader'))->getValue($log);
-    $readerId = await($reader->client('ID'));
+    $readerId = redisReaderId($log);
     $seen = [];
     $delivered = new Deferred;
     $log->subscribe(function (Event $event) use (&$seen, $delivered) {
@@ -65,19 +84,9 @@ it('delivers entries written while the reader reconnects', function () {
         $delivered->resolve($event);
     });
 
-    $deadline = microtime(true) + 1.0;
-    do {
-        $info = await($client->client('LIST', 'ID', $readerId));
-        if (str_contains($info, 'cmd=xread') && str_contains($info, 'flags=b')) {
-            break;
-        }
-
-        await(sleep(0.01));
-    } while (microtime(true) < $deadline);
-
-    expect($info)->toContain('cmd=xread', 'flags=b');
+    waitForRedisReader($client, $readerId);
     expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
-    await(sleep(0.05));
+    waitForRedisRetry($log);
     $id = xadd($key, 'news', 'during-reconnect');
 
     await(timeout($delivered->promise(), 3.0));
@@ -88,6 +97,7 @@ it('delivers entries written while the reader reconnects', function () {
 it('skips malformed entries and delivers valid entries that follow them', function () {
     [$log, $key] = redisLog();
     $client = $this->redisFixtures[$key]['client'];
+    $readerId = redisReaderId($log);
     $seen = [];
     $delivered = new Deferred;
     $log->subscribe(function (Event $event) use (&$seen, $delivered) {
@@ -98,7 +108,7 @@ it('skips malformed entries and delivers valid entries that follow them', functi
         }
     });
 
-    await(sleep(0.05));
+    waitForRedisReader($client, $readerId);
     await($client->xadd($key, '*', 'topic', 'news', 'name', 'missing-data'));
     await($client->xadd($key, '*', 'topic', 'news', 'name', 'invalid-json', 'data', '{'));
     await($client->xadd($key, '*', 'topic', 'invalid topic', 'name', 'updated', 'data', 'null'));
@@ -124,6 +134,8 @@ it('rejects the replay promise when a redis command fails', function () {
 
 it('stops invoking listeners as soon as the log closes', function () {
     [$log, $key] = redisLog();
+    $client = $this->redisFixtures[$key]['client'];
+    $readerId = redisReaderId($log);
     $seen = [];
     $closed = new Deferred;
     $log->subscribe(function (Event $event) use ($log, &$seen, $closed) {
@@ -135,11 +147,180 @@ it('stops invoking listeners as soon as the log closes', function () {
         $seen[] = (string) $event->id;
     });
 
-    await(sleep(0.05));
+    waitForRedisReader($client, $readerId);
     $id = xadd($key, 'news', 'first');
     await(timeout($closed->promise(), 2.0));
     xadd($key, 'news', 'later');
     $log->close();
 
     expect($seen)->toBe([$id]);
+});
+
+it('cancels the reader retry timer when closed during backoff', function () {
+    $loop = new StreamSelectLoop;
+    [$log] = redisLog(loop: $loop);
+    $client = (new Factory($loop))->createLazyClient(redisTestUrl());
+
+    try {
+        $run = async(function () use ($log, $loop, $client): void {
+            $readerId = redisReaderId($log);
+            $log->subscribe(fn () => null);
+            waitForRedisReader($client, $readerId, $loop);
+            expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
+            $retry = waitForRedisRetry($log, $loop);
+            $timers = (new ReflectionProperty(StreamSelectLoop::class, 'timers'))->getValue($loop);
+            expect($timers->contains($retry))->toBeTrue();
+
+            $log->close();
+
+            expect($timers->contains($retry))->toBeFalse();
+        })();
+        $run->then($loop->stop(...), $loop->stop(...));
+        $loop->run();
+        await($run);
+    } finally {
+        $log->close();
+        $client->close();
+    }
+});
+
+it('closes the reader while its initial cursor is unresolved', function () {
+    [$log, $key] = redisLog();
+    xadd($key, 'news', 'already-in-stream');
+    redisReaderId($log);
+    $cursor = new ReflectionProperty(RedisEventLog::class, 'cursor');
+    $retry = new ReflectionProperty(RedisEventLog::class, 'retry');
+    $seen = [];
+    $log->subscribe(function (Event $event) use (&$seen): void {
+        $seen[] = $event;
+    });
+    expect($cursor->getValue($log))->toBeNull();
+
+    $log->close();
+    xadd($key, 'news', 'after-close');
+
+    expect(fn () => redisReaderId($log))->toThrow(RuntimeException::class, 'Connection closed');
+    expect($cursor->getValue($log))->toBeNull();
+    expect($retry->getValue($log))->toBeNull();
+    expect($seen)->toBe([]);
+});
+
+it('rejects replay requests made after closing', function () {
+    [$log] = redisLog();
+    $log->close();
+
+    $replay = $log->since(new EventId(0, 0), ['news']);
+
+    expect($replay)->toBeInstanceOf(PromiseInterface::class);
+    expect(fn () => await($replay))->toThrow(RuntimeException::class, 'Connection closed');
+});
+
+it('shares one blocked xread connection between subscribers', function () {
+    [$log, $key] = redisLog();
+    $client = $this->redisFixtures[$key]['client'];
+    preg_match_all('/^id=(\d+) /m', await($client->client('LIST')), $existingClients);
+    $readerId = redisReaderId($log);
+    $first = new Deferred;
+    $second = new Deferred;
+    $log->subscribe(fn (Event $event) => $first->resolve($event));
+    waitForRedisReader($client, $readerId);
+
+    $log->subscribe(fn (Event $event) => $second->resolve($event));
+    $id = xadd($key, 'news', 'shared');
+
+    expect((string) await(timeout($first->promise(), 2.0))->id)->toBe($id);
+    expect((string) await(timeout($second->promise(), 2.0))->id)->toBe($id);
+    waitForRedisReader($client, $readerId);
+    preg_match_all('/^id=(\d+) [^\r\n]*\bflags=b [^\r\n]*\bcmd=xread\b/m', await($client->client('LIST')), $blockedReaders);
+    expect(array_values(array_diff($blockedReaders[1], $existingClients[1])))->toBe([(string) $readerId]);
+});
+
+it('cleans later redis fixtures even if deleting an earlier fixture fails', function () {
+    [$observer, $key, $url] = redisStream();
+    $factory = new Factory;
+    $disconnected = $factory->createLazyClient($url);
+    $disconnected->close();
+    $client = $factory->createLazyClient($url);
+    $log = new RedisEventLog($url, $key);
+    xadd($key, 'news', 'first');
+
+    try {
+        expect(fn () => cleanRedisFixtures([
+            $key.':failed' => ['log' => null, 'client' => $disconnected],
+            $key => ['log' => $log, 'client' => $client],
+        ]))->toThrow(RuntimeException::class, 'Connection closed');
+
+        expect(await($observer->exists($key)))->toBe(0);
+        expect(fn () => await($client->ping()))->toThrow(RuntimeException::class, 'Connection closed');
+        expect(fn () => await($log->since(new EventId(0, 0), ['news'])))->toThrow(RuntimeException::class, 'Connection closed');
+    } finally {
+        $log->close();
+        $client->close();
+    }
+});
+
+it('continues delivering a redis batch and subsequent reads after a listener throws', function () {
+    $loop = new StreamSelectLoop;
+    [$log, $key] = redisLog(loop: $loop);
+    $client = (new Factory($loop))->createLazyClient(redisTestUrl());
+    $error = new RuntimeException('The first Redis listener failed.');
+    $seen = [];
+    $loopErrors = [];
+    $unhandled = [];
+    $previousHandler = set_rejection_handler(function (Throwable $reason) use (&$unhandled): void {
+        $unhandled[] = $reason;
+    });
+
+    try {
+        $run = async(function () use ($log, $key, $loop, $client, $error, &$seen): void {
+            $readerId = redisReaderId($log);
+            $batch = new Deferred;
+            $later = new Deferred;
+            $log->subscribe(function (Event $event) use ($error): void {
+                if ($event->name === 'first') {
+                    throw $error;
+                }
+            });
+            $log->subscribe(function (Event $event) use (&$seen, $batch, $later): void {
+                $seen[] = $event->name;
+
+                match ($event->name) {
+                    'second' => $batch->resolve(null),
+                    'later' => $later->resolve(null),
+                    default => null,
+                };
+            });
+
+            waitForRedisReader($client, $readerId, $loop);
+            await($client->multi());
+            await($client->xadd($key, '*', 'topic', 'news', 'name', 'first', 'data', 'null'));
+            await($client->xadd($key, '*', 'topic', 'news', 'name', 'second', 'data', 'null'));
+            await($client->exec());
+            await(timeout($batch->promise(), 2.0, $loop));
+
+            await($client->xadd($key, '*', 'topic', 'news', 'name', 'later', 'data', 'null'));
+            await(timeout($later->promise(), 2.0, $loop));
+        })();
+        $run->then($loop->stop(...), $loop->stop(...));
+
+        try {
+            $loop->run();
+        } catch (RuntimeException $caught) {
+            if ($caught !== $error) {
+                throw $caught;
+            }
+
+            $loopErrors[] = $caught;
+            $loop->run();
+        }
+
+        expect($seen)->toBe(['first', 'second', 'later']);
+        expect($loopErrors)->toBe([$error]);
+        expect($unhandled)->toBe([]);
+        await($run);
+    } finally {
+        $log->close();
+        $client->close();
+        set_rejection_handler($previousHandler);
+    }
 });

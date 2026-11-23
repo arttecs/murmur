@@ -4,6 +4,8 @@ use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\EventIdGenerator;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
+use React\EventLoop\Loop;
+use React\EventLoop\StreamSelectLoop;
 
 use function React\Async\await;
 
@@ -24,6 +26,29 @@ it('assigns ids and notifies subscribers', function () {
     });
     $stored = $log->append(new Event('news', 'a'));
     expect($seen)->toBe([(string) $stored->id]);
+});
+
+it('notifies later memory listeners and reports the error on the next tick', function () {
+    $previousLoop = Loop::get();
+    $loop = new StreamSelectLoop;
+    Loop::set($loop);
+
+    try {
+        $log = logAt();
+        $error = new RuntimeException('The first memory listener failed.');
+        $seen = [];
+        $log->subscribe(fn () => throw $error);
+        $log->subscribe(function (Event $event) use (&$seen): void {
+            $seen[] = $event;
+        });
+
+        $stored = $log->append(new Event('news', 'updated'));
+
+        expect($seen)->toBe([$stored]);
+        expect(fn () => $loop->run())->toThrow($error);
+    } finally {
+        Loop::set($previousLoop);
+    }
 });
 
 it('replays only later events of the requested topics', function () {

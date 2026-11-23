@@ -1,6 +1,8 @@
 <?php
 
 use Arttecs\Murmur\Server\Event;
+use Arttecs\Murmur\Server\EventIdGenerator;
+use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SlowReplayLog;
 use Arttecs\Murmur\Tests\Support\SseReader;
@@ -41,6 +43,18 @@ it('replays missed events after reconnecting', function () {
     $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => (string) $first->id]);
     $r->next();
     expect($r->next()['event'])->toBe('b');
+});
+
+it('skips live events at the reconnect cursor even when there is nothing to replay', function () {
+    $log = new MemoryEventLog(ids: new EventIdGenerator(fn (): int => 1000));
+    $h = ServerHarness::start(log: $log);
+    $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => '1000-1']);
+    expect($r->next()['retry'])->toBe('3000');
+
+    $log->append(new Event('news', 'already-seen'));
+    $log->append(new Event('news', 'fresh'));
+
+    expect($r->next()['event'])->toBe('fresh');
 });
 
 it('accepts the cursor in the query string', function () {

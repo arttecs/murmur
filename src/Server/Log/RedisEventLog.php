@@ -14,6 +14,7 @@ use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;
 use React\EventLoop\TimerInterface;
 use React\Promise\PromiseInterface;
+use Throwable;
 
 use function React\Promise\all;
 
@@ -61,9 +62,15 @@ class RedisEventLog implements EventLog
 
     /**
      * Create an event log with independent Redis connections for reading and replay.
+     *
+     * @throws InvalidArgumentException
      */
     public function __construct(string $redisUrl, protected string $streamKey, protected int $maxLength = 10000, ?LoopInterface $loop = null)
     {
+        if ($maxLength < 1) {
+            throw new InvalidArgumentException('The event log capacity must be at least 1.');
+        }
+
         $this->loop = $loop ?? Loop::get();
         $factory = new Factory($this->loop);
         $this->reader = $factory->createLazyClient($redisUrl);
@@ -72,6 +79,10 @@ class RedisEventLog implements EventLog
 
     /**
      * Replay retained events after the given identifier for the requested topics.
+     *
+     * Read the replay range before the oldest entry and length so a concurrent
+     * trim at the configured retention length can flag a spurious gap but cannot
+     * hide events missing from the range.
      *
      * @param  list<string>  $topics
      * @return PromiseInterface<Replay>
@@ -85,7 +96,7 @@ class RedisEventLog implements EventLog
         ])->then(function (array $results) use ($after, $topics): Replay {
             [$entries, $oldest, $length] = $results;
             $first = isset($oldest[0]) ? EventId::tryParse($oldest[0][0]) : null;
-            $gap = $length >= $this->maxLength && $first !== null && $after->compare($first) < 0;
+            $gap = isset($oldest[0]) && ($first === null || ($length >= $this->maxLength && $after->compare($first) < 0));
             $events = [];
 
             foreach ($entries as $entry) {
@@ -158,24 +169,30 @@ class RedisEventLog implements EventLog
         }
 
         $this->reader->xread('BLOCK', 5000, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
-            foreach ($streams[0][1] ?? [] as $entry) {
-                $this->cursor = $entry[0];
-                $event = $this->decode($entry);
+            try {
+                foreach ($streams[0][1] ?? [] as $entry) {
+                    $this->cursor = $entry[0];
+                    $event = $this->decode($entry);
 
-                if ($event === null) {
-                    continue;
-                }
+                    if ($event === null) {
+                        continue;
+                    }
 
-                foreach ($this->listeners as $listener) {
-                    $listener($event);
+                    foreach ($this->listeners as $listener) {
+                        try {
+                            $listener($event);
+                        } catch (Throwable $error) {
+                            $this->loop->futureTick(fn () => throw $error);
+                        }
 
-                    if ($this->closed) {
-                        return;
+                        if ($this->closed) {
+                            return;
+                        }
                     }
                 }
+            } finally {
+                $this->read();
             }
-
-            $this->read();
         }, $this->retryRead(...));
     }
 

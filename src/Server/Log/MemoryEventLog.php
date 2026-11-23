@@ -8,7 +8,9 @@ use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\EventIdGenerator;
 use Arttecs\Murmur\Server\Replay;
 use InvalidArgumentException;
+use React\EventLoop\Loop;
 use React\Promise\PromiseInterface;
+use Throwable;
 
 use function React\Promise\resolve;
 
@@ -76,7 +78,11 @@ class MemoryEventLog implements EventLog
         $this->next = ($this->next + 1) % $this->capacity;
 
         foreach ($this->listeners as $listener) {
-            $listener($event);
+            try {
+                $listener($event);
+            } catch (Throwable $error) {
+                Loop::futureTick(fn () => throw $error);
+            }
         }
 
         return $event;

@@ -95,7 +95,7 @@ class SseHandler
 
         $stream = new ThroughStream;
 
-        $connection = new HeldConnection($stream, $this->config->maxBufferBytes);
+        $connection = new HeldConnection($stream, $this->config->maxBufferBytes, $cursor);
 
         $this->hub->attach($connection, $topics);
         $connection->onClose(function () use ($client): void {
@@ -123,29 +123,18 @@ class SseHandler
             }
 
             if ($cursor === null) {
-                $connection->release(null);
+                $connection->release();
 
                 return;
             }
 
             try {
-                $replay = $this->log->since($cursor, $topics)->then(function (Replay $replay) use ($connection, $cursor): void {
+                $replay = $this->log->since($cursor, $topics)->then(function (Replay $replay) use ($connection): void {
                     if ($replay->gap) {
                         $connection->sendImmediately(Frame::gap());
                     }
 
-                    $last = $cursor;
-
-                    foreach ($replay->events as $event) {
-                        if ($connection->isClosed()) {
-                            return;
-                        }
-
-                        $connection->sendImmediately(Frame::event($event));
-                        $last = $event->id ?? $last;
-                    }
-
-                    $connection->release($last);
+                    $connection->release($replay->events);
                 });
             } catch (Throwable) {
                 $endStream();

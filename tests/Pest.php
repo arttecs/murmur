@@ -9,12 +9,16 @@ use Arttecs\Murmur\Tests\Support\FakePublisher;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
 use Arttecs\Murmur\Tests\TestCase;
+use Clue\React\Redis\Client;
 use Clue\React\Redis\Factory;
+use React\EventLoop\LoopInterface;
+use React\EventLoop\TimerInterface;
 use React\Stream\ThroughStream;
 use Symfony\Component\Process\Process;
 
 use function React\Async\await;
 use function React\Async\delay;
+use function React\Promise\Timer\sleep;
 use function React\Promise\Timer\timeout;
 
 pest()->extend(TestCase::class)->in('Feature/*Test.php');
@@ -23,25 +27,55 @@ pest()->in('Feature')->afterEach(function () {
     SseReader::closeAll();
     ServerHarness::stopAll();
 
-    foreach ($this->redisFixtures ?? [] as $key => ['log' => $log, 'client' => $client]) {
-        $log->close();
-
-        try {
-            await($client->del($key));
-        } finally {
-            $client->close();
-        }
-    }
+    cleanRedisFixtures($this->redisFixtures ?? []);
 });
 
 /**
- * Create a Redis event log with a stream that is deleted after the test.
+ * Delete the fixture streams and close their logs and cleanup clients.
  *
- * @return array{RedisEventLog, string}
+ * @param  array<string, array{log: RedisEventLog|null, client: Client}>  $fixtures
  */
-function redisLog(int $maxLength = 10000): array
+function cleanRedisFixtures(array $fixtures): void
 {
-    $url = getenv('MURMUR_TEST_REDIS_URL') ?: 'redis://127.0.0.1:6379';
+    $failure = null;
+
+    foreach ($fixtures as $key => ['log' => $log, 'client' => $client]) {
+        try {
+            try {
+                try {
+                    $log?->close();
+                } finally {
+                    await($client->del($key));
+                }
+            } finally {
+                $client->close();
+            }
+        } catch (Throwable $error) {
+            $failure ??= $error;
+        }
+    }
+
+    if ($failure !== null) {
+        throw $failure;
+    }
+}
+
+/**
+ * Get the Redis URL used by the test clients.
+ */
+function redisTestUrl(): string
+{
+    return getenv('MURMUR_TEST_REDIS_URL') ?: 'redis://127.0.0.1:6379';
+}
+
+/**
+ * Create a Redis stream fixture that is deleted after the test.
+ *
+ * @return array{Client, string, string}
+ */
+function redisStream(): array
+{
+    $url = redisTestUrl();
     $client = (new Factory)->createLazyClient($url);
 
     try {
@@ -53,18 +87,74 @@ function redisLog(int $maxLength = 10000): array
 
     $key = 'murmur:test:'.bin2hex(random_bytes(16));
 
-    try {
-        $log = new RedisEventLog($url, $key, $maxLength);
-    } catch (Throwable $exception) {
-        $client->close();
+    test()->target->redisFixtures[$key] = ['log' => null, 'client' => $client];
 
-        throw $exception;
-    }
+    return [$client, $key, $url];
+}
 
-    $test = test()->target;
-    $test->redisFixtures[$key] = ['log' => $log, 'client' => $client];
+/**
+ * Create a Redis event log with a stream that is deleted after the test.
+ *
+ * @return array{RedisEventLog, string}
+ */
+function redisLog(int $maxLength = 10000, ?LoopInterface $loop = null): array
+{
+    [, $key, $url] = redisStream();
+    $log = new RedisEventLog($url, $key, $maxLength, $loop);
+    test()->target->redisFixtures[$key]['log'] = $log;
 
     return [$log, $key];
+}
+
+/**
+ * Get the Redis client's ID before the log starts blocking reads.
+ */
+function redisReaderId(RedisEventLog $log): int
+{
+    $reader = (new ReflectionProperty(RedisEventLog::class, 'reader'))->getValue($log);
+
+    return await($reader->client('ID'));
+}
+
+/**
+ * Wait until Redis is blocking on the reader's XREAD.
+ */
+function waitForRedisReader(Client $client, int $readerId, ?LoopInterface $loop = null): void
+{
+    $deadline = hrtime(true) + 3_000_000_000;
+
+    do {
+        $info = await(timeout($client->client('LIST', 'ID', $readerId), 1.0, $loop));
+
+        if (str_contains($info, 'cmd=xread') && str_contains($info, 'flags=b')) {
+            return;
+        }
+
+        await(sleep(0.01, $loop));
+    } while (hrtime(true) < $deadline);
+
+    throw new RuntimeException("Redis reader {$readerId} did not block in XREAD.");
+}
+
+/**
+ * Wait for the reader to observe a disconnect and schedule its retry.
+ */
+function waitForRedisRetry(RedisEventLog $log, ?LoopInterface $loop = null): TimerInterface
+{
+    $retry = new ReflectionProperty(RedisEventLog::class, 'retry');
+    $deadline = hrtime(true) + 3_000_000_000;
+
+    do {
+        $timer = $retry->getValue($log);
+
+        if ($timer !== null) {
+            return $timer;
+        }
+
+        await(sleep(0.01, $loop));
+    } while (hrtime(true) < $deadline);
+
+    throw new RuntimeException('The Redis reader did not schedule a retry.');
 }
 
 /**
@@ -72,8 +162,7 @@ function redisLog(int $maxLength = 10000): array
  */
 function xadd(string $key, string $topic, string $name, mixed $data = null, ?int $maxLength = null): string
 {
-    $url = getenv('MURMUR_TEST_REDIS_URL') ?: 'redis://127.0.0.1:6379';
-    $client = (new Factory)->createLazyClient($url);
+    $client = (new Factory)->createLazyClient(redisTestUrl());
     $trim = $maxLength === null ? [] : ['MAXLEN', '=', $maxLength];
 
     try {

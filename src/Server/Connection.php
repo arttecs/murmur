@@ -2,6 +2,7 @@
 
 namespace Arttecs\Murmur\Server;
 
+use Arttecs\Murmur\Server\Sse\Frame;
 use React\Stream\WritableStreamInterface;
 
 /**
@@ -52,6 +53,16 @@ class Connection
         if ($this->bufferedBytes > $this->maxBufferBytes) {
             $this->close();
         }
+    }
+
+    /**
+     * Encode and write an event to the stream.
+     *
+     * @throws \JsonException
+     */
+    public function sendEvent(Event $event): void
+    {
+        $this->send(Frame::event($event));
     }
 
     /**

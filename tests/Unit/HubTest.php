@@ -2,7 +2,9 @@
 
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
+use Arttecs\Murmur\Server\Http\HeldConnection;
 use Arttecs\Murmur\Server\Hub;
+use Arttecs\Murmur\Server\Sse\Frame;
 
 it('delivers an event only to connections subscribed to its topic', function () {
     $hub = new Hub;
@@ -21,6 +23,20 @@ it('writes a single frame to a connection subscribed to several topics', functio
     $hub->attach($a, ['news', 'other']);
     $hub->dispatch(new Event('news', 'x', null, new EventId(1, 0)));
     expect(substr_count($out(), 'event: x'))->toBe(1);
+});
+
+it('dispatches events through the connection so it can drop ids it already sent', function () {
+    $hub = new Hub;
+    [, $output, $stream] = fakeConnection();
+    $connection = new HeldConnection($stream);
+    $hub->attach($connection, ['news']);
+    $connection->release();
+    $event = new Event('news', 'updated', id: new EventId(10, 1));
+
+    $hub->dispatch($event);
+    $hub->dispatch($event);
+
+    expect($output())->toBe(Frame::event($event));
 });
 
 it('forgets a connection when its stream closes', function () {
