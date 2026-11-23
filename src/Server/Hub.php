@@ -95,10 +95,29 @@ class Hub
         }
 
         $frame = Frame::event($event);
+        $this->sendTo($connections, fn (Connection $connection) => $connection->sendEvent($event, $frame));
+    }
 
+    /**
+     * Signal lost history to every attached connection.
+     */
+    public function gap(): void
+    {
+        $frame = Frame::gap();
+        $this->sendTo($this->connections, fn (Connection $connection) => $connection->send($frame));
+    }
+
+    /**
+     * Send a frame to each connection, closing and reporting failed connections.
+     *
+     * @param  SplObjectStorage<Connection, mixed>  $connections
+     * @param  callable(Connection): void  $send
+     */
+    protected function sendTo(SplObjectStorage $connections, callable $send): void
+    {
         foreach (iterator_to_array($connections, false) as $connection) {
             try {
-                $connection->sendEvent($event, $frame);
+                $send($connection);
             } catch (Throwable $error) {
                 ErrorReporter::report($error);
 

@@ -108,6 +108,7 @@ class Server
         }
 
         if ($this->listening === null) {
+            $this->log->onGap($this->hub->gap(...));
             $this->log->subscribe($this->hub->dispatch(...));
             $this->listening = $this->log->ready()->then(function (): void {
                 if ($this->closed) {

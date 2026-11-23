@@ -68,6 +68,16 @@ class SlowReplayLog implements EventLog
     }
 
     /**
+     * Register a listener for history lost during live delivery.
+     *
+     * @param  callable(): void  $listener
+     */
+    public function onGap(callable $listener): void
+    {
+        $this->log->onGap($listener);
+    }
+
+    /**
      * Indicate that live delivery can start immediately.
      */
     public function ready(): PromiseInterface

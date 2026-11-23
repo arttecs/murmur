@@ -83,7 +83,7 @@ it('rejects a redis capacity below one', function (int $capacity) {
     new RedisEventLog('redis://127.0.0.1:6379', 'unused', $capacity);
 })->with([0, -1])->throws(InvalidArgumentException::class, 'The event log capacity must be at least 1.');
 
-it('delivers entries written while the reader reconnects', function () {
+it('signals lost history before delivering entries written while the reader reconnects', function (?int $maxLength, array $expected) {
     $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
     $previous = ini_set('error_log', $errorLog);
 
@@ -94,24 +94,36 @@ it('delivers entries written while the reader reconnects', function () {
         $readerId = redisReaderId($log);
         $seen = [];
         $delivered = new Deferred;
-        $log->subscribe(function (Event $event) use (&$seen, $delivered) {
-            $seen[] = (string) $event->id;
-            $delivered->resolve($event);
+        $log->onGap(fn () => throw new RuntimeException('The gap listener failed.'));
+        $log->onGap(function () use (&$seen): void {
+            $seen[] = 'gap';
+        });
+        $log->subscribe(function (Event $event) use (&$seen, $delivered): void {
+            $seen[] = $event->name;
+
+            if ($event->name === 'after-reconnect') {
+                $delivered->resolve(null);
+            }
         });
 
         waitForRedisReader($client, $readerId);
         expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
         waitForRedisRetry($log);
-        $id = xadd($key, 'news', 'during-reconnect');
+        xadd($key, 'news', 'first-during-reconnect', maxLength: $maxLength);
+        xadd($key, 'news', 'second-during-reconnect', maxLength: $maxLength);
+        xadd($key, 'news', 'after-reconnect');
 
         await(timeout($delivered->promise(), 3.0));
         await(sleep(0.05));
-        expect($seen)->toBe([$id]);
+        expect($seen)->toBe($expected);
     } finally {
         ini_set('error_log', (string) $previous);
         unlink($errorLog);
     }
-});
+})->with([
+    'trimmed history' => [1, ['gap', 'second-during-reconnect', 'after-reconnect']],
+    'retained history' => [null, ['first-during-reconnect', 'second-during-reconnect', 'after-reconnect']],
+]);
 
 it('skips malformed entries and delivers valid entries that follow them', function () {
     [$log, $key] = redisLog();

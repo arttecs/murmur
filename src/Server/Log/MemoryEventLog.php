@@ -49,6 +49,13 @@ class MemoryEventLog implements EventLog
     protected array $listeners = [];
 
     /**
+     * The registered gap listeners.
+     *
+     * @var list<callable(): void>
+     */
+    protected array $gapListeners = [];
+
+    /**
      * Create a new in-memory event log.
      *
      * @throws InvalidArgumentException
@@ -127,6 +134,16 @@ class MemoryEventLog implements EventLog
     }
 
     /**
+     * Register a listener for history lost during live delivery.
+     *
+     * @param  callable(): void  $listener
+     */
+    public function onGap(callable $listener): void
+    {
+        $this->gapListeners[] = $listener;
+    }
+
+    /**
      * Indicate that the in-memory log can deliver live events immediately.
      *
      * @return PromiseInterface<null>
@@ -142,5 +159,6 @@ class MemoryEventLog implements EventLog
     public function close(): void
     {
         $this->listeners = [];
+        $this->gapListeners = [];
     }
 }

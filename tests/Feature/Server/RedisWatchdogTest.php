@@ -41,6 +41,12 @@ it('replaces a stalled redis reader and reports only the loss and recovery trans
                     continue;
                 }
 
+                if (strtoupper($command[0]) === 'XINFO') {
+                    $client->write("-ERR no such key\r\n");
+
+                    continue;
+                }
+
                 if (strtoupper($command[0]) !== 'XREAD') {
                     continue;
                 }

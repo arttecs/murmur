@@ -66,6 +66,11 @@ class RedisEventLog implements EventLog
     protected bool $readerDisconnected = false;
 
     /**
+     * Indicates whether the current reader outage has already triggered a gap.
+     */
+    protected bool $readerGapReported = false;
+
+    /**
      * The pending timer for resuming stream reads after a Redis error.
      */
     protected ?TimerInterface $retry = null;
@@ -76,6 +81,13 @@ class RedisEventLog implements EventLog
      * @var list<callable(Event): void>
      */
     protected array $listeners = [];
+
+    /**
+     * The listeners notified when history is lost during reader recovery.
+     *
+     * @var list<callable(): void>
+     */
+    protected array $gapListeners = [];
 
     /**
      * Indicates whether the log has been closed.
@@ -123,7 +135,7 @@ class RedisEventLog implements EventLog
                     return new Replay(true, [], $tail);
                 }
 
-                return $this->hasGap($after)->then(fn (bool $gap): Replay => new Replay($gap, $events, $tail));
+                return $this->hasGap($after, $this->replay)->then(fn (bool $gap): Replay => new Replay($gap, $events, $tail));
             });
         });
     }
@@ -159,11 +171,13 @@ class RedisEventLog implements EventLog
     /**
      * Check whether Redis removed entries before the requested cursor.
      *
+     * An unparseable reader cursor is beyond the supported range of identifiers.
+     *
      * @return PromiseInterface<bool>
      */
-    protected function hasGap(EventId $after): PromiseInterface
+    protected function hasGap(?EventId $after, Client $client): PromiseInterface
     {
-        return $this->replay->xinfo('STREAM', $this->streamKey)->then(function (array $fields) use ($after): bool {
+        return $client->xinfo('STREAM', $this->streamKey)->then(function (array $fields) use ($after): bool {
             $info = array_column(array_chunk($fields, 2), 1, 0);
             $firstEntry = $info['first-entry'];
 
@@ -173,7 +187,7 @@ class RedisEventLog implements EventLog
 
             $first = EventId::tryParse($firstEntry[0]);
 
-            return $first === null || ($info['entries-added'] > $info['length'] && $after->compare($first) < 0);
+            return $first === null || ($after !== null && $info['entries-added'] > $info['length'] && $after->compare($first) < 0);
         }, function (Throwable $error): bool {
             if ($error instanceof ErrorReply && $error->getMessage() === 'ERR no such key') {
                 return false;
@@ -198,6 +212,18 @@ class RedisEventLog implements EventLog
 
         if (count($this->listeners) === 1) {
             $this->read();
+        }
+    }
+
+    /**
+     * Register a listener for history lost during live delivery.
+     *
+     * @param  callable(): void  $listener
+     */
+    public function onGap(callable $listener): void
+    {
+        if (! $this->closed) {
+            $this->gapListeners[] = $listener;
         }
     }
 
@@ -230,6 +256,7 @@ class RedisEventLog implements EventLog
 
         $this->closed = true;
         $this->listeners = [];
+        $this->gapListeners = [];
 
         if ($this->retry !== null) {
             $this->loop->cancelTimer($this->retry);
@@ -320,6 +347,7 @@ class RedisEventLog implements EventLog
     {
         if ($this->readerDisconnected) {
             $this->readerDisconnected = false;
+            $this->readerGapReported = false;
             error_log('Murmur Redis reader recovered.');
         }
     }
@@ -342,8 +370,40 @@ class RedisEventLog implements EventLog
 
         $this->retry = $this->loop->addTimer(1.0, function (): void {
             $this->retry = null;
+
+            if ($this->cursor !== null) {
+                $this->hasGap(EventId::tryParse($this->cursor), $this->reader)->then(function (bool $gap): void {
+                    if ($gap && ! $this->readerGapReported) {
+                        $this->readerGapReported = true;
+                        $this->notifyGapListeners();
+                    }
+
+                    $this->read();
+                }, $this->retryRead(...));
+
+                return;
+            }
+
             $this->read();
         });
+    }
+
+    /**
+     * Notify subscribers before the reader resumes delivering events.
+     */
+    protected function notifyGapListeners(): void
+    {
+        foreach ($this->gapListeners as $listener) {
+            try {
+                $listener();
+            } catch (Throwable $error) {
+                ErrorReporter::report($error);
+            }
+
+            if ($this->closed) {
+                return;
+            }
+        }
     }
 
     /**

@@ -28,6 +28,13 @@ interface EventLog
     public function subscribe(callable $listener): void;
 
     /**
+     * Register a listener for history lost during live delivery.
+     *
+     * @param  callable(): void  $listener
+     */
+    public function onGap(callable $listener): void;
+
+    /**
      * Wait until the log can deliver live events to its subscribers.
      *
      * @return PromiseInterface<null>

@@ -55,6 +55,31 @@ it('sends heartbeats to every connection', function () {
     expect($out())->toBe(": ping\n\n");
 });
 
+it('sends one gap frame per connection and continues after a subscriber write fails', function () {
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
+
+    try {
+        $hub = new Hub;
+        [$failing, , $stream] = fakeConnection();
+        $stream->on('data', fn () => throw new RuntimeException('The gap write failed.'));
+        [$a, $outA] = fakeConnection();
+        [$b, $outB] = fakeConnection();
+        $hub->attach($failing, ['news']);
+        $hub->attach($a, ['news', 'other']);
+        $hub->attach($b, ['other']);
+
+        $hub->gap();
+
+        expect($failing->isClosed())->toBeTrue();
+        expect($outA())->toBe("event: murmur.gap\ndata: {}\n\n");
+        expect($outB())->toBe($outA());
+    } finally {
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
+});
+
 it('stops delivering to a detached connection', function () {
     $hub = new Hub;
     [$a, $out] = fakeConnection();
