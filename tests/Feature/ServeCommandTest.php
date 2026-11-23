@@ -2,7 +2,9 @@
 
 use Arttecs\Murmur\Console\Commands\ServeCommand;
 use Arttecs\Murmur\Server\Event;
+use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
+use Arttecs\Murmur\Server\Log\RedisEventLog;
 use Symfony\Component\Console\Input\ArrayInput;
 
 use function React\Async\await;
@@ -49,3 +51,34 @@ it('rejects an unknown log driver', function () {
     config(['murmur.driver' => 'carrier-pigeon']);
     app(ServeCommand::class)->makeLog();
 })->throws(InvalidArgumentException::class);
+
+it('uses the configured redis stream and log size for the redis driver', function () {
+    [, $key] = redisLog();
+    config([
+        'murmur.driver' => 'redis',
+        'murmur.redis.url' => getenv('MURMUR_TEST_REDIS_URL') ?: 'redis://127.0.0.1:6379',
+        'murmur.redis.stream' => $key,
+        'murmur.server.log_size' => 1,
+    ]);
+    $first = xadd($key, 'news', 'first');
+    $id = xadd($key, 'news', 'updated', maxLength: 1);
+    $log = app(ServeCommand::class)->makeLog();
+
+    try {
+        expect($log)->toBeInstanceOf(RedisEventLog::class);
+        $replay = await($log->since(EventId::tryParse($first), ['news']));
+        expect($replay->gap)->toBeTrue();
+        expect(array_map(fn (Event $event) => (string) $event->id, $replay->events))->toBe([$id]);
+    } finally {
+        $log->close();
+    }
+});
+
+it('disables http publishing for the redis driver', function () {
+    config(['murmur.driver' => 'redis']);
+    $command = app(ServeCommand::class);
+    $command->setLaravel(app());
+    $command->setInput(new ArrayInput([], $command->getDefinition()));
+
+    expect($command->makeConfig()->publishEnabled)->toBeFalse();
+});

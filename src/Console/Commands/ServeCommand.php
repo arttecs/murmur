@@ -4,6 +4,7 @@ namespace Arttecs\Murmur\Console\Commands;
 
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
+use Arttecs\Murmur\Server\Log\RedisEventLog;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Illuminate\Console\Command;
@@ -86,6 +87,7 @@ class ServeCommand extends Command
             maxPayloadBytes: (int) config('murmur.server.max_payload_bytes'),
             maxBufferBytes: (int) config('murmur.server.max_buffer_bytes'),
             allowedOrigins: config('murmur.server.allowed_origins'),
+            publishEnabled: config('murmur.driver') !== 'redis',
         );
     }
 
@@ -100,6 +102,7 @@ class ServeCommand extends Command
 
         return match ($driver) {
             'http' => new MemoryEventLog((int) config('murmur.server.log_size')),
+            'redis' => new RedisEventLog(config('murmur.redis.url'), config('murmur.redis.stream'), config('murmur.server.log_size')),
             default => throw new InvalidArgumentException("Unsupported Murmur server driver [{$driver}]."),
         };
     }
