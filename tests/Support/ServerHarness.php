@@ -10,8 +10,10 @@ use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Psr\Http\Message\ResponseInterface;
 use React\Http\Browser;
+use React\Promise\PromiseInterface;
 use React\Socket\ConnectionInterface;
 use React\Socket\Connector;
+use React\Socket\SocketServer;
 use ReflectionProperty;
 
 use function React\Async\await;
@@ -48,7 +50,7 @@ class ServerHarness
         $config = new ServerConfig(...$overrides + [
             'secret' => 'test-secret-with-at-least-32-bytes',
             'host' => '127.0.0.1',
-            'port' => 0,
+            'port' => self::availablePort(),
         ]);
 
         $log ??= new MemoryEventLog;
@@ -56,6 +58,20 @@ class ServerHarness
         await($server->listen());
 
         return self::$running[] = new self($server, $config, $log);
+    }
+
+    /**
+     * Find an available port for a server configuration.
+     */
+    public static function availablePort(): int
+    {
+        $socket = new SocketServer('127.0.0.1:0');
+
+        try {
+            return parse_url($socket->getAddress(), PHP_URL_PORT);
+        } finally {
+            $socket->close();
+        }
     }
 
     /**
@@ -148,6 +164,14 @@ class ServerHarness
             'X-Murmur-Timestamp' => (string) $timestamp,
             'X-Murmur-Signature' => $signature,
         ], $body));
+    }
+
+    /**
+     * Drain the server until all sockets close or the grace period expires.
+     */
+    public function shutdown(float $graceSeconds): PromiseInterface
+    {
+        return $this->server->shutdown($graceSeconds);
     }
 
     /**

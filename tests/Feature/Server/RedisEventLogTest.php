@@ -84,25 +84,33 @@ it('rejects a redis capacity below one', function (int $capacity) {
 })->with([0, -1])->throws(InvalidArgumentException::class, 'The event log capacity must be at least 1.');
 
 it('delivers entries written while the reader reconnects', function () {
-    [$log, $key] = redisLog();
-    xadd($key, 'news', 'before-subscribe');
-    $client = $this->redisFixtures[$key]['client'];
-    $readerId = redisReaderId($log);
-    $seen = [];
-    $delivered = new Deferred;
-    $log->subscribe(function (Event $event) use (&$seen, $delivered) {
-        $seen[] = (string) $event->id;
-        $delivered->resolve($event);
-    });
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
 
-    waitForRedisReader($client, $readerId);
-    expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
-    waitForRedisRetry($log);
-    $id = xadd($key, 'news', 'during-reconnect');
+    try {
+        [$log, $key] = redisLog();
+        xadd($key, 'news', 'before-subscribe');
+        $client = $this->redisFixtures[$key]['client'];
+        $readerId = redisReaderId($log);
+        $seen = [];
+        $delivered = new Deferred;
+        $log->subscribe(function (Event $event) use (&$seen, $delivered) {
+            $seen[] = (string) $event->id;
+            $delivered->resolve($event);
+        });
 
-    await(timeout($delivered->promise(), 3.0));
-    await(sleep(0.05));
-    expect($seen)->toBe([$id]);
+        waitForRedisReader($client, $readerId);
+        expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
+        waitForRedisRetry($log);
+        $id = xadd($key, 'news', 'during-reconnect');
+
+        await(timeout($delivered->promise(), 3.0));
+        await(sleep(0.05));
+        expect($seen)->toBe([$id]);
+    } finally {
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
 });
 
 it('skips malformed entries and delivers valid entries that follow them', function () {
@@ -168,30 +176,38 @@ it('stops invoking listeners as soon as the log closes', function () {
 });
 
 it('cancels the reader retry timer when closed during backoff', function () {
-    $loop = new StreamSelectLoop;
-    [$log] = redisLog(loop: $loop);
-    $client = (new Factory($loop))->createLazyClient(redisTestUrl());
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
 
     try {
-        $run = async(function () use ($log, $loop, $client): void {
-            $readerId = redisReaderId($log);
-            $log->subscribe(fn () => null);
-            waitForRedisReader($client, $readerId, $loop);
-            expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
-            $retry = waitForRedisRetry($log, $loop);
-            $timers = (new ReflectionProperty(StreamSelectLoop::class, 'timers'))->getValue($loop);
-            expect($timers->contains($retry))->toBeTrue();
+        $loop = new StreamSelectLoop;
+        [$log] = redisLog(loop: $loop);
+        $client = (new Factory($loop))->createLazyClient(redisTestUrl());
 
+        try {
+            $run = async(function () use ($log, $loop, $client): void {
+                $readerId = redisReaderId($log);
+                $log->subscribe(fn () => null);
+                waitForRedisReader($client, $readerId, $loop);
+                expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
+                $retry = waitForRedisRetry($log, $loop);
+                $timers = (new ReflectionProperty(StreamSelectLoop::class, 'timers'))->getValue($loop);
+                expect($timers->contains($retry))->toBeTrue();
+
+                $log->close();
+
+                expect($timers->contains($retry))->toBeFalse();
+            })();
+            $run->then($loop->stop(...), $loop->stop(...));
+            $loop->run();
+            await($run);
+        } finally {
             $log->close();
-
-            expect($timers->contains($retry))->toBeFalse();
-        })();
-        $run->then($loop->stop(...), $loop->stop(...));
-        $loop->run();
-        await($run);
+            $client->close();
+        }
     } finally {
-        $log->close();
-        $client->close();
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
     }
 });
 
@@ -285,6 +301,7 @@ it('continues delivering a redis batch and subsequent reads after a listener thr
     $error = new RuntimeException('The first Redis listener failed.');
     $seen = [];
     $unhandled = [];
+    \React\Async\delay(1.01);
     $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
     $previousErrorLog = ini_set('error_log', $errorLog);
     $previousHandler = set_rejection_handler(function (Throwable $reason) use (&$unhandled): void {

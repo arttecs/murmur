@@ -15,6 +15,7 @@ use React\EventLoop\TimerInterface;
 use React\Http\HttpServer;
 use React\Http\Message\Response;
 use React\Http\Middleware\StreamingRequestMiddleware;
+use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use React\Socket\ConnectionInterface;
 use React\Socket\SocketServer;
@@ -69,6 +70,18 @@ class Server
     protected ?TimerInterface $heartbeat = null;
 
     /**
+     * The pending or completed graceful shutdown.
+     *
+     * @var Deferred<null>|null
+     */
+    protected ?Deferred $shutdown = null;
+
+    /**
+     * The deadline for closing any sockets left during shutdown.
+     */
+    protected ?TimerInterface $shutdownDeadline = null;
+
+    /**
      * Indicates whether the server has shut down.
      */
     protected bool $closed = false;
@@ -89,8 +102,8 @@ class Server
      */
     public function listen(): PromiseInterface
     {
-        if ($this->closed) {
-            return reject(new LogicException('The server has closed.'));
+        if ($this->closed || $this->shutdown !== null) {
+            return reject(new LogicException('The server has stopped accepting connections.'));
         }
 
         if ($this->listening === null) {
@@ -133,7 +146,7 @@ class Server
             $this->cancelRequestDeadline($client);
 
             $response = match ($route) {
-                'GET /sse' => $sse($request, $client),
+                'GET /sse' => $this->shutdown === null ? $sse($request, $client) : new Response(503),
                 'GET /health' => new Response(200, ['Content-Type' => 'application/json'], json_encode([
                     'status' => 'ok',
                     'connections' => $this->hub->connectionCount(),
@@ -163,6 +176,10 @@ class Server
 
                 if (($this->clients[$key] ?? null) === $client) {
                     unset($this->clients[$key]);
+                }
+
+                if ($this->shutdown !== null && $this->clients === []) {
+                    $this->close();
                 }
             });
         });
@@ -229,6 +246,35 @@ class Server
     }
 
     /**
+     * Drain streams and in-flight requests before closing the remaining sockets.
+     *
+     * @return PromiseInterface<null>
+     */
+    public function shutdown(float $graceSeconds = 5.0): PromiseInterface
+    {
+        if ($this->shutdown !== null) {
+            return $this->shutdown->promise();
+        }
+
+        if ($this->closed) {
+            return resolve(null);
+        }
+
+        $this->shutdown = new Deferred;
+        $this->socket?->close();
+        $this->socket = null;
+
+        if ($this->clients === []) {
+            $this->close();
+        } else {
+            $this->shutdownDeadline = $this->loop->addTimer($graceSeconds, $this->close(...));
+            $this->hub->endAll();
+        }
+
+        return $this->shutdown->promise();
+    }
+
+    /**
      * Stop accepting clients, close connections, and release timers and the log.
      */
     public function close(): void
@@ -251,6 +297,12 @@ class Server
             $this->heartbeat = null;
         }
 
+        if ($this->shutdownDeadline !== null) {
+            $this->loop->cancelTimer($this->shutdownDeadline);
+            $this->shutdownDeadline = null;
+        }
+
         $this->log->close();
+        $this->shutdown?->resolve(null);
     }
 }

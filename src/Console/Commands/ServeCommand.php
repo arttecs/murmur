@@ -35,19 +35,20 @@ class ServeCommand extends Command
     {
         try {
             $config = $this->makeConfig();
+            $log = $this->makeLog();
         } catch (InvalidArgumentException $exception) {
             $this->error($exception->getMessage());
 
             return self::FAILURE;
         }
 
-        $log = $this->makeLog();
         $loop = Loop::get();
         $server = new Server($config, $log, $loop);
         $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];
-        $shutdown = function () use ($server, $loop): void {
-            $server->close();
-            $loop->stop();
+        $shuttingDown = false;
+        $shutdown = function () use ($server, $loop, &$shuttingDown): void {
+            $shuttingDown = true;
+            $server->shutdown()->then($loop->stop(...));
         };
 
         $exitCode = self::SUCCESS;
@@ -55,7 +56,11 @@ class ServeCommand extends Command
         try {
             $server->listen()->then(function () use ($server): void {
                 $this->info('Murmur is listening on '.$server->address());
-            }, function (Throwable $error) use (&$exitCode, $loop): void {
+            }, function (Throwable $error) use (&$exitCode, $loop, &$shuttingDown): void {
+                if ($shuttingDown) {
+                    return;
+                }
+
                 $this->error($error->getMessage());
                 $exitCode = self::FAILURE;
                 $loop->futureTick($loop->stop(...));

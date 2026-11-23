@@ -3,6 +3,7 @@
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\EventIdGenerator;
+use Arttecs\Murmur\Server\Hub;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
 
 use function React\Async\await;
@@ -27,6 +28,7 @@ it('assigns ids and notifies subscribers', function () {
 });
 
 it('notifies later memory listeners and reports the error without interrupting delivery', function () {
+    \React\Async\delay(1.01);
     $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
     $previous = ini_set('error_log', $errorLog);
 
@@ -121,4 +123,40 @@ it('returns a gap without events when the matching replay exceeds the limit', fu
     expect($limited->gap)->toBeTrue()->and($limited->events)->toBe([]);
     $replay = await($log->since($first->id, ['news'], 2));
     expect($replay->gap)->toBeFalse()->and($replay->events)->toBe([$second, $last]);
+});
+
+it('limits delivery error logs to one line per second and counts suppressed errors', function () {
+    React\Async\delay(1.01);
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
+
+    try {
+        $log = logAt();
+        $log->subscribe(fn () => throw new RuntimeException("First failure\nwith a second line.", 0, new LogicException('Nested secret')));
+        $log->append(new Event('news', 'first', 'Private payload'));
+
+        $hub = new Hub;
+        [$broken, , $stream] = fakeConnection();
+        $stream->on('data', fn () => throw new RuntimeException('Suppressed hub error.'));
+        $hub->attach($broken, ['news']);
+        $hub->dispatch(new Event('news', 'second'));
+        $log->append(new Event('news', 'third'));
+
+        $lines = file($errorLog, FILE_IGNORE_NEW_LINES);
+        expect($lines)->toHaveCount(1);
+        expect($lines[0])->toContain('RuntimeException: First failure with a second line.')
+            ->not->toContain('Stack trace', 'Nested secret', 'Private payload');
+
+        React\Async\delay(1.01);
+        $next = logAt();
+        $next->subscribe(fn () => throw new LogicException('A later failure.'));
+        $next->append(new Event('news', 'fourth'));
+
+        $lines = file($errorLog, FILE_IGNORE_NEW_LINES);
+        expect($lines)->toHaveCount(2);
+        expect($lines[1])->toContain('LogicException: A later failure.', '2 errors suppressed');
+    } finally {
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
 });

@@ -10,7 +10,13 @@ use Symfony\Component\Console\Input\ArrayInput;
 use function React\Async\await;
 
 it('maps laravel config and options onto the server config', function () {
-    config(['murmur.server.heartbeat' => 5, 'murmur.server.allowed_origins' => ['https://app.test']]);
+    config([
+        'murmur.server.heartbeat' => 5,
+        'murmur.server.allowed_origins' => ['https://app.test'],
+        'murmur.server.max_sockets' => 950,
+        'murmur.server.request_timeout' => 3.5,
+        'murmur.server.max_replay_events' => 15,
+    ]);
     $command = app(ServeCommand::class);
     $command->setLaravel(app());
     $command->setInput(new ArrayInput(['--port' => '9999'], $command->getDefinition()));
@@ -18,6 +24,10 @@ it('maps laravel config and options onto the server config', function () {
     expect($config->port)->toBe(9999);
     expect($config->host)->toBe('127.0.0.1');
     expect($config->heartbeatSeconds)->toBe(5.0);
+    expect($config->maxConnections)->toBe(900);
+    expect($config->maxSockets)->toBe(950);
+    expect($config->requestTimeoutSeconds)->toBe(3.5);
+    expect($config->maxReplayEvents)->toBe(15);
     expect($config->allowedOrigins)->toBe(['https://app.test']);
     expect($config->secret)->toBe('test-secret-with-at-least-32-bytes');
 });
@@ -83,4 +93,11 @@ it('disables http publishing for the redis driver', function () {
     $command->setInput(new ArrayInput([], $command->getDefinition()));
 
     expect($command->makeConfig()->publishEnabled)->toBeFalse();
+});
+
+it('reports an unknown driver and exits cleanly', function () {
+    config(['murmur.driver' => 'carrier-pigeon']);
+    $this->artisan('murmur:serve')
+        ->expectsOutputToContain('Unsupported Murmur server driver [carrier-pigeon].')
+        ->assertExitCode(1);
 });

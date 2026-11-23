@@ -3,7 +3,7 @@
 namespace Arttecs\Murmur\Server\Log;
 
 use Arttecs\Murmur\Contracts\EventLog;
-use Arttecs\Murmur\Server\Concerns\ReportsErrors;
+use Arttecs\Murmur\Server\ErrorReporter;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Replay;
@@ -28,8 +28,6 @@ use function React\Promise\resolve;
  */
 class RedisEventLog implements EventLog
 {
-    use ReportsErrors;
-
     /**
      * The connection reserved for blocking stream reads.
      */
@@ -58,6 +56,16 @@ class RedisEventLog implements EventLog
     protected ?Deferred $readiness = null;
 
     /**
+     * The deadline for the outstanding blocking read.
+     */
+    protected ?TimerInterface $readDeadline = null;
+
+    /**
+     * Indicates whether a reader failure is awaiting recovery.
+     */
+    protected bool $readerDisconnected = false;
+
+    /**
      * The pending timer for resuming stream reads after a Redis error.
      */
     protected ?TimerInterface $retry = null;
@@ -80,7 +88,7 @@ class RedisEventLog implements EventLog
      * @throws InvalidArgumentException
      */
     public function __construct(
-        string $redisUrl,
+        protected string $redisUrl,
         protected string $streamKey,
         int $maxLength = 10000,
         ?LoopInterface $loop = null,
@@ -228,6 +236,7 @@ class RedisEventLog implements EventLog
             $this->retry = null;
         }
 
+        $this->cancelReadDeadline();
         $this->reader->close();
         $this->replay->close();
         $this->readiness?->reject(new RuntimeException('The Redis event log closed before it was ready.'));
@@ -246,6 +255,7 @@ class RedisEventLog implements EventLog
         if ($this->cursor === null) {
             $this->reader->xrevrange($this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $entries): void {
                 $this->cursor = $entries[0][0] ?? '0-0';
+                $this->reportReaderRecovery();
                 $this->read();
                 $this->readiness?->resolve(null);
                 $this->readiness = null;
@@ -254,7 +264,17 @@ class RedisEventLog implements EventLog
             return;
         }
 
-        $this->reader->xread('BLOCK', 5000, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
+        $blockMs = 5000;
+        $this->readDeadline = $this->loop->addTimer($blockMs / 1000 + 5.0, function (): void {
+            $reader = $this->reader;
+            $this->reader = (new Factory($this->loop))->createLazyClient($this->redisUrl);
+            $reader->close();
+        });
+
+        $this->reader->xread('BLOCK', $blockMs, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
+            $this->cancelReadDeadline();
+            $this->reportReaderRecovery();
+
             try {
                 foreach ($streams[0][1] ?? [] as $entry) {
                     $this->cursor = $entry[0];
@@ -268,7 +288,7 @@ class RedisEventLog implements EventLog
                         try {
                             $listener($event);
                         } catch (Throwable $error) {
-                            $this->reportError($error);
+                            ErrorReporter::report($error);
                         }
 
                         if ($this->closed) {
@@ -283,12 +303,41 @@ class RedisEventLog implements EventLog
     }
 
     /**
+     * Cancel the deadline after a blocking read finishes.
+     */
+    protected function cancelReadDeadline(): void
+    {
+        if ($this->readDeadline !== null) {
+            $this->loop->cancelTimer($this->readDeadline);
+            $this->readDeadline = null;
+        }
+    }
+
+    /**
+     * Report the first successful response after a reader failure.
+     */
+    protected function reportReaderRecovery(): void
+    {
+        if ($this->readerDisconnected) {
+            $this->readerDisconnected = false;
+            error_log('Murmur Redis reader recovered.');
+        }
+    }
+
+    /**
      * Retry the read after one second, preserving the current cursor.
      */
     protected function retryRead(): void
     {
+        $this->cancelReadDeadline();
+
         if ($this->closed) {
             return;
+        }
+
+        if (! $this->readerDisconnected) {
+            $this->readerDisconnected = true;
+            error_log('Murmur Redis reader lost its connection.');
         }
 
         $this->retry = $this->loop->addTimer(1.0, function (): void {

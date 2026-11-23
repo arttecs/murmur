@@ -94,6 +94,7 @@ it('closes every connection', function () {
 });
 
 it('closes a failed connection, reports its error and continues fan-out', function () {
+    \React\Async\delay(1.01);
     $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
     $previous = ini_set('error_log', $errorLog);
 

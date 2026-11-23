@@ -2,7 +2,6 @@
 
 namespace Arttecs\Murmur\Server;
 
-use Arttecs\Murmur\Server\Concerns\ReportsErrors;
 use Arttecs\Murmur\Server\Sse\Frame;
 use SplObjectStorage;
 use Throwable;
@@ -12,8 +11,6 @@ use Throwable;
  */
 class Hub
 {
-    use ReportsErrors;
-
     /**
      * The connections subscribed to each topic.
      *
@@ -103,12 +100,12 @@ class Hub
             try {
                 $connection->sendEvent($event, $frame);
             } catch (Throwable $error) {
-                $this->reportError($error);
+                ErrorReporter::report($error);
 
                 try {
                     $connection->close();
                 } catch (Throwable $closeError) {
-                    $this->reportError($closeError);
+                    ErrorReporter::report($closeError);
                 }
             }
         }
@@ -132,6 +129,16 @@ class Hub
     public function connectionCount(): int
     {
         return count($this->connections);
+    }
+
+    /**
+     * End every attached stream so its output can flush.
+     */
+    public function endAll(): void
+    {
+        foreach (iterator_to_array($this->connections, false) as $connection) {
+            $connection->end();
+        }
     }
 
     /**

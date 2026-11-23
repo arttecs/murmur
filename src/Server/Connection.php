@@ -66,6 +66,14 @@ class Connection
     }
 
     /**
+     * End the stream and let buffered output flush.
+     */
+    public function end(): void
+    {
+        $this->stream->end();
+    }
+
+    /**
      * Close the stream and notify the connection's listeners.
      */
     public function close(): void

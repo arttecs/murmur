@@ -3,7 +3,7 @@
 namespace Arttecs\Murmur\Server\Log;
 
 use Arttecs\Murmur\Contracts\EventLog;
-use Arttecs\Murmur\Server\Concerns\ReportsErrors;
+use Arttecs\Murmur\Server\ErrorReporter;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\EventIdGenerator;
@@ -19,8 +19,6 @@ use function React\Promise\resolve;
  */
 class MemoryEventLog implements EventLog
 {
-    use ReportsErrors;
-
     /**
      * The generator used to assign event identifiers.
      */
@@ -83,7 +81,7 @@ class MemoryEventLog implements EventLog
             try {
                 $listener($event);
             } catch (Throwable $error) {
-                $this->reportError($error);
+                ErrorReporter::report($error);
             }
         }
 

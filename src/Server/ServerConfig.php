@@ -12,7 +12,7 @@ use SensitiveParameter;
 readonly class ServerConfig
 {
     /**
-     * Create the server configuration and validate its shared secret.
+     * Create the server configuration and validate its settings.
      *
      * @param  list<string>  $allowedOrigins
      *
@@ -36,5 +36,29 @@ readonly class ServerConfig
         public int $maxReplayEvents = 1000,
     ) {
         Secret::assertValid($secret);
+
+        if ($port < 1 || $port > 65535) {
+            throw new InvalidArgumentException('The port must be between 1 and 65535.');
+        }
+
+        foreach (compact(
+            'heartbeatSeconds',
+            'retryMs',
+            'maxConnections',
+            'maxSockets',
+            'maxTopicsPerConnection',
+            'maxPayloadBytes',
+            'maxBufferBytes',
+            'maxReplayEvents',
+            'requestTimeoutSeconds',
+        ) as $setting => $value) {
+            if ($value <= 0 || ! is_finite((float) $value)) {
+                throw new InvalidArgumentException("The {$setting} setting must be positive and finite.");
+            }
+        }
+
+        if ($maxSockets < $maxConnections) {
+            throw new InvalidArgumentException('The maxSockets setting must be at least maxConnections.');
+        }
     }
 }
