@@ -48,12 +48,12 @@ const stream = murmur.stream(subscriptionUrl)
   .on('expired', () => console.log('Stream stopped after repeated failures'))
 ```
 
-Stream event names are literal, and callbacks receive the event payload. The `end`, `gap`, and `expired` callbacks take no arguments.
+Stream event names are literal, and callbacks receive the event payload. The names `end`, `gap`, and `expired` are reserved for the control callbacks, so a server event with one of those names cannot be consumed through a stream. The `end`, `gap`, and `expired` callbacks take no arguments.
 
 - `end` fires when the server sends `murmur.end`. The stream closes permanently.
 - `gap` fires when the server sends `murmur.gap` to signal missing events.
-- `expired` fires and the stream closes after three consecutive connection failures. Each received event resets the count. A private stream URL carries a fixed token.
+- `expired` fires and the stream closes after three consecutive connection failures. A connection the server accepts, and any event the stream listens to, resets the count. A private stream URL carries a fixed token, so an expired token is refused three times in a row.
 
-The first connection uses the URL as supplied. On reconnect, the client updates only `lastEventId` to the last ID it received. If it has received no ID, it removes the initial cursor. For both channels and streams, the reconnect cursor only advances on event names the client listens to.
+The first connection uses the URL as supplied. On reconnect, the client updates only `lastEventId` to the last ID it received. Until it has received an ID, it reconnects with the URL unchanged, so the initial cursor still applies. For both channels and streams, the reconnect cursor only advances on event names the client listens to.
 
 Call `stream.close()` to stop the stream and cancel any pending retry.

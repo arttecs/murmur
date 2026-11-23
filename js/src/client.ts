@@ -1,7 +1,11 @@
 import { Channel, type ChannelListeners } from './channel.js'
+import { parseEnvelope } from './envelope.js'
 import { invokeListener } from './invoke-listener.js'
 import { MurmurStream } from './stream.js'
 import { Transport } from './transport.js'
+
+/** The reconnection delay used when none is configured. */
+const defaultRetryMs = 3000
 
 /** Configures the Murmur client. */
 export interface MurmurOptions {
@@ -57,7 +61,7 @@ export class Murmur {
   public constructor(protected readonly options: MurmurOptions) {
     this.transport = new Transport(
       options.EventSource,
-      options.retryMs ?? 3000,
+      options.retryMs ?? defaultRetryMs,
       (signal, lastEventId) => this.connectionUrl(signal, lastEventId),
       (event, data) => this.receive(event, data),
       event => this.emit(event),
@@ -76,7 +80,7 @@ export class Murmur {
 
   /** Opens an independent stream using a server-issued subscription URL. */
   public stream(url: string): MurmurStream {
-    const stream = new MurmurStream(url, this.options.EventSource, this.options.retryMs ?? 3000, closed => {
+    const stream = new MurmurStream(url, this.options.EventSource, this.options.retryMs ?? defaultRetryMs, closed => {
       this.streams.delete(closed)
     })
     if (this.closed) {
@@ -246,17 +250,8 @@ export class Murmur {
       return
     }
 
-    let envelope: unknown
-    try {
-      envelope = JSON.parse(data)
-    } catch {
-      return
-    }
-    if (
-      envelope === null || typeof envelope !== 'object' ||
-      !('topic' in envelope) || typeof envelope.topic !== 'string' ||
-      !('data' in envelope)
-    ) {
+    const envelope = parseEnvelope(data)
+    if (envelope === undefined) {
       return
     }
 

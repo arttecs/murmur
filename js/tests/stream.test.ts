@@ -81,7 +81,7 @@ it('changes only the replay cursor on reconnect', async () => {
   await wait(5)
   const second = FakeEventSource.instances[1]
   assert.isDefined(second)
-  expect(second.url).toBe('/sse?topics=private%2dc&token=t%20%7e&filter=a+b&filter=a%20b#fragment')
+  expect(second.url).toBe(url)
   second.emit('token', { topic: 'private-c', data: 1 }, '107-0')
   second.fail()
 
@@ -130,9 +130,9 @@ it('emits gap and resets the failure count after receiving it', async () => {
   expect(FakeEventSource.instances).toHaveLength(4)
 })
 
-it('does not reset the failure count on a connection open', async () => {
+it('resets the failure count when the server accepts a connection', async () => {
   const expired = vi.fn()
-  client({ retryMs: 5 }).stream(URL_1).on('expired', expired)
+  const stream = client({ retryMs: 5 }).stream(URL_1).on('expired', expired)
   await flush()
 
   for (let i = 0; i < 3; i++) {
@@ -143,9 +143,46 @@ it('does not reset the failure count on a connection open', async () => {
     await wait(5)
   }
 
-  expect(expired).toHaveBeenCalledExactlyOnceWith()
-  expect(FakeEventSource.instances).toHaveLength(3)
+  expect(expired).not.toHaveBeenCalled()
+  expect(FakeEventSource.instances).toHaveLength(4)
+  stream.close()
   expect(vi.getTimerCount()).toBe(0)
+})
+
+it('resets the failure count when an event is received', async () => {
+  const expired = vi.fn()
+  const stream = client({ retryMs: 5 }).stream(URL_1).on('token', () => {}).on('expired', expired)
+  await flush()
+
+  for (let i = 0; i < 2; i++) {
+    const source = FakeEventSource.instances[i]
+    assert.isDefined(source)
+    source.fail()
+    await wait(5)
+  }
+  const third = FakeEventSource.instances[2]
+  assert.isDefined(third)
+  third.emit('token', { topic: 'private-c', data: 1 }, '110-0')
+  third.fail()
+  await wait(5)
+
+  expect(expired).not.toHaveBeenCalled()
+  expect(FakeEventSource.instances).toHaveLength(4)
+  stream.close()
+})
+
+it('delivers an event whose listener was added after the stream opened', async () => {
+  const listener = vi.fn()
+  const stream = client().stream(URL_1)
+  await flush()
+  stream.on('late', listener)
+  const source = FakeEventSource.instances[0]
+  assert.isDefined(source)
+  source.emit('late', { topic: 'private-c', data: 2 }, '111-0')
+
+  expect(listener).toHaveBeenCalledExactlyOnceWith(2)
+  expect(FakeEventSource.instances).toHaveLength(1)
+  stream.close()
 })
 
 it('delivers to the remaining stream listeners when one throws', async () => {

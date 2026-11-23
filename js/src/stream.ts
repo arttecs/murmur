@@ -1,3 +1,4 @@
+import { parseEnvelope } from './envelope.js'
 import { invokeListener } from './invoke-listener.js'
 import { Transport } from './transport.js'
 
@@ -9,10 +10,7 @@ export class MurmurStream {
   /** The callbacks registered for data and control events. */
   protected readonly listeners = new Map<string, Set<(data?: unknown) => void>>()
 
-  /** Whether the original URL has been used for an attempt. */
-  protected started = false
-
-  /** The number of consecutive failures since the last received message. */
+  /** The number of consecutive failures since the last accepted connection or received message. */
   protected failures = 0
 
   /** Whether the stream has stopped permanently. */
@@ -35,11 +33,13 @@ export class MurmurStream {
       (_signal, lastEventId) => this.connectionUrl(lastEventId),
       (event, data) => this.receive(event, data),
       status => {
-        if (status === 'disconnected') {
-          this.failures++
-          if (this.failures === 3) {
-            this.finish('expired')
-          }
+        if (status === 'connected') {
+          this.failures = 0
+          return
+        }
+        this.failures++
+        if (this.failures === 3) {
+          this.finish('expired')
         }
       },
     )
@@ -85,10 +85,9 @@ export class MurmurStream {
     onClose?.(this)
   }
 
-  /** Preserves the original subscription and changes only the replay cursor on retries. */
+  /** Keeps the supplied URL until an event ID is received, then changes only the replay cursor. */
   protected connectionUrl(lastEventId: string | undefined): string {
-    if (!this.started) {
-      this.started = true
+    if (lastEventId === undefined) {
       return this.url
     }
 
@@ -99,7 +98,7 @@ export class MurmurStream {
     const path = queryIndex === -1 ? address : address.slice(0, queryIndex)
     const query = queryIndex === -1 ? '' : address.slice(queryIndex + 1)
     const parameters = query === '' ? [] : query.split('&')
-    const cursor = lastEventId === undefined ? [] : ['lastEventId=' + encodeURIComponent(lastEventId)]
+    const cursor = ['lastEventId=' + encodeURIComponent(lastEventId)]
     let found = false
     const updated = parameters.flatMap(parameter => {
       if (!new URLSearchParams('?' + parameter).has('lastEventId')) {
@@ -110,9 +109,6 @@ export class MurmurStream {
       return replacement
     })
     if (!found) {
-      if (cursor.length === 0) {
-        return this.url
-      }
       updated.push(...cursor)
     }
     return path + (updated.length ? '?' + updated.join('&') : '') + fragment
@@ -130,17 +126,8 @@ export class MurmurStream {
       return
     }
 
-    let envelope: unknown
-    try {
-      envelope = JSON.parse(data)
-    } catch {
-      return
-    }
-    if (
-      envelope === null || typeof envelope !== 'object' ||
-      !('topic' in envelope) || typeof envelope.topic !== 'string' ||
-      !('data' in envelope)
-    ) {
+    const envelope = parseEnvelope(data)
+    if (envelope === undefined) {
       return
     }
     this.emit(event, envelope.data)
