@@ -104,8 +104,10 @@ class Server
         $this->socket->on('connection', function (ConnectionInterface $client): void {
             $key = $client->getLocalAddress().' '.$client->getRemoteAddress();
             $this->clients[$key] = $client;
-            $client->once('close', function () use ($key): void {
-                unset($this->clients[$key]);
+            $client->once('close', function () use ($key, $client): void {
+                if (($this->clients[$key] ?? null) === $client) {
+                    unset($this->clients[$key]);
+                }
             });
         });
 

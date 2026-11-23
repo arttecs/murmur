@@ -135,13 +135,13 @@ it('releases the TCP socket when a non-reading subscriber is evicted', function 
 });
 
 it('force-closes a stalled subscriber after the token expiry grace period', function () {
-    $h = ServerHarness::start(['maxBufferBytes' => 16 * 1024 * 1024]);
+    $h = ServerHarness::start(['maxBufferBytes' => 32 * 1024 * 1024]);
     $token = $h->token(['private-a'], ttl: 2);
     $client = $h->subscribeWithoutReading("/sse?topics=private-a&token={$token}");
 
     try {
         expect((string) $h->pollHealth(1)->getBody())->toBe('{"status":"ok","connections":1}');
-        $h->log->append(new Event('private-a', 'large', str_repeat('x', 8 * 1024 * 1024)));
+        $h->log->append(new Event('private-a', 'large', str_repeat('x', 16 * 1024 * 1024)));
 
         expect((string) $h->pollHealth(0, timeout: 2.5)->getBody())->toBe('{"status":"ok","connections":0}');
         expect($h->trackedSocketCount())->toBe(1);
