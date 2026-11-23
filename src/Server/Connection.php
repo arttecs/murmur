@@ -12,24 +12,24 @@ class Connection
     /**
      * The number of bytes written under backpressure since the last drain.
      */
-    private int $bufferedBytes = 0;
+    protected int $bufferedBytes = 0;
 
     /**
      * Indicates whether the connection has closed.
      */
-    private bool $closed = false;
+    protected bool $closed = false;
 
     /**
      * The listeners to notify when the connection closes.
      *
      * @var list<callable(): void>
      */
-    private array $closeListeners = [];
+    protected array $closeListeners = [];
 
     /**
      * Create a connection and listen for stream events.
      */
-    public function __construct(private WritableStreamInterface $stream, private int $maxBufferBytes = 1048576)
+    public function __construct(protected WritableStreamInterface $stream, protected int $maxBufferBytes = 1048576)
     {
         $this->stream->on('drain', function (): void {
             $this->bufferedBytes = 0;
@@ -75,15 +75,19 @@ class Connection
     }
 
     /**
-     * Register a listener for the connection's close event.
+     * Register a listener for the connection's close event, or call it now if already closed.
      *
      * @param  callable(): void  $listener
      */
     public function onClose(callable $listener): void
     {
-        if (! $this->closed) {
-            $this->closeListeners[] = $listener;
+        if ($this->closed) {
+            $listener();
+
+            return;
         }
+
+        $this->closeListeners[] = $listener;
     }
 
     /**

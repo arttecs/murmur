@@ -15,14 +15,14 @@ class Hub
      *
      * @var array<string, SplObjectStorage<Connection, null>>
      */
-    private array $topics = [];
+    protected array $topics = [];
 
     /**
      * The topics subscribed to by each connection.
      *
      * @var SplObjectStorage<Connection, array<array-key, string>>
      */
-    private SplObjectStorage $connections;
+    protected SplObjectStorage $connections;
 
     /**
      * Create a hub with no connections.

@@ -38,3 +38,41 @@ it('sends heartbeats to every connection', function () {
     $hub->heartbeat();
     expect($out())->toBe(": ping\n\n");
 });
+
+it('stops delivering to a detached connection', function () {
+    $hub = new Hub;
+    [$a, $out] = fakeConnection();
+    $hub->attach($a, ['news']);
+    $hub->detach($a);
+    $hub->dispatch(new Event('news', 'x', null, new EventId(1, 0)));
+
+    expect($out())->toBe('');
+    expect($hub->connectionCount())->toBe(0);
+    expect($a->isClosed())->toBeFalse();
+});
+
+it('replaces the topics of a connection that attaches again', function () {
+    $hub = new Hub;
+    [$a, $out] = fakeConnection();
+    $hub->attach($a, ['news']);
+    $hub->attach($a, ['other']);
+    $hub->dispatch(new Event('news', 'x', null, new EventId(1, 0)));
+    $hub->dispatch(new Event('other', 'y', null, new EventId(2, 0)));
+
+    expect($out())->not->toContain('event: x');
+    expect($out())->toContain('event: y');
+    expect($hub->connectionCount())->toBe(1);
+});
+
+it('closes every connection', function () {
+    $hub = new Hub;
+    [$a] = fakeConnection();
+    [$b] = fakeConnection();
+    $hub->attach($a, ['news']);
+    $hub->attach($b, ['other']);
+    $hub->closeAll();
+
+    expect($a->isClosed())->toBeTrue();
+    expect($b->isClosed())->toBeTrue();
+    expect($hub->connectionCount())->toBe(0);
+});
