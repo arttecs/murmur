@@ -58,3 +58,32 @@ it('reports no gap for a cursor at the last evicted event', function () {
     expect($replay->gap)->toBeFalse();
     expect($replay->events)->toHaveCount(1);
 });
+
+it('replays in order after the buffer wraps around', function () {
+    $log = logAt(capacity: 2);
+    $first = $log->append(new Event('news', 'a'));
+    $second = $log->append(new Event('news', 'b'));
+    $third = $log->append(new Event('news', 'c'));
+
+    $replay = await($log->since($first->id, ['news']));
+
+    expect($replay->gap)->toBeFalse();
+    expect(array_map(fn (Event $e) => (string) $e->id, $replay->events))->toBe([(string) $second->id, (string) $third->id]);
+});
+
+it('drops listeners and keeps the history when closed', function () {
+    $log = logAt();
+    $calls = 0;
+    $log->subscribe(function () use (&$calls) {
+        $calls++;
+    });
+    $log->close();
+    $stored = $log->append(new Event('news', 'a'));
+
+    expect($calls)->toBe(0);
+    expect(await($log->since(new EventId(1000, 0), ['news']))->events)->toBe([$stored]);
+});
+
+it('rejects a capacity below one', function (int $capacity) {
+    new MemoryEventLog($capacity);
+})->with([0, -1])->throws(InvalidArgumentException::class);

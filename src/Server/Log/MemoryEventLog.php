@@ -7,6 +7,7 @@ use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\EventIdGenerator;
 use Arttecs\Murmur\Server\Replay;
+use InvalidArgumentException;
 use React\Promise\PromiseInterface;
 
 use function React\Promise\resolve;
@@ -47,9 +48,15 @@ class MemoryEventLog implements EventLog
 
     /**
      * Create a new in-memory event log.
+     *
+     * @throws InvalidArgumentException
      */
     public function __construct(protected int $capacity = 10000, ?EventIdGenerator $ids = null)
     {
+        if ($capacity < 1) {
+            throw new InvalidArgumentException('The event log capacity must be at least 1.');
+        }
+
         $this->ids = $ids ?? new EventIdGenerator;
         $this->floor = $this->ids->next();
     }
@@ -59,19 +66,14 @@ class MemoryEventLog implements EventLog
      */
     public function append(Event $event): Event
     {
-        $id = $this->ids->next();
-        $event = $event->withId($id);
+        $event = $event->withId($this->ids->next());
 
-        if ($this->capacity > 0) {
-            if (isset($this->events[$this->next])) {
-                $this->floor = $this->events[$this->next]->id;
-            }
-
-            $this->events[$this->next] = $event;
-            $this->next = ($this->next + 1) % $this->capacity;
-        } else {
-            $this->floor = $id;
+        if (isset($this->events[$this->next])) {
+            $this->floor = $this->events[$this->next]->id;
         }
+
+        $this->events[$this->next] = $event;
+        $this->next = ($this->next + 1) % $this->capacity;
 
         foreach ($this->listeners as $listener) {
             $listener($event);
