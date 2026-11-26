@@ -28,6 +28,18 @@ class Metrics
     ];
 
     /**
+     * Names of the live gauges supplied by the server.
+     */
+    protected const GAUGES = [
+        'murmur_connections',
+        'murmur_sockets',
+        'murmur_topics',
+        'murmur_uptime_seconds',
+        'murmur_memory_bytes',
+        'murmur_memory_peak_bytes',
+    ];
+
+    /**
      * The counter series indexed by metric name and canonical label set.
      *
      * @var array<string, array<string, array{labels: array<string, string>, value: int}>>
@@ -51,6 +63,16 @@ class Metrics
                 $this->increment($name, 0);
             }
         }
+    }
+
+    /**
+     * List the names of all metrics supplied by the server.
+     *
+     * @return list<string>
+     */
+    public static function names(): array
+    {
+        return [...array_keys(static::COUNTERS), ...static::GAUGES];
     }
 
     /**

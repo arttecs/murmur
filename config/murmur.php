@@ -1,5 +1,17 @@
 <?php
 
+$metricSetting = function (string $name, mixed $default = null): mixed {
+    $value = env($name);
+
+    return $value === null || (is_string($value) && trim($value) === '') ? $default : $value;
+};
+
+$metricDuration = function (string $name, int|float $default) use ($metricSetting): mixed {
+    $value = $metricSetting($name, $default);
+
+    return is_numeric($value) ? $value + 0 : $value;
+};
+
 return [
     /**
      * Transport used by Laravel and the server. Use http for one server,
@@ -120,5 +132,45 @@ return [
         'query_timeout' => (float) env('MURMUR_REDIS_QUERY_TIMEOUT', 5.0),
         /** Milliseconds Redis waits for new events during a live read. A stalled reader is replaced 5 seconds after this wait. */
         'block_ms' => (int) env('MURMUR_REDIS_BLOCK_MS', 5000),
+    ],
+
+    /**
+     * Store each server's most recent metrics snapshot. The recorder is
+     * disabled until a store is selected.
+     */
+    'metrics' => [
+        /** Metrics store name: database, redis, cache, or a registered custom store. */
+        'store' => $metricSetting('MURMUR_METRICS_STORE'),
+        /** Seconds between snapshots from the same server. */
+        'interval' => $metricDuration('MURMUR_METRICS_INTERVAL', 15.0),
+        /** Age in seconds at which readers consider the snapshot stale. Must exceed the interval. */
+        'ttl' => $metricDuration('MURMUR_METRICS_TTL', 60),
+        /** Maximum seconds allowed for the recording process. */
+        'timeout' => $metricDuration('MURMUR_METRICS_TIMEOUT', 10.0),
+        /** Stable server identifier. Defaults to the hostname and listening port. */
+        'node' => $metricSetting('MURMUR_NODE'),
+        /** Comma-separated metric names to record. Leave empty to record all metrics. */
+        'only' => array_values(array_filter(array_map(trim(...), explode(',', (string) $metricSetting('MURMUR_METRICS_ONLY', ''))), fn (string $name): bool => $name !== '')),
+        /** Database store settings. */
+        'database' => [
+            /** Name of the database connection, or null for the application default. */
+            'connection' => $metricSetting('MURMUR_METRICS_DB_CONNECTION'),
+            /** Table to create and use for metrics. */
+            'table' => $metricSetting('MURMUR_METRICS_DB_TABLE', 'murmur_metrics'),
+        ],
+        /** Redis store settings. */
+        'redis' => [
+            /** Laravel Redis connection to use. */
+            'connection' => $metricSetting('MURMUR_METRICS_REDIS_CONNECTION', 'default'),
+            /** Hash key before Laravel applies the Redis prefix. */
+            'key' => $metricSetting('MURMUR_METRICS_REDIS_KEY', 'murmur:metrics'),
+        ],
+        /** Cache store settings. */
+        'cache' => [
+            /** Name of the Laravel cache store, or null for the application default. */
+            'store' => $metricSetting('MURMUR_METRICS_CACHE_STORE'),
+            /** Prefix for the cache entries holding snapshots and their index. */
+            'prefix' => $metricSetting('MURMUR_METRICS_CACHE_PREFIX', 'murmur:metrics:'),
+        ],
     ],
 ];

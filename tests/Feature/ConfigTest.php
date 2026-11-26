@@ -48,6 +48,12 @@ class ConfigTest extends TestCase
             'server' => ['allowed_origins' => []],
             'auth' => ['middleware' => []],
             'redis' => ['stream' => 'app-events'],
+            'metrics' => [
+                'only' => [],
+                'database' => ['table' => 'app_metrics'],
+                'redis' => ['key' => 'app:metrics'],
+                'cache' => ['prefix' => 'app:metrics:'],
+            ],
         ]]);
         (new MurmurServiceProvider($this->app))->register();
 
@@ -57,6 +63,14 @@ class ConfigTest extends TestCase
         $this->assertSame(5.0, config('murmur.server.shutdown_grace'));
         $this->assertSame(5000, config('murmur.redis.block_ms'));
         $this->assertTrue(config('murmur.auth.enabled'));
+        $this->assertNull(config('murmur.metrics.store'));
+        $this->assertSame(15.0, config('murmur.metrics.interval'));
+        $this->assertSame(60, config('murmur.metrics.ttl'));
+        $this->assertSame(10.0, config('murmur.metrics.timeout'));
+        $this->assertSame([], config('murmur.metrics.only'));
+        $this->assertSame(['connection' => null, 'table' => 'app_metrics'], config('murmur.metrics.database'));
+        $this->assertSame(['connection' => 'default', 'key' => 'app:metrics'], config('murmur.metrics.redis'));
+        $this->assertSame(['store' => null, 'prefix' => 'app:metrics:'], config('murmur.metrics.cache'));
     }
 
     public static function settings(): array
@@ -96,6 +110,24 @@ class ConfigTest extends TestCase
             ['MURMUR_REDIS_STREAM', 'my-app:events', 'redis.stream', 'my-app:events'],
             ['MURMUR_REDIS_QUERY_TIMEOUT', '0.5', 'redis.query_timeout', 0.5],
             ['MURMUR_REDIS_BLOCK_MS', '2000', 'redis.block_ms', 2000],
+            ['MURMUR_METRICS_STORE', 'redis', 'metrics.store', 'redis'],
+            ['MURMUR_METRICS_STORE', '  ', 'metrics.store', null],
+            ['MURMUR_METRICS_INTERVAL', '1.5', 'metrics.interval', 1.5],
+            ['MURMUR_METRICS_INTERVAL', ' ', 'metrics.interval', 15.0],
+            ['MURMUR_METRICS_TTL', '120', 'metrics.ttl', 120],
+            ['MURMUR_METRICS_TIMEOUT', '2.5', 'metrics.timeout', 2.5],
+            ['MURMUR_NODE', 'edge-1:8080', 'metrics.node', 'edge-1:8080'],
+            ['MURMUR_NODE', '', 'metrics.node', null],
+            ['MURMUR_METRICS_ONLY', 'a, b,,c', 'metrics.only', ['a', 'b', 'c']],
+            ['MURMUR_METRICS_ONLY', '', 'metrics.only', []],
+            ['MURMUR_METRICS_DB_CONNECTION', 'events', 'metrics.database.connection', 'events'],
+            ['MURMUR_METRICS_DB_CONNECTION', '', 'metrics.database.connection', null],
+            ['MURMUR_METRICS_DB_TABLE', 'events_metrics', 'metrics.database.table', 'events_metrics'],
+            ['MURMUR_METRICS_REDIS_CONNECTION', 'events', 'metrics.redis.connection', 'events'],
+            ['MURMUR_METRICS_REDIS_KEY', 'events:metrics', 'metrics.redis.key', 'events:metrics'],
+            ['MURMUR_METRICS_CACHE_STORE', 'events', 'metrics.cache.store', 'events'],
+            ['MURMUR_METRICS_CACHE_STORE', '', 'metrics.cache.store', null],
+            ['MURMUR_METRICS_CACHE_PREFIX', 'events:metrics:', 'metrics.cache.prefix', 'events:metrics:'],
         ];
     }
 }

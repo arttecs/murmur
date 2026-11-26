@@ -3,8 +3,13 @@
 namespace Arttecs\Murmur;
 
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Contracts\MetricsStore;
 use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Exceptions\PublishFailed;
+use Arttecs\Murmur\Metrics\CacheMetricsStore;
+use Arttecs\Murmur\Metrics\DatabaseMetricsStore;
+use Arttecs\Murmur\Metrics\MetricsConfig;
+use Arttecs\Murmur\Metrics\RedisMetricsStore;
 use Arttecs\Murmur\Publishers\HttpPublisher;
 use Arttecs\Murmur\Publishers\RedisPublisher;
 use Arttecs\Murmur\Server\Auth\Secret;
@@ -14,9 +19,11 @@ use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
 use Arttecs\Murmur\Server\Server;
 use Closure;
+use Illuminate\Contracts\Cache\Factory as CacheFactory;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
+use Illuminate\Database\ConnectionResolverInterface;
 use Illuminate\Http\Client\Factory;
 use InvalidArgumentException;
 use React\EventLoop\LoopInterface;
@@ -32,6 +39,23 @@ class MurmurManager
      * @var array<string, array{publisher: Closure(Application): Publisher, eventLog: Closure(Application): EventLog}>
      */
     protected array $drivers = [];
+
+    /**
+     * The built-in metrics store names.
+     */
+    protected const METRICS_STORES = ['database', 'redis', 'cache'];
+
+    /**
+     * Factories for custom metrics stores.
+     *
+     * @var array<string, Closure(Application): MetricsStore>
+     */
+    protected array $metricsFactories = [];
+
+    /**
+     * The resolved metrics store for this manager.
+     */
+    protected ?MetricsStore $metricsStore = null;
 
     /**
      * The callbacks to run when the Artisan command creates the server.
@@ -124,6 +148,79 @@ class MurmurManager
                 blockMs: $this->config->get('murmur.redis.block_ms'),
             ),
             default => throw new InvalidArgumentException("Unsupported Murmur server driver [{$driver}]."),
+        };
+    }
+
+    /**
+     * Register a factory for a custom metrics store.
+     *
+     * @param  Closure(Application): MetricsStore  $factory
+     *
+     * @throws InvalidArgumentException
+     */
+    public function extendMetrics(string $store, Closure $factory): void
+    {
+        if (in_array($store, static::METRICS_STORES, true) || preg_match('/\A[a-z0-9_-]+\z/', $store) !== 1) {
+            throw new InvalidArgumentException('Invalid or reserved Murmur metrics store name.');
+        }
+
+        $this->metricsFactories[$store] = $factory;
+    }
+
+    /**
+     * Validate the metrics configuration without connecting to a store.
+     *
+     * @throws InvalidArgumentException
+     */
+    public function metricsConfiguration(): ?MetricsConfig
+    {
+        $store = $this->config->get('murmur.metrics.store');
+
+        if ($store === null || (is_string($store) && trim($store) === '')) {
+            return null;
+        }
+
+        if (! is_string($store) || (! in_array($store, static::METRICS_STORES, true) && ! isset($this->metricsFactories[$store]))) {
+            $name = is_string($store) ? str_replace(["\r", "\n", "\0"], ' ', $store) : get_debug_type($store);
+
+            throw new InvalidArgumentException("Unsupported Murmur metrics store [{$name}].");
+        }
+
+        return MetricsConfig::from($this->config, $store);
+    }
+
+    /**
+     * Resolve the configured metrics store once for this manager.
+     *
+     * @throws InvalidArgumentException
+     */
+    public function metricsStore(): ?MetricsStore
+    {
+        if ($this->metricsStore !== null) {
+            return $this->metricsStore;
+        }
+
+        $metrics = $this->metricsConfiguration();
+
+        if ($metrics === null) {
+            return null;
+        }
+
+        return $this->metricsStore = match ($metrics->store) {
+            'database' => new DatabaseMetricsStore(
+                $this->app->make(ConnectionResolverInterface::class)->connection($this->config->get('murmur.metrics.database.connection')),
+                $metrics->table,
+            ),
+            'redis' => new RedisMetricsStore(
+                $this->app->make(RedisFactory::class)->connection($this->config->get('murmur.metrics.redis.connection')),
+                $this->config->get('murmur.metrics.redis.key'),
+            ),
+            'cache' => new CacheMetricsStore(
+                $this->app->make(CacheFactory::class)->store($this->config->get('murmur.metrics.cache.store')),
+                $this->config->get('murmur.metrics.cache.prefix'),
+                (int) min(ceil($metrics->ttl), PHP_INT_MAX >> 1),
+            ),
+            default => ($this->metricsFactories[$metrics->store])($this->app),
         };
     }
 
