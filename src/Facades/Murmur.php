@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Facade;
 /**
  * Access the Murmur manager through Laravel's facade.
  *
+ * @method static void extend(string $driver, \Closure $publisher, \Closure $eventLog)
  * @method static void publish(string $topic, string $event, mixed $data = null)
  * @method static \Arttecs\Murmur\Stream stream(string $topic)
  * @method static string token(array<string> $topics, ?int $ttl = null)

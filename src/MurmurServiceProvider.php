@@ -5,16 +5,10 @@ namespace Arttecs\Murmur;
 use Arttecs\Murmur\Broadcasting\MurmurBroadcaster;
 use Arttecs\Murmur\Console\Commands\ServeCommand;
 use Arttecs\Murmur\Contracts\Publisher;
-use Arttecs\Murmur\Publishers\HttpPublisher;
-use Arttecs\Murmur\Publishers\RedisPublisher;
-use Arttecs\Murmur\Server\Auth\Secret;
 use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
-use Illuminate\Contracts\Redis\Factory as RedisFactory;
-use Illuminate\Http\Client\Factory;
 use Illuminate\Support\ServiceProvider;
-use InvalidArgumentException;
 
 /**
  * Register the Laravel services and configuration for Murmur.
@@ -28,30 +22,7 @@ class MurmurServiceProvider extends ServiceProvider
     {
         $this->mergeMurmurConfig();
 
-        $this->app->singleton(Publisher::class, function (Application $app): Publisher {
-            $config = $app['config'];
-            $driver = $config->get('murmur.driver');
-            $secret = (string) $config->get('murmur.secret');
-            Secret::assertValid($secret);
-
-            return match ($driver) {
-                'http' => new HttpPublisher(
-                    $app->make(Factory::class),
-                    $config->get('murmur.publish_url'),
-                    $secret,
-                    $config->get('murmur.http.timeout'),
-                    $config->get('murmur.http.connect_timeout'),
-                ),
-                'redis' => new RedisPublisher(
-                    $app->make(RedisFactory::class),
-                    $config->get('murmur.redis.connection'),
-                    static::fullStreamKey(),
-                    $config->get('murmur.server.log_size'),
-                    $config->get('murmur.server.max_payload_bytes'),
-                ),
-                default => throw new InvalidArgumentException("Unsupported Murmur publisher driver [{$driver}]."),
-            };
-        });
+        $this->app->singleton(Publisher::class, fn (Application $app): Publisher => $app->make(MurmurManager::class)->publisher());
 
         $this->app->singleton(MurmurManager::class);
     }

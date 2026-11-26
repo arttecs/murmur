@@ -2,11 +2,21 @@
 
 namespace Arttecs\Murmur;
 
+use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Exceptions\PublishFailed;
+use Arttecs\Murmur\Publishers\HttpPublisher;
+use Arttecs\Murmur\Publishers\RedisPublisher;
+use Arttecs\Murmur\Server\Auth\Secret;
 use Arttecs\Murmur\Server\Auth\TokenIssuer;
 use Arttecs\Murmur\Server\Event;
+use Arttecs\Murmur\Server\Log\MemoryEventLog;
+use Arttecs\Murmur\Server\Log\RedisEventLog;
+use Closure;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\Redis\Factory as RedisFactory;
+use Illuminate\Http\Client\Factory;
 use InvalidArgumentException;
 
 /**
@@ -15,18 +25,97 @@ use InvalidArgumentException;
 class MurmurManager
 {
     /**
-     * The subscription token issuer.
+     * The registered application and server factories for custom drivers.
+     *
+     * @var array<string, array{publisher: Closure(Application): Publisher, eventLog: Closure(Application): EventLog}>
      */
-    protected TokenIssuer $tokenIssuer;
+    protected array $drivers = [];
 
     /**
-     * Create a manager for the configured publisher and token issuer.
+     * Create a manager without resolving the configured driver or signing secret.
+     */
+    public function __construct(protected Application $app, protected Repository $config) {}
+
+    /**
+     * Register the publisher and event log factories for a custom driver.
+     *
+     * @param  Closure(Application): Publisher  $publisher
+     * @param  Closure(Application): EventLog  $eventLog
      *
      * @throws InvalidArgumentException
      */
-    public function __construct(protected Publisher $publisher, protected Repository $config)
+    public function extend(string $driver, Closure $publisher, Closure $eventLog): void
     {
-        $this->tokenIssuer = new TokenIssuer((string) $config->get('murmur.secret'), fn () => now()->timestamp);
+        if (in_array($driver, ['http', 'redis'], true) || preg_match('/\A[a-z0-9_-]+\z/', $driver) !== 1) {
+            throw new InvalidArgumentException("Invalid or reserved Murmur driver [{$driver}].");
+        }
+
+        $this->drivers[$driver] = ['publisher' => $publisher, 'eventLog' => $eventLog];
+    }
+
+    /**
+     * Resolve the publisher for the configured driver.
+     *
+     * @throws InvalidArgumentException
+     */
+    public function publisher(): Publisher
+    {
+        $driver = $this->config->get('murmur.driver');
+
+        if (isset($this->drivers[$driver])) {
+            return ($this->drivers[$driver]['publisher'])($this->app);
+        }
+
+        $secret = (string) $this->config->get('murmur.secret');
+
+        if (in_array($driver, ['http', 'redis'], true)) {
+            Secret::assertValid($secret);
+        }
+
+        return match ($driver) {
+            'http' => new HttpPublisher(
+                $this->app->make(Factory::class),
+                $this->config->get('murmur.publish_url'),
+                $secret,
+                $this->config->get('murmur.http.timeout'),
+                $this->config->get('murmur.http.connect_timeout'),
+            ),
+            'redis' => new RedisPublisher(
+                $this->app->make(RedisFactory::class),
+                $this->config->get('murmur.redis.connection'),
+                MurmurServiceProvider::fullStreamKey(),
+                $this->config->get('murmur.server.log_size'),
+                $this->config->get('murmur.server.max_payload_bytes'),
+            ),
+            default => throw new InvalidArgumentException("Unsupported Murmur publisher driver [{$driver}]."),
+        };
+    }
+
+    /**
+     * Resolve the event log for the configured server driver.
+     *
+     * @throws InvalidArgumentException
+     */
+    public function eventLog(): EventLog
+    {
+        $driver = $this->config->get('murmur.driver');
+
+        if (isset($this->drivers[$driver])) {
+            return ($this->drivers[$driver]['eventLog'])($this->app);
+        }
+
+        return match ($driver) {
+            'http' => new MemoryEventLog((int) $this->config->get('murmur.server.log_size')),
+            'redis' => new RedisEventLog(
+                $this->config->get('murmur.redis.url'),
+                MurmurServiceProvider::fullStreamKey(),
+                $this->config->get('murmur.server.log_size'),
+                maxPayloadBytes: $this->config->get('murmur.server.max_payload_bytes'),
+                queryTimeoutSeconds: $this->config->get('murmur.redis.query_timeout'),
+                blockMs: $this->config->get('murmur.redis.block_ms'),
+            ),
+            default => throw new InvalidArgumentException("Unsupported Murmur server driver [{$driver}]."),
+        };
     }
 
     /**
@@ -41,7 +130,7 @@ class MurmurManager
             throw new InvalidArgumentException('Event names starting with "murmur." are reserved.');
         }
 
-        $this->publisher->publish(new Event($topic, $event, $data));
+        $this->app->make(Publisher::class)->publish(new Event($topic, $event, $data));
     }
 
     /**
@@ -49,7 +138,7 @@ class MurmurManager
      */
     public function stream(string $topic): Stream
     {
-        return new Stream($this, $topic, $this->config->get('murmur.stream_cursor_margin_ms'), $this->publisher);
+        return new Stream($this, $topic, $this->config->get('murmur.stream_cursor_margin_ms'), $this->app->make(Publisher::class));
     }
 
     /**
@@ -59,7 +148,9 @@ class MurmurManager
      */
     public function token(array $topics, ?int $ttl = null): string
     {
-        return $this->tokenIssuer->issue($topics, $ttl ?? $this->config->get('murmur.token_ttl'));
+        $issuer = new TokenIssuer((string) $this->config->get('murmur.secret'), fn () => now()->timestamp);
+
+        return $issuer->issue($topics, $ttl ?? $this->config->get('murmur.token_ttl'));
     }
 
     /**

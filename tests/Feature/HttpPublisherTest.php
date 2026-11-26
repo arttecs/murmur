@@ -45,7 +45,7 @@ it('boots without a secret and fails only when murmur is used', function (?strin
     config(['murmur.secret' => $secret]);
 
     expect(fn () => app(Publisher::class))->toThrow(InvalidArgumentException::class, 'at least 32 bytes');
-    expect(fn () => app(MurmurManager::class))->toThrow(InvalidArgumentException::class, 'at least 32 bytes');
+    expect(fn () => app(MurmurManager::class)->publish('news', 'updated'))->toThrow(InvalidArgumentException::class, 'at least 32 bytes');
 })->with([null, '', 'short']);
 
 it('rejects an unsupported driver', function () {
