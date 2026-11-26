@@ -84,4 +84,4 @@ jobs:
       - run: npm run test:integration
       - run: npm run build
       - run: npm pack --dry-run
-      - run: node --input-type=module -e "import { Murmur } from './dist/index.js'; if (typeof Murmur !== 'function') process.exit(1)"
+      - run: node --input-type=module -e "import { Murmur } from './dist/index.js'; if (typeof Murmur !== 'function') process.exit(1)" && node --input-type=module -e "import { MurmurConnector } from './dist/echo.js'; if (typeof MurmurConnector !== 'function') process.exit(1)"
