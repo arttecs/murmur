@@ -65,7 +65,7 @@ it('writes the literal handshake and replay before live delivery', function (str
     expect($r->nextRaw())->toBe('retry: 3000');
     expect($r->nextRaw())->toBe("event: murmur.connected\ndata: {\"connection_id\":\"{$id}\",\"protocol\":1}");
 
-    if ($cursor && $history === 'over limit') {
+    if ($cursor && $history !== 'within limit') {
         expect($r->nextRaw())->toBe("event: murmur.gap\ndata: {}");
     }
 
@@ -273,15 +273,49 @@ it('resumes a quiet subscription without a gap after unrelated traffic trims its
     expect($resumed->attached()['id'])->toBe($latest);
 })->with(['memory', 'redis']);
 
-it('acknowledges a cursor below a stale client cursor and continues live', function (string $driver) {
+it('signals a gap before resetting a stale client cursor to the tail', function (string $driver, bool $fresh) {
     [$log, $publish] = attachTestLog($driver);
     $h = ServerHarness::start(log: $log);
     $tail = $publish('news', 'tail');
-    $r = SseReader::open($h->url('/sse?topics=news&lastEventId=999999999999999999-0'));
-    $r->next();
-    $r->next();
+    $path = '/sse?topics=news&lastEventId=999999999999999999-0'.($fresh ? '&fresh=news' : '');
+    $r = SseReader::open($h->url($path));
+    $r->start(replaying: true);
+    expect($r->nextRaw())->toBe("event: murmur.gap\ndata: {}");
     expect($r->nextRaw())->toBe("id: {$tail}\nevent: murmur.attached\ndata: {}");
 
     $live = $publish('news', 'live');
     expect($r->next()['id'])->toBe($live);
+})->with(['memory', 'redis'], [false, true]);
+
+it('supplies a new cursor in a heartbeat after an empty log could not number the marker', function (string $driver) {
+    [$log, $publish] = attachTestLog($driver);
+    $h = ServerHarness::start(['heartbeatSeconds' => 0.1], $log);
+    $path = $h->url('/sse?topics=news');
+    $cursor = '999999999999999999-0';
+
+    for ($i = 0; $i < 2; $i++) {
+        $r = SseReader::open($path, ['Last-Event-ID' => $cursor]);
+        $r->start(replaying: true);
+        expect($r->nextRaw())->toBe("event: murmur.gap\ndata: {}");
+        expect($r->attached()['id'])->toBeNull();
+        expect($r->nextRaw())->toBe(': ping');
+
+        if ($i === 0) {
+            $r->close();
+        }
+    }
+
+    $id = $publish('unsubscribed', 'first-in-new-log');
+    $deadline = hrtime(true) + 1_000_000_000;
+
+    do {
+        $frame = $r->next();
+    } while ($frame['comment'] === 'ping' && hrtime(true) < $deadline);
+
+    expect($frame)->toMatchArray(['event' => 'murmur.heartbeat', 'id' => $id, 'data' => '{}']);
+    $r->close();
+
+    $resumed = SseReader::open($path, ['Last-Event-ID' => $frame['id']]);
+    $resumed->start(replaying: true);
+    expect($resumed->attached()['id'])->toBe($id);
 })->with(['memory', 'redis']);

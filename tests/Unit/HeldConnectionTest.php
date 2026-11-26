@@ -125,7 +125,7 @@ it('delivers the next memory event even when the cursor is ahead of the log', fu
     $connection->release($replay);
     $live = $log->append(new Event('news', 'live'));
 
-    expect($this->frames)->toBe([Frame::attached($tail), Frame::event($live)]);
+    expect($this->frames)->toBe([Frame::gap(), Frame::attached($tail), Frame::event($live)]);
 })->with(['empty log' => [true], 'nonempty log' => [false]]);
 
 it('reports a gap once when a gap frame arrives while a replay that has a gap is pending', function () {

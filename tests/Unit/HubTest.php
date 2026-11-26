@@ -89,6 +89,9 @@ it('uses a comment heartbeat while held and while the dispatched position is beh
     $hub->dispatch(new Event('news', 'late-fresh', id: $tail));
 
     expect($out())->toBe(Frame::attached($tail).": ping\n\n: ping\n\n");
+
+    $hub->heartbeat();
+    expect($out())->toBe(Frame::attached($tail).": ping\n\n: ping\n\nid: 10-3\nevent: murmur.heartbeat\ndata: {}\n\n");
 });
 
 it('advances a heartbeat past an excluded event without delivering it', function () {

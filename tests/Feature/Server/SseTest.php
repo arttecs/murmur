@@ -223,7 +223,9 @@ it('delivers live events with a cursor ahead of the memory log', function () {
     $h = ServerHarness::start();
     $h->log->append(new Event('news', 'old'));
     $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => '999999999999999999-0']);
-    expect($r->start()['retry'])->toBe('3000');
+    expect($r->start(replaying: true)['retry'])->toBe('3000');
+    expect($r->next()['event'])->toBe('murmur.gap');
+    $r->attached();
 
     $h->publish('news', 'live');
 
