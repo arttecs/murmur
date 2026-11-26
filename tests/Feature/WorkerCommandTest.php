@@ -4,7 +4,7 @@ use Symfony\Component\Process\Process;
 
 function recordMetricsInput(string|iterable $input, ?string $store, string $file, string $mode = ''): Process
 {
-    $process = new Process([PHP_BINARY, '-d', 'memory_limit=32M', dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:record-metrics'], env: [
+    $process = new Process([PHP_BINARY, '-d', 'memory_limit=32M', dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:worker'], env: [
         'MURMUR_METRICS_STORE' => $store ?? '',
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => $mode,
@@ -17,6 +17,7 @@ function recordMetricsInput(string|iterable $input, ?string $store, string $file
 function metricsRecordPayload(): array
 {
     return [
+        'type' => 'metrics',
         'node' => 'edge.test:8080',
         'recorded_at' => 123,
         'samples' => [[
@@ -50,6 +51,7 @@ it('stores successive lines without filtering or changing their timestamps and e
         expect($first->pid)->toBe($second->pid);
         $payload['samples'][1]['labels'] = [];
         $saved = json_decode(json_encode($first, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+        unset($payload['type']);
         expect(array_intersect_key($saved, $payload))->toBe($payload);
         expect($second->recorded_at)->toBe(124);
     } finally {
@@ -74,6 +76,8 @@ it('rejects invalid lines without reaching the store and handles the next valid 
 })->with([
     'malformed' => [fn () => '{"sensitive-payload"'],
     'envelope type' => [fn () => '[]'],
+    'missing message type' => [fn ($p) => json_encode(array_diff_key($p, ['type' => true]))],
+    'unknown message type' => [fn ($p) => json_encode([...$p, 'type' => 'unknown'])],
     'extra field' => [fn ($p) => json_encode($p + ['extra' => 'sensitive-payload'])],
     'missing node' => [fn ($p) => json_encode(array_diff_key($p, ['node' => true]))],
     'invalid node' => [fn ($p) => json_encode(array_replace($p, ['node' => "sensitive-payload\n"]))],
@@ -167,13 +171,13 @@ it('keeps the stdin writer hidden from the Artisan command list', function () {
     $process = new Process([PHP_BINARY, dirname(__DIR__).'/Support/metrics-artisan.php', 'list', '--raw']);
     $process->mustRun();
 
-    expect($process->getOutput())->toContain('murmur:serve')->not->toContain('murmur:record-metrics');
+    expect($process->getOutput())->toContain('murmur:serve')->not->toContain('murmur:worker');
 });
 
 it('keeps writing when its parent is the init process', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-record-');
     $line = json_encode(metricsRecordPayload(), JSON_THROW_ON_ERROR);
-    $writer = implode(' ', array_map(escapeshellarg(...), [PHP_BINARY, dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:record-metrics']));
+    $writer = implode(' ', array_map(escapeshellarg(...), [PHP_BINARY, dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:worker']));
     $feed = 'printf "%s\n" "$LINE"; sleep 2; printf "%s\n" "$LINE"';
     $process = Process::fromShellCommandLine("( ( {$feed} ) | {$writer} > /dev/null 2>&1 & )", env: [
         'LINE' => $line,

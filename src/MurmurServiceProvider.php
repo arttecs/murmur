@@ -5,9 +5,9 @@ namespace Arttecs\Murmur;
 use Arttecs\Murmur\Broadcasting\MurmurBroadcaster;
 use Arttecs\Murmur\Console\Commands\ForgetMetricsCommand;
 use Arttecs\Murmur\Console\Commands\InstallCommand;
-use Arttecs\Murmur\Console\Commands\RecordMetricsCommand;
 use Arttecs\Murmur\Console\Commands\ServeCommand;
 use Arttecs\Murmur\Console\Commands\StatusCommand;
+use Arttecs\Murmur\Console\Commands\WorkerCommand;
 use Arttecs\Murmur\Contracts\Publisher;
 use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Contracts\Foundation\Application;
@@ -88,7 +88,7 @@ class MurmurServiceProvider extends ServiceProvider
                 __DIR__.'/../database/migrations/2026_11_23_000000_create_murmur_metrics_table.php' => $this->app->databasePath('migrations/2026_11_23_000000_create_murmur_metrics_table.php'),
             ], 'murmur-migrations');
 
-            $this->commands([InstallCommand::class, ServeCommand::class, RecordMetricsCommand::class, StatusCommand::class, ForgetMetricsCommand::class]);
+            $this->commands([InstallCommand::class, ServeCommand::class, WorkerCommand::class, StatusCommand::class, ForgetMetricsCommand::class]);
         }
     }
 }

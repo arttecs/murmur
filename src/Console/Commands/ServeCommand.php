@@ -3,11 +3,11 @@
 namespace Arttecs\Murmur\Console\Commands;
 
 use Arttecs\Murmur\Contracts\EventLog;
-use Arttecs\Murmur\Metrics\MetricsRecorder;
 use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\Server\LoopBackend;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
+use Arttecs\Murmur\Worker\Worker;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ProcessUtils;
@@ -52,11 +52,11 @@ class ServeCommand extends Command
             $backend->validate($config->maxSockets);
             $metrics = $manager->metricsConfiguration();
             $host = gethostname();
-            $recorder = $metrics === null ? null : new MetricsRecorder(
+            $worker = $metrics === null ? null : new Worker(
                 $loop,
                 $metrics,
                 $metrics->node ?? ($host === false ? '' : $host.':'.$config->port),
-                $this->metricsCommand(),
+                $this->workerCommand(),
             );
         } catch (InvalidArgumentException $exception) {
             $this->error($exception->getMessage());
@@ -73,7 +73,7 @@ class ServeCommand extends Command
         }
 
         try {
-            $recorder?->launch();
+            $worker?->launch();
         } catch (RuntimeException $exception) {
             $this->error($exception->getMessage());
 
@@ -108,25 +108,25 @@ class ServeCommand extends Command
             $manager->callServingCallbacks($server, $loop);
 
             $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];
-            $shutdown = function () use ($server, $recorder, $loop, &$shuttingDown): void {
+            $shutdown = function () use ($server, $worker, $loop, &$shuttingDown): void {
                 $shuttingDown = true;
 
-                if ($recorder === null) {
+                if ($worker === null) {
                     $server->shutdown()->then($loop->stop(...));
 
                     return;
                 }
 
-                all([$recorder->stop(), $server->shutdown()])->then($loop->stop(...));
+                all([$worker->stop(), $server->shutdown()])->then($loop->stop(...));
             };
 
             foreach ($signals as $signal) {
                 $loop->addSignal($signal, $shutdown);
             }
 
-            $server->listen()->then(function () use ($server, $recorder): void {
+            $server->listen()->then(function () use ($server, $worker): void {
                 $this->info('Murmur is listening on '.$server->address());
-                $recorder?->start($server->metrics());
+                $worker?->start($server->metrics());
             }, function (Throwable $error) use (&$exitCode, $loop, &$shuttingDown): void {
                 if ($shuttingDown) {
                     return;
@@ -146,8 +146,8 @@ class ServeCommand extends Command
             try {
                 $server?->close();
             } finally {
-                if ($recorder !== null) {
-                    $this->stopRecorder($recorder, $loop);
+                if ($worker !== null) {
+                    $this->stopWorker($worker, $loop);
                 }
             }
         }
@@ -156,11 +156,11 @@ class ServeCommand extends Command
     }
 
     /**
-     * Build the writer command using the running PHP and Artisan entry point.
+     * Build the worker command using the running PHP and Artisan entry point.
      *
      * @throws InvalidArgumentException
      */
-    protected function metricsCommand(): string
+    protected function workerCommand(): string
     {
         $artisan = artisan_binary();
 
@@ -176,16 +176,16 @@ class ServeCommand extends Command
             throw new InvalidArgumentException('Murmur metrics recording could not locate the Artisan entry point.');
         }
 
-        return ProcessUtils::escapeArgument(PHP_BINARY).' '.ProcessUtils::escapeArgument($path).' murmur:record-metrics';
+        return ProcessUtils::escapeArgument(PHP_BINARY).' '.ProcessUtils::escapeArgument($path).' murmur:worker';
     }
 
     /**
-     * Reap any writer still running if the event loop stopped outside graceful shutdown.
+     * Reap any worker still running if the event loop stopped outside graceful shutdown.
      */
-    protected function stopRecorder(MetricsRecorder $recorder, LoopInterface $loop): void
+    protected function stopWorker(Worker $worker, LoopInterface $loop): void
     {
         $stopped = false;
-        $shutdown = $recorder->stop()->then(function () use (&$stopped): void {
+        $shutdown = $worker->stop()->then(function () use (&$stopped): void {
             $stopped = true;
         });
 

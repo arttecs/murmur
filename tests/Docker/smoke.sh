@@ -25,7 +25,7 @@ recorded_at() {
 }
 
 writer_pid() {
-    docker exec "$container" pgrep -f 'murmur:record-metrics' | tr '\n' ' '
+    docker exec "$container" pgrep -f 'murmur:worker' | tr '\n' ' '
 }
 
 trap cleanup EXIT

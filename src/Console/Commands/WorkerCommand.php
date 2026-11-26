@@ -6,6 +6,7 @@ use Arttecs\Murmur\Contracts\MetricsStore;
 use Arttecs\Murmur\Metrics\Snapshot;
 use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\Server\Metrics;
+use Arttecs\Murmur\Worker\Worker;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -13,24 +14,24 @@ use stdClass;
 use Throwable;
 
 /**
- * Read and store snapshots from the server until standard input closes.
+ * Process typed messages from the server until standard input closes.
  *
  * @internal
  */
-class RecordMetricsCommand extends Command
+class WorkerCommand extends Command
 {
     /**
      * The command name used by the server's recorder.
      */
-    protected $signature = 'murmur:record-metrics';
+    protected $signature = 'murmur:worker';
 
     /**
      * The description of the internal command.
      */
-    protected $description = 'Record Murmur metrics snapshots from standard input';
+    protected $description = 'Process Murmur worker messages from standard input';
 
     /**
-     * Hide the writer from the Artisan command list.
+     * Hide the worker from the Artisan command list.
      */
     protected $hidden = true;
 
@@ -58,9 +59,9 @@ class RecordMetricsCommand extends Command
 
             $this->clearQueryLogs();
 
-            while (($line = @fgets(STDIN, Snapshot::MAX_DOCUMENT_BYTES + 2)) !== false) {
+            while (($line = @fgets(STDIN, Worker::MAX_LINE_BYTES + 2)) !== false) {
                 if (str_ends_with($line, "\n")) {
-                    $saved = $this->writeSnapshot($store, $line);
+                    $saved = $this->processMessage($store, json_decode($line));
                 } else {
                     unset($line);
                     $this->discardLine();
@@ -92,13 +93,22 @@ class RecordMetricsCommand extends Command
     }
 
     /**
+     * Route an input object by message type.
+     */
+    protected function processMessage(MetricsStore $store, mixed $data): bool
+    {
+        return $data instanceof stdClass && match ($data->type ?? null) {
+            'metrics' => $this->writeSnapshot($store, $data),
+            default => false,
+        };
+    }
+
+    /**
      * Validate and store one snapshot, reporting store failures through Laravel.
      */
-    protected function writeSnapshot(MetricsStore $store, string $line): bool
+    protected function writeSnapshot(MetricsStore $store, stdClass $data): bool
     {
-        $data = json_decode($line);
-
-        if (! $data instanceof stdClass || count((array) $data) !== 3 || ! Snapshot::validNode($data->node ?? null)) {
+        if (count((array) $data) !== 4 || ! Snapshot::validNode($data->node ?? null)) {
             return false;
         }
 
@@ -125,7 +135,7 @@ class RecordMetricsCommand extends Command
     }
 
     /**
-     * Disable and clear query logs on Laravel database connections used by the writer.
+     * Disable and clear query logs on Laravel database connections used by the worker.
      */
     protected function clearQueryLogs(): void
     {

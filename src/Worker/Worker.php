@@ -1,7 +1,9 @@
 <?php
 
-namespace Arttecs\Murmur\Metrics;
+namespace Arttecs\Murmur\Worker;
 
+use Arttecs\Murmur\Metrics\MetricsConfig;
+use Arttecs\Murmur\Metrics\Snapshot;
 use Arttecs\Murmur\Server\ErrorReporter;
 use Arttecs\Murmur\Server\Metrics;
 use InvalidArgumentException;
@@ -14,19 +16,24 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Send server snapshots to a single Artisan writer without waiting in the event loop.
+ * Send server records to a single Artisan worker without waiting in the event loop.
  *
  * @internal
  */
-class MetricsRecorder
+class Worker
 {
     /**
-     * The Unix signal that forces a writer to exit.
+     * The maximum length of a worker message before its newline.
+     */
+    public const MAX_LINE_BYTES = 1_048_576;
+
+    /**
+     * The Unix signal that forces a worker to exit.
      */
     protected const KILL_SIGNAL = 9;
 
     /**
-     * The maximum length of a writer acknowledgement before its newline.
+     * The maximum length of a worker acknowledgement before its newline.
      */
     protected const ACK_BYTES = 5;
 
@@ -46,17 +53,17 @@ class MetricsRecorder
     protected ?TimerInterface $shutdownTimer = null;
 
     /**
-     * The writer started before the server opened any sockets.
+     * The worker started before the server opened any sockets.
      */
     protected ?Process $process = null;
 
     /**
-     * Whether the previous snapshot still needs an acknowledgement.
+     * The message kind that still needs an acknowledgement.
      */
-    protected bool $pending = false;
+    protected ?string $pending = null;
 
     /**
-     * Whether the writer's input stream cannot accept more data.
+     * Whether the worker's input stream cannot accept more data.
      */
     protected bool $backpressured = false;
 
@@ -66,14 +73,14 @@ class MetricsRecorder
     protected ?string $reply = '';
 
     /**
-     * The pending shutdown, resolved after the writer has been reaped.
+     * The pending shutdown, resolved after the worker has been reaped.
      *
      * @var Deferred<null>|null
      */
     protected ?Deferred $stopping = null;
 
     /**
-     * Prepare the recorder and verify that this host can launch and signal the writer.
+     * Prepare the recorder and verify that this host can launch and signal the worker.
      *
      * @throws InvalidArgumentException
      */
@@ -97,9 +104,9 @@ class MetricsRecorder
     }
 
     /**
-     * Launch the writer before the server establishes any network connections.
+     * Launch the worker before the server establishes any network connections.
      *
-     * The writer shares the server's standard error so its logs reach the same place.
+     * The worker shares the server's standard error so its logs reach the same place.
      *
      * @throws RuntimeException
      */
@@ -122,7 +129,7 @@ class MetricsRecorder
     }
 
     /**
-     * Determine whether the writer is still active.
+     * Determine whether the worker is still active.
      */
     public function running(): bool
     {
@@ -143,7 +150,7 @@ class MetricsRecorder
     }
 
     /**
-     * Stop scheduling snapshots, signal EOF, and let the loop reap the writer.
+     * Stop scheduling snapshots, signal EOF, and let the loop reap the worker.
      *
      * @return PromiseInterface<null>
      */
@@ -169,7 +176,7 @@ class MetricsRecorder
      */
     protected function record(Metrics $metrics): void
     {
-        if ($this->pending || $this->process === null) {
+        if (! $this->available()) {
             return;
         }
 
@@ -181,6 +188,7 @@ class MetricsRecorder
             }
 
             $payload = json_encode([
+                'type' => 'metrics',
                 'node' => $this->node,
                 'recorded_at' => time(),
                 'samples' => Snapshot::encodeSamples($samples),
@@ -191,16 +199,32 @@ class MetricsRecorder
             return;
         }
 
-        if (strlen($payload) > Snapshot::MAX_DOCUMENT_BYTES) {
-            ErrorReporter::report(new RuntimeException('Murmur metrics snapshot exceeds the writer input limit.'));
+        if (strlen($payload) > static::MAX_LINE_BYTES) {
+            ErrorReporter::report(new RuntimeException('Murmur metrics snapshot exceeds the worker input limit.'));
 
             return;
         }
 
-        $this->pending = true;
-        $this->deadline = $this->loop->addTimer($this->config->timeout, function (): void {
+        $this->send('metrics', $payload, $this->config->timeout);
+    }
+
+    /**
+     * Determine whether a new message can be sent without queueing in the pipe.
+     */
+    protected function available(): bool
+    {
+        return $this->process !== null && $this->pending === null && ! $this->backpressured;
+    }
+
+    /**
+     * Hold the write slot until the worker answers, even after reporting a timeout.
+     */
+    protected function send(string $type, string $payload, float $timeout): void
+    {
+        $this->pending = $type;
+        $this->deadline = $this->loop->addTimer($timeout, function () use ($type): void {
             $this->deadline = null;
-            ErrorReporter::report(new RuntimeException('Murmur metrics recorder timed out.'));
+            ErrorReporter::report(new RuntimeException("Murmur {$type} recorder timed out."));
         });
         $this->backpressured = ! $this->process->stdin->write($payload."\n");
     }
@@ -240,7 +264,7 @@ class MetricsRecorder
     }
 
     /**
-     * Release the write slot for any line that answers a delivered snapshot.
+     * Release the write slot for any line that answers a delivered message.
      *
      * A line that is not an acknowledgement counts as a failed write, so output
      * mixed into the reply cannot leave the slot pending forever.
@@ -250,27 +274,29 @@ class MetricsRecorder
         $valid = in_array($reply, ['ok', 'error'], true);
 
         if (! $valid) {
-            ErrorReporter::report(new RuntimeException('Murmur metrics recorder sent an invalid acknowledgement.'));
+            ErrorReporter::report(new RuntimeException('Murmur worker sent an invalid acknowledgement.'));
         }
 
-        if (! $this->pending || $this->backpressured) {
+        if ($this->pending === null || $this->backpressured) {
             if ($valid) {
-                ErrorReporter::report(new RuntimeException('Murmur metrics recorder sent an unexpected acknowledgement.'));
+                ErrorReporter::report(new RuntimeException('Murmur worker sent an unexpected acknowledgement.'));
             }
 
             return;
         }
 
-        $this->pending = false;
+        $type = $this->pending;
+        $this->pending = null;
         $this->cancelDeadline();
 
         if ($reply === 'error') {
-            ErrorReporter::report(new RuntimeException('Murmur could not write the metrics snapshot. The writer reported the cause through the exception handler.'));
+            $message = $type === 'metrics' ? 'write the metrics snapshot' : "process the {$type} message";
+            ErrorReporter::report(new RuntimeException("Murmur could not {$message}. The worker reported the cause through the exception handler."));
         }
     }
 
     /**
-     * Stop writes, clear the writer state, and resolve shutdown after ReactPHP reaps it.
+     * Stop writes, clear the worker state, and resolve shutdown after ReactPHP reaps it.
      */
     protected function exited(?int $code, ?int $signal): void
     {
@@ -289,7 +315,7 @@ class MetricsRecorder
         }
 
         $status = $signal === null ? 'exit code '.($code ?? 'unknown') : "signal {$signal}";
-        ErrorReporter::report(new RuntimeException("Murmur metrics recording has stopped until the server restarts (writer {$status})."), force: true);
+        ErrorReporter::report(new RuntimeException("Murmur worker recording has stopped until the server restarts (worker {$status})."), force: true);
     }
 
     /**
@@ -317,7 +343,7 @@ class MetricsRecorder
     }
 
     /**
-     * Signal a writer that has not exited after EOF and escalate if necessary.
+     * Signal a worker that has not exited after EOF and escalate if necessary.
      */
     protected function terminate(): void
     {

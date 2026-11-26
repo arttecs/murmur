@@ -1,11 +1,11 @@
 <?php
 
 use Arttecs\Murmur\Facades\Murmur;
-use Arttecs\Murmur\Metrics\MetricsRecorder;
 use Arttecs\Murmur\Server\ErrorReporter;
 use Arttecs\Murmur\Server\Metrics;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
+use Arttecs\Murmur\Worker\Worker;
 use Psr\Log\NullLogger;
 use React\EventLoop\Loop;
 use React\Http\Browser;
@@ -140,7 +140,7 @@ it('reports failed acknowledgements and keeps recording with the same writer', f
         $process->start();
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 1, $process);
 
-        expect($process->getErrorOutput())->toContain('The writer reported the cause through the exception handler.')
+        expect($process->getErrorOutput())->toContain('The worker reported the cause through the exception handler.')
             ->not->toContain('sensitive store exception', 'The test exception handler failed.');
         [$failed, $reported, $next, $saved] = metricsTrace($file);
         expect([$failed->phase, $reported->phase, $next->phase, $saved->phase])->toBe(['start', 'reported', 'start', 'saved']);
@@ -201,7 +201,7 @@ it('does not queue more snapshots while the writer input pipe is blocked', funct
     config(['murmur.metrics.store' => 'cache', 'murmur.metrics.interval' => 0.02, 'murmur.metrics.timeout' => 0.4]);
     $loop = Loop::get();
     $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg('fwrite(STDOUT, "ok\n"); sleep(10);');
-    $writer = new MetricsRecorder($loop, Murmur::metricsConfiguration(), 'test-node', $command);
+    $writer = new Worker($loop, Murmur::metricsConfiguration(), 'test-node', $command);
     $metrics = new Metrics;
     $snapshots = 0;
     $metrics->gauge('murmur_uptime_seconds', str_repeat('x', 524288), function () use (&$snapshots): int {
@@ -275,13 +275,13 @@ it('reports writer death once and keeps accepting SSE connections without respaw
         $child = metricsTrace($file, 'start')[0]->pid;
         waitForMetricsCondition(fn () => str_contains($process->getErrorOutput(), 'Murmur metrics recorder timed out'), $process);
         posix_kill($child, SIGKILL);
-        waitForMetricsCondition(fn () => str_contains($process->getErrorOutput(), 'metrics recording has stopped'), $process);
+        waitForMetricsCondition(fn () => str_contains($process->getErrorOutput(), 'worker recording has stopped'), $process);
 
         $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
         expect($reader->next()['retry'])->toBe('3000');
         delay(0.3);
         expect(array_column(metricsTrace($file), 'phase'))->toBe(['start', 'waiting']);
-        expect(substr_count($process->getErrorOutput(), 'metrics recording has stopped'))->toBe(1);
+        expect(substr_count($process->getErrorOutput(), 'worker recording has stopped'))->toBe(1);
         expect($process->getErrorOutput())->toContain('signal '.SIGKILL);
         expect(posix_kill($child, 0))->toBeFalse();
     } finally {

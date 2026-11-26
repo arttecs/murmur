@@ -16,11 +16,6 @@ use stdClass;
 class Snapshot
 {
     /**
-     * The maximum document size for a snapshot sent to the writer.
-     */
-    public const MAX_DOCUMENT_BYTES = 1_048_576;
-
-    /**
      * Prepare samples for JSON so even an empty label set encodes as an object.
      *
      * @param  list<Sample>  $samples
