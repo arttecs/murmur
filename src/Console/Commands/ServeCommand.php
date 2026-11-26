@@ -3,14 +3,20 @@
 namespace Arttecs\Murmur\Console\Commands;
 
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Metrics\MetricsRecorder;
 use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
+use Illuminate\Console\Application;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use React\EventLoop\Loop;
+use React\EventLoop\LoopInterface;
+use Symfony\Component\Console\Input\ArgvInput;
 use Throwable;
+
+use function React\Promise\all;
 
 /**
  * Start the Murmur SSE server from a Laravel application.
@@ -32,8 +38,18 @@ class ServeCommand extends Command
      */
     public function handle(): int
     {
+        $loop = Loop::get();
+        $manager = app(MurmurManager::class);
+
         try {
             $config = $this->makeConfig();
+            $metrics = $manager->metricsConfiguration();
+            $recorder = $metrics === null ? null : new MetricsRecorder(
+                $loop,
+                $metrics,
+                $metrics->node ?? gethostname().':'.$config->port,
+                $this->metricsCommand(),
+            );
             $log = $this->makeLog();
         } catch (InvalidArgumentException $exception) {
             $this->error($exception->getMessage());
@@ -49,21 +65,28 @@ class ServeCommand extends Command
             return self::FAILURE;
         }
 
-        $loop = Loop::get();
         $server = new Server($config, $log, $loop, $channel === null ? null : Log::channel($channel));
-        app(MurmurManager::class)->callServingCallbacks($server, $loop);
+        $manager->callServingCallbacks($server, $loop);
         $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];
         $shuttingDown = false;
-        $shutdown = function () use ($server, $loop, &$shuttingDown): void {
+        $shutdown = function () use ($server, $recorder, $loop, &$shuttingDown): void {
             $shuttingDown = true;
-            $server->shutdown()->then($loop->stop(...));
+
+            if ($recorder === null) {
+                $server->shutdown()->then($loop->stop(...));
+
+                return;
+            }
+
+            all([$recorder->stop(), $server->shutdown()])->then($loop->stop(...));
         };
 
         $exitCode = self::SUCCESS;
 
         try {
-            $server->listen()->then(function () use ($server): void {
+            $server->listen()->then(function () use ($server, $recorder): void {
                 $this->info('Murmur is listening on '.$server->address());
+                $recorder?->start($server->metrics());
             }, function (Throwable $error) use (&$exitCode, $loop, &$shuttingDown): void {
                 if ($shuttingDown) {
                     return;
@@ -85,9 +108,43 @@ class ServeCommand extends Command
             }
 
             $server->close();
+
+            if ($recorder !== null) {
+                $this->stopRecorder($recorder, $loop);
+            }
         }
 
         return $exitCode;
+    }
+
+    /**
+     * Build the writer command using the running PHP and Artisan entry point.
+     */
+    protected function metricsCommand(): string
+    {
+        $artisan = Application::artisanBinary();
+
+        if ((! defined('ARTISAN_BINARY') || ARTISAN_BINARY === 'artisan') && $this->input instanceof ArgvInput && isset($_SERVER['SCRIPT_FILENAME'])) {
+            $artisan = escapeshellarg($_SERVER['SCRIPT_FILENAME']);
+        }
+
+        return Application::phpBinary().' '.$artisan.' murmur:record-metrics';
+    }
+
+    /**
+     * Reap any writer still running if the event loop stopped outside graceful shutdown.
+     */
+    protected function stopRecorder(MetricsRecorder $recorder, LoopInterface $loop): void
+    {
+        $stopped = false;
+        $shutdown = $recorder->stop()->then(function () use (&$stopped): void {
+            $stopped = true;
+        });
+
+        if (! $stopped) {
+            $shutdown->then($loop->stop(...));
+            $loop->run();
+        }
     }
 
     /**
