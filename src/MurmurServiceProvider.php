@@ -4,7 +4,6 @@ namespace Arttecs\Murmur;
 
 use Arttecs\Murmur\Broadcasting\MurmurBroadcaster;
 use Arttecs\Murmur\Console\Commands\ServeCommand;
-use Arttecs\Murmur\Console\Commands\StatusCommand;
 use Arttecs\Murmur\Contracts\Publisher;
 use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Contracts\Foundation\Application;
@@ -46,8 +45,6 @@ class MurmurServiceProvider extends ServiceProvider
             $merged[$group] = array_replace($defaults[$group], (array) ($overrides[$group] ?? []));
         }
 
-        $merged['server']['metrics'] = array_replace($defaults['server']['metrics'], (array) ($overrides['server']['metrics'] ?? []));
-
         $config->set('murmur', $merged);
     }
 
@@ -77,7 +74,7 @@ class MurmurServiceProvider extends ServiceProvider
         ], 'murmur-config');
 
         if ($this->app->runningInConsole()) {
-            $this->commands([ServeCommand::class, StatusCommand::class]);
+            $this->commands([ServeCommand::class]);
         }
     }
 }

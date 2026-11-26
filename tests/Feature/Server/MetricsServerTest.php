@@ -10,7 +10,6 @@ use Arttecs\Murmur\Tests\Support\SseReader;
 use React\Http\Browser;
 
 use function React\Async\await;
-use function React\Async\delay;
 
 /**
  * Read one server's samples keyed by metric name and, when present, HTTP status.
@@ -215,23 +214,10 @@ it('counts reported errors even if rate limited and clears the hook when closed'
     }
 });
 
-it('serves the metrics route with the configured access controls and formats', function (array $config, array $headers, int $status, string $contentType) {
-    $h = ServerHarness::start($config);
-    delay(0.01);
-    $response = await((new Browser)->withRejectErrorResponse(false)->get($h->url('/metrics'), $headers));
+it('serves no metrics route', function () {
+    $h = ServerHarness::start();
+    $response = await((new Browser)->withRejectErrorResponse(false)->get($h->url('/metrics'), ['Accept' => 'application/json']));
 
-    expect($response->getStatusCode())->toBe($status);
-
-    if ($status === 200) {
-        expect($response->getHeaderLine('Content-Type'))->toBe($contentType);
-        expect($response->getHeaderLine('Cache-Control'))->toBe('no-store');
-        expect((string) $response->getBody())->toContain('murmur_uptime_seconds');
-    }
-})->with([
-    'closed without a token' => [[], [], 404, ''],
-    'protected prometheus' => [['metricsToken' => 'scrape-secret-token'], ['Authorization' => 'Bearer scrape-secret-token'], 200, 'text/plain; version=0.0.4; charset=utf-8'],
-    'wrong token' => [['metricsToken' => 'scrape-secret-token'], ['Authorization' => 'Bearer scrape-secret-tokem'], 401, ''],
-    'protected json' => [['metricsToken' => 'scrape-secret-token'], ['Authorization' => 'Bearer scrape-secret-token', 'Accept' => 'application/json'], 200, 'application/json'],
-    'missing token' => [['metricsToken' => 'scrape-secret-token'], [], 401, ''],
-    'disabled' => [['metricsEnabled' => false, 'metricsToken' => 'scrape-secret-token'], ['Authorization' => 'Bearer scrape-secret-token'], 404, ''],
-]);
+    expect($response->getStatusCode())->toBe(404);
+    expect((string) $response->getBody())->toBe('');
+});

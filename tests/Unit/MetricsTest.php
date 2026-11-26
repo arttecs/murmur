@@ -61,3 +61,36 @@ it('accumulates label sets separately and returns them in deterministic order', 
 it('rejects increments to an undeclared counter', function () {
     expect(fn () => (new Metrics)->increment('murmur_unknown_total'))->toThrow(InvalidArgumentException::class);
 });
+
+it('reads the value of a single series', function () {
+    $metrics = new Metrics;
+    $metrics->gauge('murmur_connections', 'Open SSE connections.', fn (): int => 4);
+    $metrics->increment('murmur_events_sent_total', 3);
+    $metrics->increment('murmur_publish_requests_total', 2, ['status' => '202']);
+
+    expect($metrics->value('murmur_events_sent_total'))->toBe(3);
+    expect($metrics->value('murmur_connections'))->toBe(4);
+    expect($metrics->value('murmur_publish_requests_total', ['status' => '202']))->toBe(2);
+    expect($metrics->value('murmur_publish_requests_total', ['status' => '401']))->toBeNull();
+    expect($metrics->value('murmur_publish_requests_total'))->toBeNull();
+    expect($metrics->value('murmur_unknown'))->toBeNull();
+});
+
+it('formats a snapshot as prometheus text with escaped label values', function () {
+    $metrics = new Metrics;
+    $metrics->gauge('murmur_temperature', "Test\\ gauge.\nSecond line.", fn (): float => 3.5);
+    $metrics->increment('murmur_publish_requests_total', 2, ['status' => '202']);
+    $metrics->increment('murmur_publish_requests_total', 3, ['status' => "line\nwith \"quotes\" and a \\ slash"]);
+    $text = $metrics->toPrometheus();
+
+    expect($text)->toStartWith("# HELP murmur_connections_opened_total SSE connections accepted.\n# TYPE murmur_connections_opened_total counter\nmurmur_connections_opened_total 0\n");
+    expect($text)->toContain(implode("\n", [
+        '# HELP murmur_publish_requests_total HTTP publish responses by status.',
+        '# TYPE murmur_publish_requests_total counter',
+        'murmur_publish_requests_total{status="line\\nwith \\"quotes\\" and a \\\\ slash"} 3',
+        'murmur_publish_requests_total{status="202"} 2',
+        '',
+    ]));
+    expect($text)->toEndWith("# HELP murmur_temperature Test\\\\ gauge.\\nSecond line.\n# TYPE murmur_temperature gauge\nmurmur_temperature 3.5\n");
+    expect(substr_count($text, '# TYPE murmur_publish_requests_total'))->toBe(1);
+});

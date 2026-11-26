@@ -101,10 +101,8 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `server.signature_tolerance` | `MURMUR_SIGNATURE_TOLERANCE` | `60` | Allowed difference in seconds between the server clock and an HTTP publish timestamp. |
 | `server.shutdown_grace` | `MURMUR_SHUTDOWN_GRACE` | `5.0` | Seconds to drain connections on shutdown before closing the remaining sockets. |
 | `server.log_channel` | `MURMUR_LOG_CHANNEL` | `null` | Laravel channel for server errors and lifecycle messages. The server writes from inside the event loop. Choose a fast local channel such as stderr, a file, or syslog that makes no network requests. |
-| `server.metrics.enabled` | `MURMUR_METRICS_ENABLED` | `true` | Whether to serve the metrics endpoint once a token is set. Disable this to keep it off regardless of the token. |
-| `server.metrics.token` | `MURMUR_METRICS_TOKEN` | `null` | Bearer token of at least 16 bytes required for metrics requests. Leave null to keep the endpoint off. |
 | `public_url` | `MURMUR_PUBLIC_URL` | `http://127.0.0.1:8080` | Base URL for browser subscriptions. Set it to the public proxy or load balancer URL when browsers reach the server through an intermediary. |
-| `publish_url` | `MURMUR_PUBLISH_URL` | `http://127.0.0.1:8080` | Base URL Laravel uses for HTTP publishing and metrics. Set it to the address reachable from the Laravel application. |
+| `publish_url` | `MURMUR_PUBLISH_URL` | `http://127.0.0.1:8080` | Base URL Laravel uses for HTTP publishing. Set it to the address reachable from the Laravel application. |
 | `token_ttl` | `MURMUR_TOKEN_TTL` | `900` | Subscription token lifetime in seconds. Adjust how long a client can subscribe before it needs a fresh token. |
 | `stream_cursor_margin_ms` | `MURMUR_STREAM_CURSOR_MARGIN_MS` | `1000` | Milliseconds to subtract from a new stream cursor. Increase this if clocks on the application and event hosts can differ. |
 | `http.timeout` | `MURMUR_HTTP_TIMEOUT` | `2.0` | Total request deadline in seconds. |
@@ -209,20 +207,33 @@ Synchronize clocks across the Laravel application, Murmur nodes, and Redis. `str
 
 ## Metrics
 
-`GET /metrics` returns Prometheus text in the 0.0.4 format. Send `Accept: application/json` to receive an object with a `metrics` list. Each sample has `name`, `type`, `help`, `labels`, and `value` fields. Both formats use `Cache-Control: no-store`.
+Each server process counts what it does in memory. Murmur serves no metrics route: you read the numbers with methods and decide where they go.
 
-The endpoint is closed by default: until `MURMUR_METRICS_TOKEN` is set, `GET /metrics` answers 404 like any unknown route. With a token of at least 16 bytes set, every request must send `Authorization: Bearer <token>` or it receives 401; there is no unauthenticated mode. Generate the token with a secure random source, for example `openssl rand -hex 32`, and keep it different from `MURMUR_SECRET`. The token travels in a request header, so scrape over loopback, a private network, or TLS terminated by your proxy. Set `MURMUR_METRICS_ENABLED=false` to keep the endpoint off even when a token is present. Metrics describe one server process. Scrape each server directly to observe every process in a deployment.
+`Server::metrics()` returns the process's `Arttecs\Murmur\Server\Metrics` registry:
 
-```yaml
-scrape_configs:
-  - job_name: murmur
-    static_configs:
-      - targets: ['127.0.0.1:8080']
-    authorization:
-      credentials: 'replace-with-metrics-token'
+- `snapshot()` returns a list of samples, each with `name`, `type`, `help`, `labels`, and `value`.
+- `value($name, $labels = [])` returns one series, or `null` when it has no sample yet.
+- `toPrometheus()` returns the snapshot in the Prometheus text exposition format (0.0.4).
+
+`murmur:serve` creates the server for you. Register a callback with `Murmur::serving()` in a service provider's `boot()` method to receive the server and its event loop before it starts listening:
+
+```php
+use Arttecs\Murmur\Facades\Murmur;
+use Arttecs\Murmur\Server\Server;
+use Illuminate\Support\Facades\Log;
+use React\EventLoop\LoopInterface;
+
+Murmur::serving(function (Server $server, LoopInterface $loop): void {
+    $loop->addPeriodicTimer(15.0, function () use ($server): void {
+        Log::channel('stderr')->info('murmur', [
+            'connections' => $server->metrics()->value('murmur_connections'),
+            'events_sent' => $server->metrics()->value('murmur_events_sent_total'),
+        ]);
+    });
+});
 ```
 
-Use the same token in Prometheus and in `MURMUR_METRICS_TOKEN`. The socket gauge includes the scrape connection itself. The two metrics with a `status` label have no samples until the first response with that status. A `POST /publish` to a server where publishing is disabled, as with the `redis` driver, counts under `status="404"`. In JSON, `labels` is always an object.
+The callback runs inside the server process and its timers run inside the event loop, so keep the work fast and local: write to stderr, a file, or a local agent, and do not perform blocking network requests. Metrics describe one server process; collect from each process in a deployment. The two metrics with a `status` label have no samples until the first response with that status. A `POST /publish` to a server where publishing is disabled, as with the `redis` driver, counts under `status="404"`.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
@@ -244,15 +255,6 @@ Use the same token in Prometheus and in `MURMUR_METRICS_TOKEN`. The socket gauge
 | `murmur_uptime_seconds` | gauge | — | Seconds since the server started listening. |
 | `murmur_memory_bytes` | gauge | — | Bytes of memory allocated by PHP. |
 | `murmur_memory_peak_bytes` | gauge | — | Peak bytes of memory allocated by PHP. |
-
-In Laravel, `Murmur::metrics()` returns the metrics list from `MURMUR_PUBLISH_URL`. It sends the configured metrics token, uses the HTTP timeouts, and throws `MetricsUnavailable` if no token is configured or the server cannot supply metrics. Use Artisan to read the same endpoint as a table or a raw JSON list.
-
-```sh
-php artisan murmur:status
-php artisan murmur:status --json
-```
-
-The command exits with code 1 and prints a one-line error when metrics are unavailable.
 
 ## Logging
 

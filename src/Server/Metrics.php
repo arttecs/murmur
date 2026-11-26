@@ -111,4 +111,50 @@ class Metrics
 
         return $samples;
     }
+
+    /**
+     * Read the value of one series, or null when it has no sample yet.
+     *
+     * @param  array<string, string>  $labels
+     */
+    public function value(string $name, array $labels = []): int|float|null
+    {
+        ksort($labels, SORT_STRING);
+
+        foreach ($this->snapshot() as $sample) {
+            if ($sample['name'] === $name && $sample['labels'] === $labels) {
+                return $sample['value'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Format a snapshot using the Prometheus text exposition format.
+     */
+    public function toPrometheus(): string
+    {
+        $lines = [];
+        $declared = [];
+
+        foreach ($this->snapshot() as ['name' => $name, 'type' => $type, 'help' => $help, 'labels' => $labels, 'value' => $value]) {
+            if (! isset($declared[$name])) {
+                $declared[$name] = true;
+                $lines[] = '# HELP '.$name.' '.strtr($help, ['\\' => '\\\\', "\n" => '\n']);
+                $lines[] = "# TYPE {$name} {$type}";
+            }
+
+            $pairs = [];
+
+            foreach ($labels as $label => $text) {
+                $pairs[] = $label.'="'.strtr($text, ['\\' => '\\\\', '"' => '\"', "\n" => '\n']).'"';
+            }
+
+            $labelSet = $pairs === [] ? '' : '{'.implode(',', $pairs).'}';
+            $lines[] = "{$name}{$labelSet} {$value}";
+        }
+
+        return implode("\n", $lines)."\n";
+    }
 }

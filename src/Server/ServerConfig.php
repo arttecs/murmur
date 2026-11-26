@@ -35,8 +35,6 @@ readonly class ServerConfig
         public float $requestTimeoutSeconds = 10.0,
         public int $maxReplayEvents = 1000,
         public float $shutdownGraceSeconds = 5.0,
-        public bool $metricsEnabled = true,
-        #[SensitiveParameter] public ?string $metricsToken = null,
     ) {
         Secret::assertValid($secret);
 
@@ -60,10 +58,6 @@ readonly class ServerConfig
             if ($value <= 0 || ! is_finite((float) $value)) {
                 throw new InvalidArgumentException("The {$setting} setting must be positive and finite.");
             }
-        }
-
-        if ($metricsToken !== null && strlen($metricsToken) < 16) {
-            throw new InvalidArgumentException('The metricsToken setting must be at least 16 bytes long.');
         }
 
         if ($maxSockets < $maxConnections) {

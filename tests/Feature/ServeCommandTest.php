@@ -1,14 +1,17 @@
 <?php
 
 use Arttecs\Murmur\Console\Commands\ServeCommand;
+use Arttecs\Murmur\Facades\Murmur;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
+use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
 use Clue\Redis\Protocol\Factory as ProtocolFactory;
 use React\EventLoop\Loop;
+use React\EventLoop\LoopInterface;
 use React\EventLoop\StreamSelectLoop;
 use React\Promise\Deferred;
 use React\Promise\Timer\TimeoutException;
@@ -31,8 +34,6 @@ it('maps laravel config and options onto the server config', function () {
         'murmur.server.max_replay_events' => 15,
         'murmur.server.signature_tolerance' => 30,
         'murmur.server.shutdown_grace' => 0.5,
-        'murmur.server.metrics.enabled' => false,
-        'murmur.server.metrics.token' => 'scrape-secret-token',
     ]);
     $command = app(ServeCommand::class);
     $command->setLaravel(app());
@@ -47,8 +48,6 @@ it('maps laravel config and options onto the server config', function () {
     expect($config->maxReplayEvents)->toBe(15);
     expect($config->signatureToleranceSeconds)->toBe(30);
     expect($config->shutdownGraceSeconds)->toBe(0.5);
-    expect($config->metricsEnabled)->toBeFalse();
-    expect($config->metricsToken)->toBe('scrape-secret-token');
     expect($config->allowedOrigins)->toBe(['https://app.test']);
     expect($config->secret)->toBe('test-secret-with-at-least-32-bytes');
 });
@@ -246,5 +245,25 @@ it('writes server lifecycle messages to the configured laravel log channel', fun
     } finally {
         Loop::set($previousLoop);
         unlink($file);
+    }
+});
+
+it('hands the server and its loop to serving callbacks before listening', function () {
+    $port = ServerHarness::availablePort();
+    $previousLoop = Loop::get();
+    $loop = new StreamSelectLoop;
+    Loop::set($loop);
+    $loop->addTimer(0.0, $loop->stop(...));
+    $calls = [];
+    Murmur::serving(function (Server $server, LoopInterface $given) use (&$calls): void {
+        $calls[] = [$server->metrics()->value('murmur_connections_opened_total'), $given];
+    });
+
+    try {
+        $this->artisan('murmur:serve', ['--port' => $port])->assertSuccessful();
+
+        expect($calls)->toBe([[0, $loop]]);
+    } finally {
+        Loop::set($previousLoop);
     }
 });

@@ -3,7 +3,6 @@
 namespace Arttecs\Murmur\Server;
 
 use Arttecs\Murmur\Contracts\EventLog;
-use Arttecs\Murmur\Server\Http\MetricsHandler;
 use Arttecs\Murmur\Server\Http\PublishHandler;
 use Arttecs\Murmur\Server\Http\SseHandler;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
@@ -168,12 +167,11 @@ class Server
     protected function bind(): void
     {
         $sse = new SseHandler($this->config, $this->log, $this->hub, $this->loop, $this->metrics);
-        $metrics = new MetricsHandler($this->config, $this->metrics);
         $publish = $this->config->publishEnabled && $this->log instanceof MemoryEventLog
             ? new PublishHandler($this->config, $this->log)
             : null;
 
-        $http = new HttpServer($this->loop, new StreamingRequestMiddleware, function (ServerRequestInterface $request) use ($sse, $metrics, $publish): ResponseInterface|PromiseInterface {
+        $http = new HttpServer($this->loop, new StreamingRequestMiddleware, function (ServerRequestInterface $request) use ($sse, $publish): ResponseInterface|PromiseInterface {
             $route = $request->getMethod().' '.$request->getUri()->getPath();
             $client = $this->clientFor($request);
 
@@ -181,7 +179,6 @@ class Server
                 $response = match ($route) {
                     'POST /publish' => $publish === null ? new Response(404) : $publish($request),
                     'GET /sse' => $this->shutdown === null ? $sse($request, $client) : new Response(503),
-                    'GET /metrics' => $metrics($request),
                     'GET /health' => new Response(200, ['Content-Type' => 'application/json'], json_encode([
                         'status' => 'ok',
                         'connections' => $this->hub->connectionCount(),

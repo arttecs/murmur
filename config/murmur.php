@@ -55,16 +55,6 @@ return [
          * Listeners of Laravel's MessageLogged event run inside the loop too.
          */
         'log_channel' => ((string) env('MURMUR_LOG_CHANNEL', '')) ?: null,
-        /**
-         * Per-process metrics at GET /metrics. The endpoint is served only
-         * when a bearer token is set, and every request must present it.
-         */
-        'metrics' => [
-            /** Whether to serve the metrics endpoint once a token is set. Disable this to keep it off regardless of the token. */
-            'enabled' => filter_var(env('MURMUR_METRICS_ENABLED', true), FILTER_VALIDATE_BOOL),
-            /** Bearer token of at least 16 bytes required for metrics requests. Leave null to keep the endpoint off. */
-            'token' => ((string) env('MURMUR_METRICS_TOKEN', '')) ?: null,
-        ],
     ],
 
     /**
@@ -74,7 +64,7 @@ return [
     'public_url' => (string) env('MURMUR_PUBLIC_URL', 'http://127.0.0.1:8080'),
 
     /**
-     * Base URL Laravel uses for HTTP publishing and metrics. Set it to
+     * Base URL Laravel uses for HTTP publishing. Set it to
      * the address reachable from the Laravel application.
      */
     'publish_url' => (string) env('MURMUR_PUBLISH_URL', 'http://127.0.0.1:8080'),

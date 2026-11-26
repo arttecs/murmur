@@ -4,7 +4,6 @@ namespace Arttecs\Murmur;
 
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Contracts\Publisher;
-use Arttecs\Murmur\Exceptions\MetricsUnavailable;
 use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Publishers\HttpPublisher;
 use Arttecs\Murmur\Publishers\RedisPublisher;
@@ -13,14 +12,14 @@ use Arttecs\Murmur\Server\Auth\TokenIssuer;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
+use Arttecs\Murmur\Server\Server;
 use Closure;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Http\Client\Factory;
-use Illuminate\Http\Client\HttpClientException;
 use InvalidArgumentException;
-use stdClass;
+use React\EventLoop\LoopInterface;
 
 /**
  * Publish events, create streams and issue subscription tokens.
@@ -33,6 +32,13 @@ class MurmurManager
      * @var array<string, array{publisher: Closure(Application): Publisher, eventLog: Closure(Application): EventLog}>
      */
     protected array $drivers = [];
+
+    /**
+     * The callbacks to run when the Artisan command creates the server.
+     *
+     * @var list<Closure(Server, LoopInterface): void>
+     */
+    protected array $servingCallbacks = [];
 
     /**
      * Create a manager without resolving the configured driver or signing secret.
@@ -157,90 +163,23 @@ class MurmurManager
     }
 
     /**
-     * Read the metrics of one server process at the configured publish URL.
+     * Register a callback that runs when the Artisan command creates the server.
      *
-     * @return list<array{name: string, type: 'counter'|'gauge', help: string, labels: array<string, string>, value: int|float}>
-     *
-     * @throws MetricsUnavailable
+     * @param  Closure(Server, LoopInterface): void  $callback
      */
-    public function metrics(): array
+    public function serving(Closure $callback): void
     {
-        $token = $this->config->get('murmur.server.metrics.token');
-
-        if ($token === null) {
-            throw new MetricsUnavailable('Set MURMUR_METRICS_TOKEN in Laravel and on the server to read metrics.');
-        }
-
-        try {
-            $request = $this->app->make(Factory::class)
-                ->acceptJson()
-                ->timeout($this->config->get('murmur.http.timeout'))
-                ->connectTimeout($this->config->get('murmur.http.connect_timeout'))
-                ->withoutRedirecting()
-                ->withToken($token);
-
-            $response = $request->get(rtrim($this->config->get('murmur.publish_url'), '/').'/metrics');
-            $status = $response->status();
-            $body = $status === 200 ? $response->body() : '';
-        } catch (HttpClientException $exception) {
-            throw new MetricsUnavailable('The metrics request to the Murmur server failed.', previous: $exception);
-        }
-
-        if ($status !== 200) {
-            throw new MetricsUnavailable("The Murmur server returned HTTP status {$status} for the metrics request.");
-        }
-
-        return $this->decodeMetrics($body);
+        $this->servingCallbacks[] = $callback;
     }
 
     /**
-     * Decode a metrics response and validate its sample and label types.
-     *
-     * @return list<array{name: string, type: 'counter'|'gauge', help: string, labels: array<string, string>, value: int|float}>
-     *
-     * @throws MetricsUnavailable
+     * Run the registered callbacks for a server that is about to listen.
      */
-    protected function decodeMetrics(string $body): array
+    public function callServingCallbacks(Server $server, LoopInterface $loop): void
     {
-        $samples = json_decode($body)->metrics ?? null;
-
-        if (! is_array($samples)) {
-            throw new MetricsUnavailable('The Murmur server returned malformed metrics.');
+        foreach ($this->servingCallbacks as $callback) {
+            $callback($server, $loop);
         }
-
-        $metrics = [];
-
-        foreach ($samples as $sample) {
-            $labels = $sample->labels ?? null;
-            $value = $sample->value ?? null;
-
-            if (! is_string($sample->name ?? null)
-                || ! in_array($sample->type ?? null, ['counter', 'gauge'], true)
-                || ! is_string($sample->help ?? null)
-                || ($labels !== [] && ! $labels instanceof stdClass)
-                || (! is_int($value) && ! is_float($value))
-                || ! is_finite((float) $value)) {
-                throw new MetricsUnavailable('The Murmur server returned malformed metrics.');
-            }
-
-            $labels = (array) $labels;
-
-            foreach ($labels as $label => $text) {
-                if (! is_string($label) || ! is_string($text)) {
-                    throw new MetricsUnavailable('The Murmur server returned malformed metrics.');
-                }
-            }
-
-            $metrics[] = [
-                'name' => $sample->name,
-                'type' => $sample->type,
-                'help' => $sample->help,
-                'labels' => $labels,
-                'value' => $value,
-            ];
-        }
-
-        return $metrics;
     }
 
     /**
