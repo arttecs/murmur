@@ -31,7 +31,7 @@ it('publishes configuration and installs a fresh environment without leaking its
     $env = Dotenv::parse($content);
     expect($env['MURMUR_SECRET'])->toMatch('/\A[0-9a-f]{64}\z/');
     expect($content)->toBe("APP_NAME=Murmur\nMURMUR_SECRET={$env['MURMUR_SECRET']}\nBROADCAST_CONNECTION=murmur\n");
-    expect(file_get_contents($this->exampleFile))->toBe("APP_NAME=Example\nMURMUR_SECRET=\nBROADCAST_CONNECTION=murmur\n");
+    expect(file_get_contents($this->exampleFile))->toBe("APP_NAME=Example\nMURMUR_SECRET=\nBROADCAST_CONNECTION=murmur\nMURMUR_ALLOWED_ORIGINS=\n");
     expect(file_get_contents($this->configFile))->toBe(file_get_contents(__DIR__.'/../../config/murmur.php'));
     $output = Artisan::output();
     expect($output)->not->toContain($env['MURMUR_SECRET']);
@@ -43,7 +43,7 @@ it('publishes configuration and installs a fresh environment without leaking its
     expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
     expect(Artisan::output())->toContain('No files changed');
     expect(file_get_contents($this->envFile))->toBe($content);
-    expect(file_get_contents($this->exampleFile))->toBe("APP_NAME=Example\nMURMUR_SECRET=\nBROADCAST_CONNECTION=murmur\n");
+    expect(file_get_contents($this->exampleFile))->toBe("APP_NAME=Example\nMURMUR_SECRET=\nBROADCAST_CONNECTION=murmur\nMURMUR_ALLOWED_ORIGINS=\n");
 });
 
 it('fills blank assignments without changing other bytes or treating multiline values as variables', function () {
@@ -60,7 +60,7 @@ it('fills blank assignments without changing other bytes or treating multiline v
         ['"'.$secret.'"  # set', '=murmur  # local'],
         $original,
     ));
-    expect(file_get_contents($this->exampleFile))->toBe("MURMUR_SECRET='short-placeholder'\nBROADCAST_CONNECTION=murmur\n");
+    expect(file_get_contents($this->exampleFile))->toBe("MURMUR_SECRET='short-placeholder'\nBROADCAST_CONNECTION=murmur\nMURMUR_ALLOWED_ORIGINS=\n");
 });
 
 it('keeps existing secrets, broadcaster and configuration in non-interactive mode', function () {
@@ -140,3 +140,31 @@ it('says when another broadcast connection was left in place', function () {
     expect(Artisan::call('murmur:install', ['--force' => true, '--no-interaction' => true]))->toBe(0);
     expect(Artisan::output())->not->toContain('left unchanged');
 });
+
+it('allows the application origin in the environment and keeps the example blank', function (?string $assignment) {
+    $base = "APP_URL='https://App.test:8443/path?query=1#fragment'\r\nMURMUR_SECRET=existing\r\nBROADCAST_CONNECTION=murmur\r\n";
+    file_put_contents($this->envFile, $base.($assignment ?? ''));
+    file_put_contents($this->exampleFile, "APP_URL=http://example.test\n");
+    chmod($this->envFile, 0600);
+
+    expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
+    expect(Artisan::output())->toContain('Allowed SSE origin https://app.test:8443.');
+    expect(file_get_contents($this->envFile))->toBe($base.($assignment === null
+        ? "MURMUR_ALLOWED_ORIGINS=https://app.test:8443\r\n"
+        : 'export MURMUR_ALLOWED_ORIGINS = "https://app.test:8443" # browser'));
+    expect(Dotenv::parse(file_get_contents($this->exampleFile))['MURMUR_ALLOWED_ORIGINS'])->toBe('');
+    expect(fileperms($this->envFile) & 0777)->toBe(0600);
+})->with([[null], ['export MURMUR_ALLOWED_ORIGINS = "" # browser']]);
+
+it('leaves the origin allowlist alone when set or the application URL is invalid', function (string $settings) {
+    $original = "MURMUR_SECRET=existing\nBROADCAST_CONNECTION=murmur\n".$settings;
+    file_put_contents($this->envFile, $original);
+
+    expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
+    expect(file_get_contents($this->envFile))->toBe($original);
+    expect(Artisan::output())->not->toContain('Allowed SSE origin');
+})->with([
+    "APP_URL=https://app.test\nMURMUR_ALLOWED_ORIGINS=*\n",
+    "APP_URL=localhost\n",
+    "APP_URL=\n",
+]);

@@ -29,7 +29,7 @@ A topic is 1–200 bytes and cannot contain a comma or ASCII whitespace. Topic n
 | 200 | The subscription succeeded. The response remains open for SSE frames. |
 | 400 | The topic list is missing, malformed, or over its entry limit. |
 | 401 | The request includes a private topic and has no valid token. |
-| 403 | A valid token fails to grant at least one requested private topic. |
+| 403 | The `Origin` header is disallowed, or a valid token fails to grant at least one requested private topic. |
 | 503 | The server has reached its SSE connection limit (900 by default) or is shutting down. |
 
 A successful response includes `Content-Type: text/event-stream`, `Cache-Control: no-cache`, and `X-Accel-Buffering: no`.
@@ -89,7 +89,7 @@ Laravel expects a nonempty list of valid private topic names with the same entry
 
 ### CORS
 
-For `/sse` responses handled by the subscription handler, the default `server.allowed_origins` setting sends `Access-Control-Allow-Origin: *`. With an explicit list, the handler echoes an exact allowed `Origin` and omits the header otherwise. With an empty list it always omits the header. The SSE server adds `Vary: Origin` to routed responses whenever the list excludes `*`. The allowlist controls browser access to responses. The subscription handler still evaluates the request using the same topic and token rules.
+The default `server.allowed_origins` list is empty. The subscription handler serves requests without an `Origin` header and omits `Access-Control-Allow-Origin`. A request with an `Origin` header receives 403 unless its origin is allowed. Configure complete origins (`scheme://host[:port]`) without paths, trailing slashes, queries, or fragments. Matching is case-insensitive for the scheme and host and exact for the port. The handler echoes an allowed request's `Origin` value. A list containing `*` allows every origin and returns `Access-Control-Allow-Origin: *`. The SSE server adds `Vary: Origin` to routed responses whenever the list excludes `*`.
 
 Murmur's SSE server does not emit `Access-Control-Allow-Credentials` or implement OPTIONS preflights. A reverse proxy can provide those headers or handle OPTIONS for cross-origin clients that require them. CORS on the Laravel authorization route is controlled by the Laravel application.
 

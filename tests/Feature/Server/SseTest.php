@@ -180,8 +180,9 @@ it('refuses connections above the limit', function () {
 
 it('echoes an allowed origin', function () {
     $h = ServerHarness::start(['allowedOrigins' => ['https://app.test']]);
-    $r = SseReader::open($h->url('/sse?topics=news'), ['Origin' => 'https://app.test']);
-    expect($r->header('Access-Control-Allow-Origin'))->toBe('https://app.test');
+    $r = SseReader::open($h->url('/sse?topics=news'), ['Origin' => 'HTTPS://APP.TEST']);
+    expect($r->status())->toBe(200);
+    expect($r->header('Access-Control-Allow-Origin'))->toBe('HTTPS://APP.TEST');
     expect($r->header('Vary'))->toBe('Origin');
 });
 
@@ -222,13 +223,38 @@ it('delivers live events with a cursor ahead of the memory log', function () {
     expect($r->next()['event'])->toBe('live');
 });
 
-it('varies an sse response when the origin is absent or disallowed', function (array $headers) {
-    $h = ServerHarness::start(['allowedOrigins' => ['https://app.test']]);
-    $r = SseReader::open($h->url('/sse?topics=news'), $headers);
+it('serves requests without an origin by default and sends no allow origin header', function () {
+    $h = ServerHarness::start();
+    $r = SseReader::open($h->url('/sse?topics=news'));
 
+    expect($r->status())->toBe(200);
     expect($r->header('Access-Control-Allow-Origin'))->toBeNull();
     expect($r->header('Vary'))->toBe('Origin');
-})->with([
-    'absent' => [[]],
-    'disallowed' => [['Origin' => 'https://other.test']],
-]);
+});
+
+it('rejects any origin by default and counts the rejection', function () {
+    $h = ServerHarness::start();
+    $r = SseReader::open($h->url('/sse?topics=news'), ['Origin' => 'https://other.test']);
+
+    expect($r->status())->toBe(403);
+    expect($r->header('Access-Control-Allow-Origin'))->toBeNull();
+    expect($r->header('Vary'))->toBe('Origin');
+    expect($h->metrics()->value('murmur_connections_rejected_total', ['status' => '403']))->toBe(1);
+});
+
+it('treats the scheme, host and port as exact origin components', function (string $origin) {
+    $h = ServerHarness::start(['allowedOrigins' => ['https://app.test:8443']]);
+    $r = SseReader::open($h->url('/sse?topics=news'), ['Origin' => $origin]);
+
+    expect($r->status())->toBe(403);
+    expect($r->header('Access-Control-Allow-Origin'))->toBeNull();
+})->with(['http://app.test:8443', 'https://other.test:8443', 'https://app.test', 'https://app.test:443', 'null', '']);
+
+it('allows any origin when configured with a wildcard', function () {
+    $h = ServerHarness::start(['allowedOrigins' => ['*']]);
+    $r = SseReader::open($h->url('/sse?topics=news'), ['Origin' => 'null']);
+
+    expect($r->status())->toBe(200);
+    expect($r->header('Access-Control-Allow-Origin'))->toBe('*');
+    expect($r->header('Vary'))->toBeNull();
+});

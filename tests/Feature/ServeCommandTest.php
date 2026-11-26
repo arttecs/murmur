@@ -288,3 +288,20 @@ it('hands the server and its loop to serving callbacks before listening', functi
         Loop::set($previousLoop);
     }
 });
+
+it('rejects malformed configured origins at startup', function (mixed $origin) {
+    config(['murmur.server.allowed_origins' => [$origin]]);
+
+    $previousLoop = Loop::get();
+    $loop = new StreamSelectLoop;
+    Loop::set($loop);
+    $loop->addTimer(0.0, $loop->stop(...));
+
+    try {
+        $this->artisan('murmur:serve', ['--port' => ServerHarness::availablePort()])
+            ->expectsOutput('The allowedOrigins setting must contain only * or valid origins without a path, query, or fragment.')
+            ->assertFailed();
+    } finally {
+        Loop::set($previousLoop);
+    }
+})->with(['https://app.test/', 'https://app.test?x', 'https://app.test#', 'https://user@app.test', 'app.test', 'https://[::invalid]', 'https://app.test:65536', 'https://*.test', "https://app.test\n", 1]);

@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Server;
 
 use Arttecs\Murmur\Server\Auth\Secret;
+use Arttecs\Murmur\Server\Http\Origin;
 use InvalidArgumentException;
 use SensitiveParameter;
 
@@ -11,6 +12,13 @@ use SensitiveParameter;
  */
 readonly class ServerConfig
 {
+    /**
+     * The normalized origins allowed to open a subscription.
+     *
+     * @var list<string>
+     */
+    public array $allowedOrigins;
+
     /**
      * Create the server configuration and validate its settings.
      *
@@ -28,7 +36,7 @@ readonly class ServerConfig
         public int $maxTopicsPerConnection = 50,
         public int $maxPayloadBytes = 65536,
         public int $maxBufferBytes = 1048576,
-        public array $allowedOrigins = ['*'],
+        array $allowedOrigins = [],
         public bool $publishEnabled = true,
         public int $signatureToleranceSeconds = 60,
         public int $maxSockets = 1000,
@@ -39,6 +47,20 @@ readonly class ServerConfig
         public float $shutdownSpreadSeconds = 2.0,
     ) {
         Secret::assertValid($secret);
+
+        $origins = [];
+
+        foreach ($allowedOrigins as $origin) {
+            $normalized = $origin === '*' ? '*' : (is_string($origin) ? Origin::normalize($origin) : null);
+
+            if ($normalized === null) {
+                throw new InvalidArgumentException('The allowedOrigins setting must contain only * or valid origins without a path, query, or fragment.');
+            }
+
+            $origins[] = $normalized;
+        }
+
+        $this->allowedOrigins = $origins;
 
         if ($port < 1 || $port > 65535) {
             throw new InvalidArgumentException('The port must be between 1 and 65535.');

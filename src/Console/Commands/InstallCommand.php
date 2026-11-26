@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Console\Commands;
 
 use Arttecs\Murmur\MurmurServiceProvider;
+use Arttecs\Murmur\Server\Http\Origin;
 use Dotenv\Parser\EntryParser;
 use Dotenv\Parser\Lines;
 use Illuminate\Console\Command;
@@ -110,12 +111,24 @@ class InstallCommand extends Command
             $this->warn('BROADCAST_CONNECTION in '.basename($path).' was left unchanged. Set it to murmur, or run again with --force, to broadcast through Murmur.');
         }
 
+        $origin = $example ? '' : $this->applicationOrigin($original);
+
+        $beforeOrigin = $content;
+
+        if ($origin !== null) {
+            $content = $this->setEnvironmentValue($content, 'MURMUR_ALLOWED_ORIGINS', fn (): string => $origin);
+        }
+
         if ($content === $original) {
             return false;
         }
 
         $files->replace($path, $content, fileperms($path) & 0777);
         $this->info('Updated '.basename($path).'.');
+
+        if ($origin !== null && $origin !== '' && $content !== $beforeOrigin) {
+            $this->info("Allowed SSE origin {$origin}.");
+        }
 
         return true;
     }
@@ -127,6 +140,70 @@ class InstallCommand extends Command
      * @param  (callable(string): bool)|null  $overwrite
      */
     protected function setEnvironmentValue(#[SensitiveParameter] string $content, string $key, callable $value, ?callable $overwrite = null): string
+    {
+        $found = $this->findAssignment($content, $key);
+
+        if ($found === null) {
+            preg_match('/\r\n|\n|\r/', $content, $ending);
+            $newline = $ending[0] ?? "\n";
+            $separator = $content === '' || $content === "\xEF\xBB\xBF" || preg_match('/[\r\n]\z/', $content) === 1 ? '' : $newline;
+
+            return $content.$separator.$key.'='.$value().$newline;
+        }
+
+        [$start, $length, $current] = $found;
+
+        if (trim($current ?? '') !== '' && ! ($overwrite && $overwrite($current))) {
+            return $content;
+        }
+
+        $replacement = $value();
+
+        if ($replacement === '' && trim($current ?? '') === '') {
+            return $content;
+        }
+
+        $assignment = substr($content, $start, $length);
+        $updated = $this->replaceAssignment($assignment, $replacement);
+
+        return substr_replace($content, $updated, $start, $length);
+    }
+
+    /**
+     * Read the application's serialized origin from the environment file.
+     */
+    protected function applicationOrigin(#[SensitiveParameter] string $content): ?string
+    {
+        $url = trim($this->findAssignment($content, 'APP_URL')[2] ?? '');
+
+        if (preg_match('/\A[^\\\\\x00-\x20\x7f]+\z/', $url) !== 1) {
+            return null;
+        }
+
+        $parts = parse_url($url);
+
+        if (! isset($parts['scheme'], $parts['host'])) {
+            return null;
+        }
+
+        $scheme = strtolower($parts['scheme']);
+        $port = $parts['port'] ?? null;
+        $defaultPort = match ($scheme) {
+            'http', 'ws' => 80,
+            'https', 'wss' => 443,
+            'ftp' => 21,
+            default => null,
+        };
+
+        return Origin::normalize($scheme.'://'.$parts['host'].($port === null || $port === $defaultPort ? '' : ':'.$port));
+    }
+
+    /**
+     * Find the byte range and parsed value of the last assignment for a key.
+     *
+     * @return array{int, int, ?string}|null
+     */
+    protected function findAssignment(#[SensitiveParameter] string $content, string $key): ?array
     {
         $offset = str_starts_with($content, "\xEF\xBB\xBF") ? 3 : 0;
         $lines = preg_split('/\r\n|\n|\r/', substr($content, $offset), flags: PREG_SPLIT_OFFSET_CAPTURE);
@@ -150,30 +227,7 @@ class InstallCommand extends Command
             }
         }
 
-        if ($found === null) {
-            preg_match('/\r\n|\n|\r/', $content, $ending);
-            $newline = $ending[0] ?? "\n";
-            $separator = strlen($content) === $offset || preg_match('/[\r\n]\z/', $content) === 1 ? '' : $newline;
-
-            return $content.$separator.$key.'='.$value().$newline;
-        }
-
-        [$start, $length, $current] = $found;
-
-        if (trim($current ?? '') !== '' && ! ($overwrite && $overwrite($current))) {
-            return $content;
-        }
-
-        $replacement = $value();
-
-        if ($replacement === '' && trim($current ?? '') === '') {
-            return $content;
-        }
-
-        $assignment = substr($content, $start, $length);
-        $updated = $this->replaceAssignment($assignment, $replacement);
-
-        return substr_replace($content, $updated, $start, $length);
+        return $found;
     }
 
     /**

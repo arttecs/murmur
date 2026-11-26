@@ -54,8 +54,8 @@ return [
         'max_payload_bytes' => (int) env('MURMUR_MAX_PAYLOAD_BYTES', 65536),
         /** Maximum buffered bytes per SSE connection. Lower this to shed slow subscribers earlier. */
         'max_buffer_bytes' => (int) env('MURMUR_MAX_BUFFER_BYTES', 1048576),
-        /** Comma-separated browser origins allowed for SSE. Replace * to restrict cross-origin reads. */
-        'allowed_origins' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('MURMUR_ALLOWED_ORIGINS', '*'))), fn (string $origin): bool => $origin !== '')),
+        /** Comma-separated browser origins allowed for SSE. Leave empty to deny requests with an Origin header. */
+        'allowed_origins' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('MURMUR_ALLOWED_ORIGINS', ''))), fn (string $origin): bool => $origin !== '')),
         /** Allowed difference in seconds between the server clock and an HTTP publish timestamp. */
         'signature_tolerance' => (int) env('MURMUR_SIGNATURE_TOLERANCE', 60),
         /** Event loop delay in milliseconds above which the server warns. */

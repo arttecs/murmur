@@ -13,7 +13,7 @@ php artisan murmur:install
 
 The installer publishes `config/murmur.php`, fills in a missing or blank `MURMUR_SECRET` in `.env`, and sets `BROADCAST_CONNECTION=murmur`. If another broadcaster is configured, the installer asks before changing it. In non-interactive mode it keeps the existing broadcaster unless you pass `--force`. That flag also allows replacing the published configuration.
 
-Laravel and every Murmur server must share the same signing secret of at least 32 bytes. The installer generates a 64-character hexadecimal secret and stores it in `.env`. It adds a blank secret placeholder to an existing `.env.example` when needed.
+Laravel and every Murmur server must share the same signing secret of at least 32 bytes. The installer generates a 64-character hexadecimal secret and stores it in `.env`. It adds blank placeholders for the secret and origin allowlist to an existing `.env.example` when needed. If `MURMUR_ALLOWED_ORIGINS` is missing or blank and `APP_URL` in `.env` has a valid origin, the installer adds that origin and prints it.
 
 Start the server from your Laravel application directory.
 
@@ -81,7 +81,7 @@ Replace the Pusher-compatible browser transport with `@arttecs/murmur`. If your 
 | Server bind address and port | `REVERB_SERVER_HOST`, `REVERB_SERVER_PORT` | `server.host` and `server.port` via `MURMUR_HOST` and `MURMUR_PORT` |
 | URL Laravel uses to publish | `REVERB_SCHEME`, `REVERB_HOST`, `REVERB_PORT` | `publish_url` via `MURMUR_PUBLISH_URL` in HTTP mode |
 | Address the browser connects to | `VITE_REVERB_SCHEME`, `VITE_REVERB_HOST`, `VITE_REVERB_PORT` in the usual Echo setup | `public_url` via `MURMUR_PUBLIC_URL` for stream URLs. Use the same public base URL in the browser configuration. |
-| Browser origin allowlist | App-level `allowed_origins` in `config/reverb.php` | `server.allowed_origins` via `MURMUR_ALLOWED_ORIGINS`. Enter complete origins, including the scheme and any non-default port. |
+| Browser origin allowlist | App-level `allowed_origins` in `config/reverb.php` | `server.allowed_origins` via `MURMUR_ALLOWED_ORIGINS`. The default denies requests carrying an `Origin` header. Enter complete origins, including the scheme and any non-default port. |
 | Open client connection cap | `REVERB_APP_MAX_CONNECTIONS` | `server.max_connections` via `MURMUR_MAX_CONNECTIONS` |
 | Multi-node event delivery | `REVERB_SCALING_ENABLED=true` and Redis connection settings | `MURMUR_DRIVER=redis`, `MURMUR_REDIS_URL`, and `MURMUR_REDIS_CONNECTION` |
 
@@ -132,7 +132,7 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `server.max_topics_per_connection` | `MURMUR_MAX_TOPICS_PER_CONNECTION` | `50` | Maximum topics in one subscription. Adjust this for clients that combine topics. |
 | `server.max_payload_bytes` | `MURMUR_MAX_PAYLOAD_BYTES` | `65536` | Maximum publish payload size in bytes. Increase this if events need more space. |
 | `server.max_buffer_bytes` | `MURMUR_MAX_BUFFER_BYTES` | `1048576` | Maximum buffered bytes per SSE connection. Lower this to shed slow subscribers earlier. |
-| `server.allowed_origins` | `MURMUR_ALLOWED_ORIGINS` | `["*"]` | Comma-separated browser origins allowed for SSE. Replace * to restrict cross-origin reads. |
+| `server.allowed_origins` | `MURMUR_ALLOWED_ORIGINS` | `[]` | Comma-separated browser origins allowed for SSE. Use `*` to allow every origin. |
 | `server.signature_tolerance` | `MURMUR_SIGNATURE_TOLERANCE` | `60` | Allowed difference in seconds between the server clock and an HTTP publish timestamp. |
 | `server.loop_lag_threshold_ms` | `MURMUR_LOOP_LAG_THRESHOLD_MS` | `100` | Warn when the event loop timer fires more than this many milliseconds late. Must be positive. |
 | `server.shutdown_grace` | `MURMUR_SHUTDOWN_GRACE` | `5.0` | Seconds to drain connections on shutdown before closing the remaining sockets. |
@@ -218,7 +218,9 @@ For a metrics store, extend `Testing\MetricsStoreConformanceTestCase` and implem
 
 ## Deployment
 
-Run Murmur behind a reverse proxy. Keep `POST /publish` on a trusted network. A signed request is replayable within the default 60-second timestamp tolerance.
+Run Murmur behind a reverse proxy. The default empty origin allowlist serves requests that omit the `Origin` header, including typical same-origin EventSource requests. To serve a browser application from another origin, set `MURMUR_ALLOWED_ORIGINS` to its exact scheme, host, and non-default port, with no trailing slash. Requests with an unlisted origin receive 403. Use `*` only when every origin should be allowed.
+
+Keep `POST /publish` on a trusted network. A signed request is replayable within the default 60-second timestamp tolerance.
 
 Without `ext-uv`, `ext-ev`, or `ext-event`, ReactPHP uses `stream_select()` and is limited to about 1000 sockets. `murmur:serve` prints a startup notice for this backend and refuses to start when `server.max_sockets` exceeds 1000. The defaults cap SSE connections at 900 and accepted sockets at 1000. To scale further, install one of the extensions and raise `ulimit -n` before increasing the connection and socket limits.
 

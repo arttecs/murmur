@@ -55,7 +55,11 @@ class SseHandler
 
         if (in_array('*', $this->config->allowedOrigins, true)) {
             $headers['Access-Control-Allow-Origin'] = '*';
-        } elseif ($origin !== '' && in_array($origin, $this->config->allowedOrigins, true)) {
+        } elseif ($request->hasHeader('Origin')) {
+            if (! in_array(Origin::normalize($origin), $this->config->allowedOrigins, true)) {
+                return new Response(403);
+            }
+
             $headers['Access-Control-Allow-Origin'] = $origin;
         }
 
