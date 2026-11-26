@@ -1164,6 +1164,106 @@ it('uses a batch token for every private channel and consolidates later joins', 
   expect(authorizer).toHaveBeenCalledTimes(2)
 })
 
+it('keeps an attached private channel authorized when a new join makes the batch fail', async () => {
+  const authorizer = vi.fn<Authorizer>()
+    .mockResolvedValueOnce({ token: 'orders', expires_at: nowSeconds() + 900 })
+    .mockRejectedValueOnce({ status: 403 })
+  const m = client({ authorizer, retryMs: 10 })
+  const orders = vi.fn()
+  const ordersDenied = vi.fn()
+  const forbiddenDenied = vi.fn()
+  const unauthorized = vi.fn()
+  m.on('unauthorized', unauthorized)
+  m.private('orders').listen('.shipped', orders).error(ordersDenied)
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  first.dispatchEvent(new Event('open'))
+  first.emit('murmur.attached', {}, '4-0')
+
+  m.private('forbidden').error(forbiddenDenied)
+  await wait(100)
+  expect(authorizer).toHaveBeenCalledTimes(2)
+  expect(authorizer).toHaveBeenLastCalledWith(['private-orders', 'private-forbidden'], expect.any(AbortSignal))
+  expect(unauthorized).toHaveBeenCalledExactlyOnceWith(403, 'forbidden')
+  expect(forbiddenDenied).toHaveBeenCalledExactlyOnceWith(403)
+  expect(ordersDenied).not.toHaveBeenCalled()
+  const next = FakeEventSource.instances[1]
+  assert.isDefined(next)
+  expect(topicsOf(next)).toEqual(['private-orders'])
+  expect(new URL(next.url).searchParams.get('token')).toBe('orders')
+  next.emit('shipped', { topic: 'private-orders', data: 42 }, '5-0')
+  expect(orders).toHaveBeenCalledExactlyOnceWith(42)
+})
+
+it('uses only the reported token coverage and denies uncovered private topics', async () => {
+  const expires_at = nowSeconds() + 900
+  const authorizer = vi.fn<Authorizer>().mockResolvedValue([
+    { token: 'pair', expires_at, channels: ['private-a', 'private-b'] },
+    { token: 'individual', expires_at, channels: ['private-c'] },
+    { token: 'unused', expires_at, channels: ['private-unrequested'] },
+  ])
+  const m = client({ authorizer, retryMs: 10 })
+  const unauthorized = vi.fn()
+  m.on('unauthorized', unauthorized)
+  for (const name of ['a', 'b', 'c', 'denied']) {
+    m.private(name)
+  }
+  await wait(100)
+
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  expect(topicsOf(first)).toEqual(['private-a', 'private-b', 'private-c'])
+  expect(new URL(first.url).searchParams.get('token')).toBe('pair,individual')
+  expect(unauthorized).toHaveBeenCalledExactlyOnceWith(403, 'denied')
+
+  m.leave('c')
+  await flush()
+  const remaining = FakeEventSource.instances[1]
+  assert.isDefined(remaining)
+  expect(new URL(remaining.url).searchParams.get('token')).toBe('pair')
+  expect(authorizer).toHaveBeenCalledTimes(1)
+})
+
+it('preserves a batch credential inside the refresh margin until it expires', async () => {
+  vi.setSystemTime(0)
+  const authorizer = vi.fn<Authorizer>()
+    .mockResolvedValueOnce({ token: 'orders', expires_at: 10 })
+    .mockRejectedValue({ status: 403 })
+  const m = client({ authorizer, retryMs: 10 })
+  const unauthorized = vi.fn()
+  m.on('unauthorized', unauthorized)
+  m.private('orders')
+  await flush()
+
+  m.private('forbidden')
+  await flush()
+  const next = FakeEventSource.instances[1]
+  assert.isDefined(next)
+  expect(topicsOf(next)).toEqual(['private-orders'])
+  expect(unauthorized).toHaveBeenCalledExactlyOnceWith(403, 'forbidden')
+
+  vi.setSystemTime(10_000)
+  next.dispatchEvent(new Event('open'))
+  next.fail()
+  await wait(10)
+  expect(unauthorized.mock.calls).toEqual([[403, 'forbidden'], [403, 'orders']])
+  expect(FakeEventSource.instances).toHaveLength(2)
+})
+
+it('allows an empty batch result to deny every requested channel', async () => {
+  const authorizer = vi.fn<Authorizer>().mockResolvedValue([])
+  const m = client({ authorizer, retryMs: 10 })
+  const unauthorized = vi.fn()
+  m.on('unauthorized', unauthorized)
+  m.private('orders')
+  await wait(100)
+
+  expect(unauthorized).toHaveBeenCalledExactlyOnceWith(403, 'orders')
+  expect(authorizer).toHaveBeenCalledTimes(1)
+  expect(FakeEventSource.instances).toHaveLength(0)
+})
+
 it('sends grouped token results together and replaces the group after a channel leaves', async () => {
   const authorizer = vi.fn<Authorizer>()
     .mockResolvedValueOnce([

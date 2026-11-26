@@ -19,9 +19,11 @@ export interface AuthorizationToken {
   token: string
   /** The token expiration in Unix seconds. */
   expires_at: number
+  /** The requested wire topics this custom token covers. Omit for batch-wide coverage. */
+  channels?: string[]
 }
 
-/** Issues one token or a group of tokens covering all requested private topics. */
+/** Issues tokens for all or a subset of the requested private topics. */
 export type Authorizer = (channels: string[], signal: AbortSignal) => Promise<AuthorizationToken | AuthorizationToken[]>
 
 /** Configures the Murmur client. */
@@ -136,7 +138,9 @@ const requestTargetBudget = 6 * 1024
 function isAuthorizationToken(value: unknown): value is AuthorizationToken {
   return value !== null && typeof value === 'object' &&
     'token' in value && typeof value.token === 'string' && value.token !== '' && !value.token.includes(',') &&
-    'expires_at' in value && typeof value.expires_at === 'number' && Number.isFinite(value.expires_at)
+    'expires_at' in value && typeof value.expires_at === 'number' && Number.isFinite(value.expires_at) &&
+    (!('channels' in value) || value.channels === undefined ||
+      (Array.isArray(value.channels) && [...value.channels].every(channel => typeof channel === 'string')))
 }
 
 /** Rejects a failure limit that is not a positive integer. */
@@ -501,14 +505,9 @@ export class Murmur {
   /** Reuses valid credentials and authorizes missing private topics. */
   protected async authorize(topics: string[], signal: AbortSignal): Promise<void> {
     const minimumExpiry = Date.now() / 1000 + this.tokenRefreshMarginSeconds
-    const missing = topics.filter(topic => {
-      const tokens = this.cachedTokens.get(topic)
-      if (tokens?.every(({ expires_at }) => expires_at > minimumExpiry)) {
-        return false
-      }
-      this.cachedTokens.delete(topic)
-      return true
-    })
+    const missing = topics.filter(topic =>
+      !this.cachedTokens.get(topic)?.every(({ expires_at }) => expires_at > minimumExpiry),
+    )
     if (missing.length === 0) {
       return
     }
@@ -536,17 +535,16 @@ export class Murmur {
     acceptsArray: boolean,
   ): Promise<void> {
     this.counts.tokenRequests++
+    const startedAt = Date.now() / 1000
+    let tokens: AuthorizationToken[]
     try {
       const body = await request()
       signal.throwIfAborted()
-      const tokens: unknown[] = acceptsArray && Array.isArray(body) ? body : [body]
-      if (tokens.length === 0 || !tokens.every(isAuthorizationToken)) {
+      const result: unknown[] = acceptsArray && Array.isArray(body) ? [...body] : [body]
+      if (!result.every(isAuthorizationToken)) {
         throw new Error('Invalid Murmur authorization response')
       }
-
-      for (const topic of topics) {
-        this.cachedTokens.set(topic, tokens)
-      }
+      tokens = result
     } catch (error) {
       signal.throwIfAborted()
       this.counts.tokenFailures++
@@ -556,19 +554,42 @@ export class Murmur {
         throw error
       }
 
-      const status = error.status
-      const denied = new Set(topics)
-      for (const topic of denied) {
-        this.deniedTopics.add(topic)
-        this.cachedTokens.delete(topic)
+      const minimumExpiry = Math.max(startedAt, Date.now() / 1000)
+      const denied = acceptsArray ? topics.filter(topic =>
+        !this.cachedTokens.get(topic)?.every(({ expires_at }) => expires_at > minimumExpiry),
+      ) : topics
+      this.deny(denied, error.status)
+      return
+    }
+
+    const explicitCoverage = acceptsArray && tokens.some(({ channels }) => channels !== undefined)
+    const uncovered: string[] = []
+    for (const topic of topics) {
+      const covering = explicitCoverage
+        ? tokens.filter(({ channels }) => channels === undefined || channels.includes(topic))
+        : tokens
+      if (covering.length > 0) {
+        this.cachedTokens.set(topic, covering)
+      } else {
+        uncovered.push(topic)
       }
-      const subscriptions = [...this.channels.values()].filter(({ channel }) => denied.has(channel.name))
-      for (const { channel } of subscriptions) {
-        channel.authorizationDenied(status)
-      }
-      for (const topic of topics) {
-        this.emit('unauthorized', status, topic.slice(privatePrefix.length))
-      }
+    }
+    this.deny(uncovered, 403)
+  }
+
+  /** Removes uncovered topics from the connection and notifies their listeners. */
+  protected deny(topics: string[], status: number): void {
+    const denied = new Set(topics)
+    for (const topic of denied) {
+      this.deniedTopics.add(topic)
+      this.cachedTokens.delete(topic)
+    }
+    const subscriptions = [...this.channels.values()].filter(({ channel }) => denied.has(channel.name))
+    for (const { channel } of subscriptions) {
+      channel.authorizationDenied(status)
+    }
+    for (const topic of denied) {
+      this.emit('unauthorized', status, topic.slice(privatePrefix.length))
     }
   }
 
