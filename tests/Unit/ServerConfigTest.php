@@ -30,3 +30,19 @@ it('rejects an invalid server setting and names it in the error', function (stri
     ['shutdownSpreadSeconds', NAN],
     ['shutdownSpreadSeconds', INF],
 ]);
+
+it('normalizes explicit default ports to browser origins while retaining non-default ports', function () {
+    $config = new ServerConfig(str_repeat('x', 32), allowedOrigins: [
+        'HTTPS://App.test:443',
+        'http://app.test:80',
+        'http://app.test:443',
+        'https://[::1]:443',
+    ]);
+
+    expect($config->allowedOrigins)->toBe([
+        'https://app.test',
+        'http://app.test',
+        'http://app.test:443',
+        'https://[::1]',
+    ]);
+});

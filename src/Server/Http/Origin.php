@@ -10,7 +10,7 @@ namespace Arttecs\Murmur\Server\Http;
 class Origin
 {
     /**
-     * Validate an origin and normalize the case of its scheme and host.
+     * Validate an origin and normalize its scheme, host, and default HTTP port.
      */
     public static function normalize(string $origin): ?string
     {
@@ -22,6 +22,14 @@ class Origin
             return null;
         }
 
-        return strtolower($parts[1].'://'.$parts[2]).(isset($parts[3]) ? ':'.$parts[3] : '');
+        $scheme = strtolower($parts[1]);
+        $port = $parts[3] ?? null;
+        $defaultPort = match ($scheme) {
+            'http' => 80,
+            'https' => 443,
+            default => null,
+        };
+
+        return $scheme.'://'.strtolower($parts[2]).($port === null || (int) $port === $defaultPort ? '' : ':'.$port);
     }
 }

@@ -33,6 +33,5 @@
 
 - Private channel authorization uses Laravel's broadcasting route and issues one token per channel.
 - SSE subscriptions can combine several tokens and skip replay for newly joined topics.
-
 - `Contracts\EventLog` gained `onGap()`, `ready()`, and `healthy()` during pre-release development. Custom event logs must implement all three methods. The `since()` method accepts a filter and returns a replay bounded by the sampled tail.
 - Murmur supplies the Laravel broadcast connection by default and marks classes outside the supported PHP surface as internal.

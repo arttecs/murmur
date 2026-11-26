@@ -137,6 +137,10 @@ class InstallCommand extends Command
 
         if ($origin !== null && $origin !== '' && $content !== $beforeOrigin) {
             $this->info("Allowed SSE origin {$origin}.");
+
+            if ($this->isLoopbackOrigin($origin)) {
+                $this->line('A development page served on another port (such as a Vite dev server) has a different origin. Add that origin to MURMUR_ALLOWED_ORIGINS.');
+            }
         }
 
         return true;
@@ -196,15 +200,25 @@ class InstallCommand extends Command
         }
 
         $scheme = strtolower($parts['scheme']);
-        $port = $parts['port'] ?? null;
-        $defaultPort = match ($scheme) {
-            'http', 'ws' => 80,
-            'https', 'wss' => 443,
-            'ftp' => 21,
-            default => null,
-        };
 
-        return Origin::normalize($scheme.'://'.$parts['host'].($port === null || $port === $defaultPort ? '' : ':'.$port));
+        if (! in_array($scheme, ['http', 'https'], true)) {
+            return null;
+        }
+
+        return Origin::normalize($scheme.'://'.$parts['host'].(isset($parts['port']) ? ':'.$parts['port'] : ''));
+    }
+
+    /**
+     * Identify localhost and IP loopback origins used for local development.
+     */
+    protected function isLoopbackOrigin(string $origin): bool
+    {
+        $host = trim(parse_url($origin, PHP_URL_HOST), '[]');
+        $address = inet_pton($host);
+
+        return rtrim($host, '.') === 'localhost'
+            || ($address !== false && strlen($address) === 4 && $address[0] === "\x7f")
+            || $address === inet_pton('::1');
     }
 
     /**

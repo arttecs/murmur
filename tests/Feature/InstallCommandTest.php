@@ -149,7 +149,7 @@ it('allows the application origin in the environment and keeps the example blank
     chmod($this->envFile, 0600);
 
     expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
-    expect(Artisan::output())->toContain('Allowed SSE origin https://app.test:8443.');
+    expect(Artisan::output())->toContain('Allowed SSE origin https://app.test:8443.')->not->toContain('Vite');
     expect(file_get_contents($this->envFile))->toBe($base.($assignment === null
         ? "MURMUR_ALLOWED_ORIGINS=https://app.test:8443\r\n"
         : 'export MURMUR_ALLOWED_ORIGINS = "https://app.test:8443" # browser'));
@@ -168,6 +168,9 @@ it('leaves the origin allowlist alone when set or the application URL is invalid
     "APP_URL=https://app.test\nMURMUR_ALLOWED_ORIGINS=*\n",
     "APP_URL=localhost\n",
     "APP_URL=\n",
+    "APP_URL=ftp://app.test:21\n",
+    "APP_URL=ws://app.test:80\n",
+    "APP_URL=wss://app.test:443\n",
 ]);
 
 it('prints one instruction when the application has no broadcasting auth route', function () {
@@ -184,3 +187,21 @@ it('omits the instruction when laravel registered its unnamed broadcasting auth 
     expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
     expect(Artisan::output())->not->toContain('php artisan install:broadcasting');
 });
+
+it('prints one development port hint when adding a loopback origin', function (string $url, string $origin) {
+    file_put_contents($this->envFile, "APP_URL={$url}\nMURMUR_SECRET=existing\nBROADCAST_CONNECTION=murmur\n");
+
+    expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
+    $output = Artisan::output();
+    expect(Dotenv::parse(file_get_contents($this->envFile))['MURMUR_ALLOWED_ORIGINS'])->toBe($origin);
+    expect(substr_count($output, 'Vite'))->toBe(1);
+    expect($output)->toContain('different origin', 'MURMUR_ALLOWED_ORIGINS');
+
+    expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
+    expect(Artisan::output())->not->toContain('Vite');
+})->with([
+    ['HTTP://Localhost:80/path', 'http://localhost'],
+    ['http://127.0.0.2:5173', 'http://127.0.0.2:5173'],
+    ['https://[::1]:443', 'https://[::1]'],
+    ['http://[0:0:0:0:0:0:0:1]', 'http://[0:0:0:0:0:0:0:1]'],
+]);

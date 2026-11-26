@@ -347,3 +347,11 @@ it('counts only deliverable events against the replay limit', function () {
     expect($r->next()['id'])->toBe((string) $visible->id);
     $r->attached();
 });
+
+it('matches the browser origin when the allowlist spells its default port explicitly', function (string $origin, int $port) {
+    $h = ServerHarness::start(['allowedOrigins' => ["{$origin}:{$port}"]]);
+    $reader = SseReader::open($h->url('/sse?topics=news'), ['Origin' => $origin]);
+
+    expect($reader->status())->toBe(200);
+    expect($reader->header('Access-Control-Allow-Origin'))->toBe($origin);
+})->with([['https://app.test', 443], ['http://app.test', 80]]);
