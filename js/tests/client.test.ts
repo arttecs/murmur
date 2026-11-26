@@ -1,7 +1,21 @@
+import { Buffer } from 'node:buffer'
 import { afterEach, assert, beforeEach, expect, it, vi } from 'vitest'
 import type { Authorizer } from '../src/index'
 import { FakeEventSource } from './fake-event-source'
 import { authFetch, client, failingThenOk, flush, nowSeconds, reset, topicsOf, wait } from './helpers'
+
+/** Returns one default-shaped JWT per topic for request size tests. */
+const sizedTokens: Authorizer = async topics => topics.map(topic => {
+  const expires_at = 1_893_456_900
+  const claims = Buffer.from(JSON.stringify({ topics: [topic], exp: expires_at })).toString('base64url')
+  return { token: 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.' + claims + '.' + 'A'.repeat(43), expires_at }
+})
+
+/** The longest replay cursor accepted by the protocol. */
+const maxCursor = '999999999999999999-999999999999999999'
+
+/** A valid connection identifier for reconnect tests. */
+const connectionId = '0123456789abcdef0123456789abcdef'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
@@ -34,6 +48,90 @@ it('prefixes private channels and fetches a token first', async () => {
   const url = new URL(FakeEventSource.instances[0].url)
   expect(url.searchParams.get('topics')).toBe('private-orders.1')
   expect(url.searchParams.get('token')).toBe('jwt-1')
+})
+
+it.each([
+  { nameAt: (index: number) => 'orders.' + String(index).padStart(4, '0'), capacity: 30 },
+  { nameAt: (index: number) => 'orders.00000000-0000-4000-8000-' + String(index).padStart(12, '0'), capacity: 19 },
+  { nameAt: (index: number) => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.charAt(index), capacity: 37 },
+])('opens a subscription at capacity $capacity and rejects one more topic before opening', async ({ nameAt, capacity }) => {
+  const accepted = client({ authorizer: sizedTokens })
+  const rejected = client({ authorizer: sizedTokens })
+  const error = vi.fn()
+  rejected.on('error', error)
+  for (let index = 0; index < capacity; index++) {
+    accepted.private(nameAt(index))
+    rejected.private(nameAt(index))
+  }
+  rejected.private(nameAt(capacity))
+  await flush()
+
+  expect(FakeEventSource.instances).toHaveLength(1)
+  const [source] = FakeEventSource.instances
+  assert.isDefined(source)
+  expect(topicsOf(source)).toHaveLength(capacity)
+  expect(error).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: expect.stringContaining('request budget') }))
+})
+
+it.each([false, true])('retries at capacity with attachment before the drop set to %s', async attached => {
+  const m = client({ authorizer: sizedTokens, retryMs: 10 })
+  const error = vi.fn()
+  const disconnected = vi.fn()
+  m.on('error', error)
+  m.on('disconnected', disconnected)
+  for (let index = 0; index < 30; index++) {
+    m.private('orders.' + String(index).padStart(4, '0')).listen('.updated', () => {})
+  }
+  await flush()
+
+  const [first] = FakeEventSource.instances
+  assert.isDefined(first)
+  first.dispatchEvent(new Event('open'))
+  first.emit('murmur.connected', { connection_id: connectionId, protocol: 1 }, '')
+  if (attached) {
+    first.emit('murmur.attached', {}, maxCursor)
+  } else {
+    first.emit('updated', { topic: 'private-orders.0000', data: null }, maxCursor)
+  }
+  first.fail()
+  expect(disconnected).toHaveBeenCalledExactlyOnceWith()
+  await wait(10)
+
+  const retry = FakeEventSource.instances[1]
+  assert.isDefined(retry)
+  const query = new URL(retry.url).searchParams
+  expect(query.get('connection')).toBe(connectionId)
+  expect(query.get('lastEventId')).toBe(maxCursor)
+  expect(query.get('fresh')).toBe(attached ? null : topicsOf(retry).join(','))
+  retry.dispatchEvent(new Event('open'))
+  expect(m.stats().connected).toBe(true)
+  expect(error).not.toHaveBeenCalled()
+})
+
+it.each([
+  { announce: false, cursor: false },
+  { announce: true, cursor: false },
+  { announce: false, cursor: true },
+  { announce: true, cursor: true },
+])('reserves reconnect parameters with ID known=$announce and cursor known=$cursor', async ({ announce, cursor }) => {
+  const m = client({ fetch: authFetch({ token: 'x'.repeat(6006), expires_at: nowSeconds() + 900 }) })
+  const error = vi.fn()
+  m.on('error', error)
+  m.private('a')
+  await flush()
+  const [first] = FakeEventSource.instances
+  assert.isDefined(first)
+  if (announce) {
+    first.emit('murmur.connected', { connection_id: connectionId, protocol: 1 }, '')
+  }
+  if (cursor) {
+    first.emit('murmur.attached', {}, maxCursor)
+  }
+  m.channel('b')
+  await flush()
+
+  expect(FakeEventSource.instances).toHaveLength(1)
+  expect(error).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: expect.stringContaining('request budget') }))
 })
 
 it('resolves namespaced and literal event names', async () => {

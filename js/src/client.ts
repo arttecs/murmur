@@ -145,6 +145,12 @@ const authorizationConcurrency = 4
 /** The request target byte budget, reserving 2 KiB of the server limit for headers and the request line. */
 const requestTargetBudget = 6 * 1024
 
+/** An encoded connection ID occupies 32 bytes. */
+const reservedConnectionId = '0'.repeat(32)
+
+/** The longest encoded replay cursor has two 18-digit components. */
+const reservedCursor = '0'.repeat(18) + '-' + '0'.repeat(18)
+
 /** Validates a token response before using it in a comma-delimited list. */
 function isAuthorizationToken(value: unknown): value is AuthorizationToken {
   return value !== null && typeof value === 'object' &&
@@ -531,6 +537,18 @@ export class Murmur {
     if (tokens.size > 0) {
       url.searchParams.set('token', [...tokens].join(','))
     }
+    const largestAttempt = new URL(url)
+    largestAttempt.searchParams.set('connection', reservedConnectionId)
+    largestAttempt.searchParams.set('lastEventId', reservedCursor)
+    largestAttempt.searchParams.set('fresh', topics.join(','))
+    if (new TextEncoder().encode(largestAttempt.pathname + largestAttempt.search).length > requestTargetBudget) {
+      this.reportPreparation('failed')
+      this.emit('error', new Error(
+        `Murmur subscription URL exceeds the request budget with ${privateTopics.length} private channels requested. Use a multi-topic token for large private subscriptions or reduce the topic list.`,
+      ))
+      return
+    }
+
     url.searchParams.delete('lastEventId')
     if (lastEventId !== undefined) {
       url.searchParams.set('lastEventId', lastEventId)
@@ -546,13 +564,6 @@ export class Murmur {
       if (fresh.length > 0) {
         url.searchParams.set('fresh', fresh.join(','))
       }
-    }
-    if (new TextEncoder().encode(url.pathname + url.search).length > requestTargetBudget) {
-      this.reportPreparation('failed')
-      this.emit('error', new Error(
-        `Murmur subscription URL exceeds the request budget with ${privateTopics.length} private channels requested. Use a multi-topic token for large private subscriptions or reduce the topic list.`,
-      ))
-      return
     }
     this.attemptSubscriptions = subscriptions
     return url.href

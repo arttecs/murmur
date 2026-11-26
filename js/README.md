@@ -131,7 +131,15 @@ const murmur = new Murmur({
 })
 ```
 
-The server defaults to 50 topics per connection and has an 8 KiB limit for the request line and headers. The client limits the UTF-8 byte length of the path and query to 6 KiB to reserve room for headers. With one default-shaped HS256 JWT per topic and a 10-digit Unix expiry, the first request to `/sse` fits 35 four-digit order topics like `private-orders.0042`, 24 UUID order topics like `private-orders.00000000-0000-4000-8000-000000000042`, or 40 short topics like `private-a`. These counts use distinct topics of each example's length, the client's URL encoding, and a cursorless request with no connection ID or `fresh` parameter. Extra query parameters and reconnect metadata take up part of the same budget. If the URL exceeds that budget, the client emits `error` and waits for a subscription change. For pages with many private channels, configure a custom `authorizer` that returns one multi-topic token.
+The server defaults to 50 topics per connection and has an 8 KiB limit for the request line and headers. The client limits the UTF-8 byte length of the path and query to 6 KiB to reserve room for headers. It checks the largest possible reconnect URL, reserving a 32-character `connection` ID, a `lastEventId` with two 18-digit components, and a `fresh` list containing every topic.
+
+| Example wire topic | Guaranteed client capacity | Largest reconnect URL path and query |
+| --- | ---: | ---: |
+| `private-orders.0042` | 30 | 5,991 bytes |
+| `private-orders.00000000-0000-4000-8000-000000000042` | 19 | 5,868 bytes |
+| `private-a` | 37 | 6,142 bytes |
+
+These measurements use `/sse`, distinct topics of each example's length, the client's URL encoding, the full reconnect reservation, and one default-shaped HS256 JWT per topic with a 10-digit Unix expiry. The guaranteed capacity is lower than what a single request can carry. Extra query parameters or longer tokens take up part of the same budget. If a subscription exceeds that budget, the client emits `error` and waits for a subscription change. For pages with many private channels, configure a custom `authorizer` that returns one multi-topic token.
 
 ## Streams
 
