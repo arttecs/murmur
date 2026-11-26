@@ -70,8 +70,12 @@ async function startAuth(
   return { endpoint: `http://127.0.0.1:${port}/broadcasting/auth`, requests }
 }
 
-/** Creates a client whose EventSource uses real HTTP and records the responses. */
-function client(options: Partial<MurmurOptions> = {}, attempts: Attempt[] = []): Murmur {
+/** Creates a client that records real SSE responses and can gate reconnect requests. */
+function client(
+  options: Partial<MurmurOptions> = {},
+  attempts: Attempt[] = [],
+  beforeReconnect?: () => Promise<void>,
+): Murmur {
   /** Observes SSE requests without changing the wire data or EventSource behavior. */
   class ObservedEventSource extends EventSource {
     /** Opens the real EventSource and records its HTTP requests. */
@@ -80,6 +84,9 @@ function client(options: Partial<MurmurOptions> = {}, attempts: Attempt[] = []):
       super(url, {
         ...init,
         fetch: async (url, request) => {
+          if (beforeReconnect && attempts.length > 0) {
+            await beforeReconnect()
+          }
           const controller = new AbortController()
           const attempt: Attempt = { url: new URL(url), interrupt: () => controller.abort(new Error('SSE connection interrupted')) }
           current = attempt
@@ -371,7 +378,10 @@ describe('Murmur client and PHP server', () => {
 
   it('excludes the sender by its announced ID during live delivery and replay', async () => {
     const attempts: Attempt[] = []
-    const sender = client({ retryMs: 250 }, attempts)
+    let resumeReconnect: (() => void) | undefined
+    const excludedPublished = new Promise<void>(resolve => { resumeReconnect = resolve })
+    const beforeReconnect = vi.fn(() => excludedPublished)
+    const sender = client({ retryMs: 1 }, attempts, beforeReconnect)
     const recipient = client()
     const disconnected = vi.fn()
     const senderUpdates = vi.fn()
@@ -391,9 +401,14 @@ describe('Murmur client and PHP server', () => {
     await vi.waitFor(() => expect(senderUpdates).toHaveBeenCalledExactlyOnceWith('first'), waitOptions)
 
     attempts[0]?.interrupt()
-    await vi.waitFor(() => expect(disconnected).toHaveBeenCalledExactlyOnceWith(), waitOptions)
-    await publish(murmur.address, 'exclusion', 'updated', 'excluded during outage', id)
-    expect(attempts).toHaveLength(1)
+    try {
+      await vi.waitFor(() => expect(beforeReconnect).toHaveBeenCalledExactlyOnceWith(), waitOptions)
+      expect(disconnected).toHaveBeenCalledExactlyOnceWith()
+      await publish(murmur.address, 'exclusion', 'updated', 'excluded during outage', id)
+      expect(attempts).toHaveLength(1)
+    } finally {
+      resumeReconnect?.()
+    }
     await publish(murmur.address, 'exclusion', 'updated', 'second')
     await vi.waitFor(() => {
       expect(senderUpdates).toHaveBeenLastCalledWith('second')

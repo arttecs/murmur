@@ -243,15 +243,22 @@ it.each([408, 425, 429])('retries a built-in authorization response with status 
 })
 
 it.each([
-  { header: '2', delay: 2000 },
-  { header: new Date(3000).toUTCString(), delay: 3000 },
-  { header: '30', delay: 5000 },
-  { header: 'invalid', delay: 10 },
-  { header: '1.5', delay: 10 },
-  { header: new Date(0).toUTCString(), delay: 10 },
-])('uses Retry-After $header to set a retry floor of $delay ms', async ({ header, delay }) => {
-  vi.setSystemTime(0)
-  const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: 900 }))
+  { header: '2', delay: 2000, now: 0 },
+  { header: 'Thu, 01 Jan 1970 00:00:03 GMT', delay: 3000, now: 0 },
+  { header: 'Sat, 31 Dec 2016 23:59:60 GMT', delay: 2000, now: Date.UTC(2016, 11, 31, 23, 59, 58) },
+  { header: '30', delay: 5000, now: 0 },
+  { header: 'invalid', delay: 10, now: 0 },
+  { header: '1.5', delay: 10, now: 0 },
+  { header: 'Thu, 01 Jan 1970 00:00:00 GMT', delay: 10, now: 0 },
+  { header: 'Sun Nov  6 08:49:37 1994', delay: 10, now: 0 },
+  { header: 'Sunday, 06-Nov-94 08:49:37 GMT', delay: 10, now: 0 },
+  { header: 'Sun, 06 Nov 1994 08:49:37', delay: 10, now: 0 },
+  { header: 'Sun, 6 Nov 1994 08:49:37 GMT', delay: 10, now: 0 },
+  { header: 'Sun, 06 Nov 1994 08:49:37 +0000', delay: 10, now: 0 },
+  { header: 'Sun, 31 Feb 1994 08:49:37 GMT', delay: 10, now: 0 },
+])('uses Retry-After $header to set a retry floor of $delay ms', async ({ header, delay, now }) => {
+  vi.setSystemTime(now)
+  const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: nowSeconds() + 900 }))
     .mockResolvedValueOnce(new Response(null, { status: 429, headers: { 'Retry-After': header } }))
   const m = client({ fetch, retryMs: 10, maxRetryMs: 5000 })
   m.private('orders')
@@ -1451,6 +1458,130 @@ it('allows an empty batch result to deny every requested channel', async () => {
   expect(unauthorized).toHaveBeenCalledExactlyOnceWith(403, 'orders')
   expect(authorizer).toHaveBeenCalledTimes(1)
   expect(FakeEventSource.instances).toHaveLength(0)
+})
+
+it.each([
+  { value: 'private-a', shape: 'non-array' },
+  { value: [null], shape: 'non-string' },
+  { value: Array<string>(1), shape: 'sparse' },
+])('retries a batch response with $shape channel coverage', async ({ value }) => {
+  const expires_at = nowSeconds() + 900
+  const authorizer = vi.fn()
+    .mockResolvedValueOnce({ token: 'invalid', expires_at, channels: value })
+    .mockResolvedValueOnce({ token: 'valid', expires_at, channels: ['private-a'] })
+  const m = client({ authorizer, retryMs: 10 })
+  const unauthorized = vi.fn()
+  m.on('unauthorized', unauthorized)
+  m.private('a')
+  await flush()
+
+  expect(FakeEventSource.instances).toHaveLength(0)
+  expect(m.stats().tokenFailures).toBe(1)
+  await wait(10)
+  const [source] = FakeEventSource.instances
+  assert.isDefined(source)
+  expect(new URL(source.url).searchParams.get('token')).toBe('valid')
+  expect(unauthorized).not.toHaveBeenCalled()
+})
+
+it('denies and discards a cached grant left out of a successful batch response', async () => {
+  const expires_at = nowSeconds() + 900
+  const authorizer = vi.fn<Authorizer>()
+    .mockResolvedValueOnce({ token: 'previous', expires_at })
+    .mockResolvedValueOnce([
+      { token: 'empty', expires_at, channels: [] },
+      { token: 'new', expires_at, channels: ['private-b', 'private-b'] },
+    ])
+    .mockResolvedValueOnce({ token: 'replacement', expires_at })
+  const m = client({ authorizer })
+  const denied = vi.fn()
+  m.private('a').error(denied)
+  await flush()
+  m.private('b')
+  await flush()
+
+  const update = FakeEventSource.instances[1]
+  assert.isDefined(update)
+  expect(topicsOf(update)).toEqual(['private-b'])
+  expect(new URL(update.url).searchParams.get('token')).toBe('new')
+  expect(denied).toHaveBeenCalledExactlyOnceWith(403)
+  expect(m.stats().tokenFailures).toBe(0)
+
+  m.reauthorize('a')
+  await flush()
+  const replacement = FakeEventSource.instances[2]
+  assert.isDefined(replacement)
+  expect(authorizer).toHaveBeenLastCalledWith(['private-a', 'private-b'], expect.any(AbortSignal))
+  expect(topicsOf(replacement)).toEqual(['private-a', 'private-b'])
+  expect(new URL(replacement.url).searchParams.get('token')).toBe('replacement')
+})
+
+it('combines explicit and batch-wide coverage without grouping the cached tokens', async () => {
+  const expires_at = nowSeconds() + 900
+  const authorizer = vi.fn<Authorizer>().mockResolvedValue([
+    { token: 'specific', expires_at, channels: ['private-a'] },
+    { token: 'batch', expires_at },
+  ])
+  const m = client({ authorizer })
+  m.private('a')
+  m.private('b')
+  await flush()
+  const [first] = FakeEventSource.instances
+  assert.isDefined(first)
+  expect(topicsOf(first)).toEqual(['private-a', 'private-b'])
+  expect(new URL(first.url).searchParams.get('token')).toBe('specific,batch')
+
+  m.leave('a')
+  await flush()
+  const remaining = FakeEventSource.instances[1]
+  assert.isDefined(remaining)
+  expect(topicsOf(remaining)).toEqual(['private-b'])
+  expect(new URL(remaining.url).searchParams.get('token')).toBe('batch')
+  expect(authorizer).toHaveBeenCalledTimes(1)
+})
+
+it.each([401, 403, 419, 422])('treats a custom authorizer Response with status %s as a denial', async status => {
+  const authorizer = vi.fn<Authorizer>().mockRejectedValue(new Response(null, {
+    status,
+    headers: { 'Retry-After': '2' },
+  }))
+  const m = client({ authorizer })
+  const denied = vi.fn()
+  m.private('a').error(denied)
+  m.channel('news')
+  await flush()
+
+  expect(denied).toHaveBeenCalledExactlyOnceWith(status)
+  expect(m.stats().tokenFailures).toBe(1)
+  const [source] = FakeEventSource.instances
+  assert.isDefined(source)
+  expect(topicsOf(source)).toEqual(['news'])
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it.each([
+  { status: 408, headers: undefined, delay: 10 },
+  { status: 425, headers: undefined, delay: 10 },
+  { status: 429, headers: { 'Retry-After': '2' }, delay: 2000 },
+  { status: 500, headers: undefined, delay: 10 },
+  { status: 503, headers: { 'Retry-After': '2' }, delay: 2000 },
+])('retries a custom authorizer Response with status $status after $delay ms', async ({ status, headers, delay }) => {
+  const authorizer = vi.fn<Authorizer>()
+    .mockRejectedValueOnce(new Response(null, { status, headers }))
+    .mockResolvedValueOnce({ token: 'recovered', expires_at: nowSeconds() + 900 })
+  const m = client({ authorizer, retryMs: 10 })
+  const denied = vi.fn()
+  m.private('a').error(denied)
+  await wait(delay - 1)
+  expect(authorizer).toHaveBeenCalledTimes(1)
+  expect(FakeEventSource.instances).toHaveLength(0)
+  expect(m.stats().tokenFailures).toBe(1)
+
+  await wait(1)
+  const [source] = FakeEventSource.instances
+  assert.isDefined(source)
+  expect(new URL(source.url).searchParams.get('token')).toBe('recovered')
+  expect(denied).not.toHaveBeenCalled()
 })
 
 it('sends grouped token results together and replaces the group after a channel leaves', async () => {

@@ -175,19 +175,25 @@ class AuthorizationResponseError extends Error {
   }
 }
 
-/** Converts Retry-After delay-seconds or an HTTP date to a delay in milliseconds. */
+/** Matches the complete IMF-fixdate syntax before passing a timestamp to Date.parse. */
+const imfFixdate = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT(?![\s\S])/
+
+/** Converts Retry-After delay-seconds or an IMF-fixdate to a delay in milliseconds. */
 function retryAfterDelay(header: string | null): number {
   const value = header?.trim() ?? ''
   if (/^\d+$/.test(value)) {
     return Number(value) * 1000
   }
-  if (/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:[a-z]+)?,? /i.test(value) && /\d:\d{2}:\d{2}/.test(value)) {
-    const time = Date.parse(value)
-    if (Number.isFinite(time)) {
-      return Math.max(0, time - Date.now())
-    }
+  if (!imfFixdate.test(value)) {
+    return 0
   }
-  return 0
+
+  const utc = value.replace('23:59:60 GMT', '23:59:59 GMT')
+  const time = Date.parse(utc)
+  if (new Date(time).toUTCString() !== utc) {
+    return 0
+  }
+  return Math.max(0, time + (utc === value ? 0 : 1000) - Date.now())
 }
 
 /** Multiplexes channel subscriptions and opens independent streams. */
