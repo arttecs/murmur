@@ -141,11 +141,11 @@ return [
     'metrics' => [
         /** Metrics store name: database, redis, cache, or a registered custom store. */
         'store' => $metricSetting('MURMUR_METRICS_STORE'),
-        /** Seconds between snapshots from the same server. */
+        /** Seconds between recording attempts. Skip attempts while a write is pending. */
         'interval' => $metricDuration('MURMUR_METRICS_INTERVAL', 15.0),
         /** Age in seconds at which readers consider the snapshot stale. Must exceed the interval. */
         'ttl' => $metricDuration('MURMUR_METRICS_TTL', 60),
-        /** Maximum seconds allowed for the recording process. */
+        /** Seconds to wait for an acknowledgement before reporting a timeout. */
         'timeout' => $metricDuration('MURMUR_METRICS_TIMEOUT', 10.0),
         /** Stable server identifier. Defaults to the hostname and listening port. */
         'node' => $metricSetting('MURMUR_NODE'),
