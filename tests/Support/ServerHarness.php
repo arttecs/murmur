@@ -6,6 +6,7 @@ use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Server\Auth\Signature;
 use Arttecs\Murmur\Server\Auth\TokenIssuer;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
+use Arttecs\Murmur\Server\Metrics;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Psr\Http\Message\ResponseInterface;
@@ -80,6 +81,14 @@ class ServerHarness
     public function url(string $path): string
     {
         return $this->server->address().$path;
+    }
+
+    /**
+     * Get the metrics from the listening server.
+     */
+    public function metrics(): Metrics
+    {
+        return $this->server->metrics();
     }
 
     /**

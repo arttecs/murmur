@@ -2,6 +2,7 @@
 
 namespace Arttecs\Murmur\Server;
 
+use Closure;
 use Throwable;
 
 /**
@@ -20,10 +21,31 @@ class ErrorReporter
     protected static int $suppressed = 0;
 
     /**
+     * The active server's error counter.
+     *
+     * @var Closure(): void|null
+     */
+    protected static ?Closure $counter = null;
+
+    /**
+     * Set or clear the hook for counting every reported error.
+     *
+     * @param  (callable(): void)|null  $counter
+     */
+    public static function countUsing(?callable $counter): void
+    {
+        static::$counter = $counter === null ? null : Closure::fromCallable($counter);
+    }
+
+    /**
      * Report the exception class and message at most once per second.
      */
     public static function report(Throwable $error): void
     {
+        if (static::$counter !== null) {
+            (static::$counter)();
+        }
+
         $now = hrtime(true);
 
         if (static::$lastReport !== null && $now - static::$lastReport < 1_000_000_000) {

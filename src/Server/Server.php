@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Server;
 
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Server\Http\MetricsHandler;
 use Arttecs\Murmur\Server\Http\PublishHandler;
 use Arttecs\Murmur\Server\Http\SseHandler;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
@@ -38,6 +39,16 @@ class Server
      * The hub shared by subscriptions and the event log.
      */
     protected Hub $hub;
+
+    /**
+     * The metrics collected by this server.
+     */
+    protected Metrics $metrics;
+
+    /**
+     * The monotonic timestamp when the server started listening.
+     */
+    protected int|float|null $startedAt = null;
 
     /**
      * The listening socket.
@@ -93,7 +104,23 @@ class Server
     public function __construct(protected ServerConfig $config, protected EventLog $log, ?LoopInterface $loop = null)
     {
         $this->loop = $loop ?? Loop::get();
-        $this->hub = new Hub;
+        $this->metrics = new Metrics;
+        $this->hub = new Hub($this->metrics);
+
+        $this->metrics->gauge('murmur_connections', 'Open SSE connections.', $this->hub->connectionCount(...));
+        $this->metrics->gauge('murmur_sockets', 'Accepted TCP sockets currently open.', fn (): int => count($this->clients));
+        $this->metrics->gauge('murmur_topics', 'Topics with at least one subscriber.', $this->hub->topicCount(...));
+        $this->metrics->gauge('murmur_uptime_seconds', 'Seconds since the server started listening.', fn (): float => $this->startedAt === null ? 0.0 : (hrtime(true) - $this->startedAt) / 1_000_000_000);
+        $this->metrics->gauge('murmur_memory_bytes', 'Bytes of memory allocated by PHP.', fn (): int => memory_get_usage(true));
+        $this->metrics->gauge('murmur_memory_peak_bytes', 'Peak bytes of memory allocated by PHP.', fn (): int => memory_get_peak_usage(true));
+    }
+
+    /**
+     * Get this server's metrics registry.
+     */
+    public function metrics(): Metrics
+    {
+        return $this->metrics;
     }
 
     /**
@@ -127,29 +154,21 @@ class Server
      */
     protected function bind(): void
     {
-        $sse = new SseHandler($this->config, $this->log, $this->hub, $this->loop);
+        $sse = new SseHandler($this->config, $this->log, $this->hub, $this->loop, $this->metrics);
+        $metrics = new MetricsHandler($this->config, $this->metrics);
         $publish = $this->config->publishEnabled && $this->log instanceof MemoryEventLog
             ? new PublishHandler($this->config, $this->log)
             : null;
 
-        $http = new HttpServer($this->loop, new StreamingRequestMiddleware, function (ServerRequestInterface $request) use ($sse, $publish): ResponseInterface|PromiseInterface {
+        $http = new HttpServer($this->loop, new StreamingRequestMiddleware, function (ServerRequestInterface $request) use ($sse, $metrics, $publish): ResponseInterface|PromiseInterface {
             $route = $request->getMethod().' '.$request->getUri()->getPath();
-
             $client = $this->clientFor($request);
-
-            if ($route === 'POST /publish' && $publish !== null) {
-                return resolve($publish($request))->then(function (ResponseInterface $response) use ($client): ResponseInterface {
-                    $this->cancelRequestDeadline($client);
-
-                    return $this->withResponseHeaders($response);
-                });
-            }
-
-            $this->cancelRequestDeadline($client);
 
             try {
                 $response = match ($route) {
+                    'POST /publish' => $publish === null ? new Response(404) : $publish($request),
                     'GET /sse' => $this->shutdown === null ? $sse($request, $client) : new Response(503),
+                    'GET /metrics' => $metrics($request),
                     'GET /health' => new Response(200, ['Content-Type' => 'application/json'], json_encode([
                         'status' => 'ok',
                         'connections' => $this->hub->connectionCount(),
@@ -157,12 +176,14 @@ class Server
                     default => new Response(404),
                 };
             } catch (Throwable $error) {
-                ErrorReporter::report($error);
-
-                $response = new Response(500);
+                $response = $this->errorResponse($error);
             }
 
-            return $this->withResponseHeaders($response);
+            $finish = fn (ResponseInterface $response): ResponseInterface => $this->finishResponse($response, $route, $client);
+
+            return $response instanceof PromiseInterface
+                ? $response->then($finish, fn (Throwable $error): ResponseInterface => $finish($this->errorResponse($error)))
+                : $finish($response);
         });
 
         $this->socket = new SocketServer($this->config->host.':'.$this->config->port, [], $this->loop);
@@ -193,7 +214,36 @@ class Server
         });
 
         $http->listen($this->socket);
+        $this->startedAt = hrtime(true);
+        ErrorReporter::countUsing(fn () => $this->metrics->increment('murmur_errors_total'));
         $this->heartbeat = $this->loop->addPeriodicTimer($this->config->heartbeatSeconds, $this->hub->heartbeat(...));
+    }
+
+    /**
+     * Complete the request deadline and count the resulting HTTP status.
+     */
+    protected function finishResponse(ResponseInterface $response, string $route, ConnectionInterface $client): ResponseInterface
+    {
+        $this->cancelRequestDeadline($client);
+        $status = $response->getStatusCode();
+
+        if ($route === 'POST /publish') {
+            $this->metrics->increment('murmur_publish_requests_total', labels: ['status' => (string) $status]);
+        } elseif ($route === 'GET /sse' && $status >= 400) {
+            $this->metrics->increment('murmur_connections_rejected_total', labels: ['status' => (string) $status]);
+        }
+
+        return $this->withResponseHeaders($response);
+    }
+
+    /**
+     * Report a route failure and respond with an internal server error.
+     */
+    protected function errorResponse(Throwable $error): ResponseInterface
+    {
+        ErrorReporter::report($error);
+
+        return new Response(500);
     }
 
     /**
@@ -310,7 +360,14 @@ class Server
             $this->shutdownDeadline = null;
         }
 
-        $this->log->close();
+        try {
+            $this->log->close();
+        } finally {
+            if ($this->startedAt !== null) {
+                ErrorReporter::countUsing(null);
+            }
+        }
+
         $this->shutdown?->resolve(null);
     }
 }

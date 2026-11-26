@@ -48,6 +48,16 @@ return [
         'signature_tolerance' => (int) env('MURMUR_SIGNATURE_TOLERANCE', 60),
         /** Seconds to drain connections on shutdown before closing the remaining sockets. */
         'shutdown_grace' => (float) env('MURMUR_SHUTDOWN_GRACE', 5.0),
+        /**
+         * Per-process metrics at GET /metrics. Set a bearer token before
+         * exposing the endpoint outside a trusted network.
+         */
+        'metrics' => [
+            /** Whether to serve the metrics endpoint. Disable this if you do not scrape the process. */
+            'enabled' => (bool) env('MURMUR_METRICS_ENABLED', true),
+            /** Bearer token required for metrics requests. Leave null to allow unauthenticated scrapes. */
+            'token' => ($metricsToken = env('MURMUR_METRICS_TOKEN')) === null ? null : (string) $metricsToken,
+        ],
     ],
 
     /**

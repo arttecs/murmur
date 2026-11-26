@@ -30,8 +30,13 @@ class Connection
     /**
      * Create a connection and listen for stream events.
      */
-    public function __construct(protected WritableStreamInterface $stream, protected int $maxBufferBytes = 1048576)
-    {
+    public function __construct(
+        protected WritableStreamInterface $stream,
+        protected int $maxBufferBytes = 1048576,
+        protected ?Metrics $metrics = null,
+    ) {
+        $this->metrics?->increment('murmur_connections_opened_total');
+
         $this->stream->on('drain', function (): void {
             $this->bufferedBytes = 0;
         });
@@ -44,15 +49,34 @@ class Connection
      */
     public function send(string $frame): void
     {
-        if ($this->closed || $this->stream->write($frame)) {
-            return;
+        if ($this->writeFrame($frame) && $frame === Frame::gap()) {
+            $this->metrics?->increment('murmur_gaps_total');
+        }
+    }
+
+    /**
+     * Hand a frame to a writable stream and track bytes and backpressure.
+     */
+    protected function writeFrame(string $frame): bool
+    {
+        if ($this->closed || ! $this->stream->isWritable()) {
+            return false;
         }
 
-        $this->bufferedBytes += strlen($frame);
+        $writable = $this->stream->write($frame);
+        $bytes = strlen($frame);
+        $this->metrics?->increment('murmur_bytes_sent_total', $bytes);
 
-        if ($this->bufferedBytes > $this->maxBufferBytes) {
-            $this->close();
+        if (! $writable) {
+            $this->bufferedBytes += $bytes;
+
+            if ($this->bufferedBytes > $this->maxBufferBytes) {
+                $this->metrics?->increment('murmur_slow_consumers_total');
+                $this->close();
+            }
         }
+
+        return true;
     }
 
     /**
@@ -62,7 +86,21 @@ class Connection
      */
     public function sendEvent(Event $event, ?string $frame = null): void
     {
-        $this->send($frame ?? Frame::event($event));
+        $this->writeEventFrame($frame ?? Frame::event($event));
+    }
+
+    /**
+     * Write an event frame and record whether it came from replay.
+     */
+    protected function writeEventFrame(string $frame, bool $replayed = false): void
+    {
+        if ($this->writeFrame($frame)) {
+            $this->metrics?->increment('murmur_events_sent_total');
+
+            if ($replayed) {
+                $this->metrics?->increment('murmur_replayed_events_total');
+            }
+        }
     }
 
     /**
@@ -83,6 +121,7 @@ class Connection
         }
 
         $this->closed = true;
+        $this->metrics?->increment('murmur_connections_closed_total');
         try {
             $this->stream->close();
         } finally {

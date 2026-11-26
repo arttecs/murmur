@@ -45,6 +45,8 @@ class MurmurServiceProvider extends ServiceProvider
             $merged[$group] = array_replace($defaults[$group], $overrides[$group] ?? []);
         }
 
+        $merged['server']['metrics'] = array_replace($defaults['server']['metrics'], $overrides['server']['metrics'] ?? []);
+
         $config->set('murmur', $merged);
     }
 

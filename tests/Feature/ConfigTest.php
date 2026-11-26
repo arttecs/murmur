@@ -45,7 +45,7 @@ class ConfigTest extends TestCase
     public function test_fills_missing_settings_in_published_config_groups(): void
     {
         config(['murmur' => [
-            'server' => ['allowed_origins' => []],
+            'server' => ['allowed_origins' => [], 'metrics' => ['enabled' => false]],
             'auth' => ['middleware' => []],
             'redis' => ['stream' => 'app-events'],
         ]]);
@@ -55,6 +55,7 @@ class ConfigTest extends TestCase
         $this->assertSame([], config('murmur.auth.middleware'));
         $this->assertSame('app-events', config('murmur.redis.stream'));
         $this->assertSame(5.0, config('murmur.server.shutdown_grace'));
+        $this->assertSame(['enabled' => false, 'token' => null], config('murmur.server.metrics'));
         $this->assertSame(5000, config('murmur.redis.block_ms'));
         $this->assertTrue(config('murmur.auth.enabled'));
     }
@@ -79,6 +80,8 @@ class ConfigTest extends TestCase
             ['MURMUR_ALLOWED_ORIGINS', 'a, b,,c', 'server.allowed_origins', ['a', 'b', 'c']],
             ['MURMUR_SIGNATURE_TOLERANCE', '45', 'server.signature_tolerance', 45],
             ['MURMUR_SHUTDOWN_GRACE', '7.5', 'server.shutdown_grace', 7.5],
+            ['MURMUR_METRICS_ENABLED', 'false', 'server.metrics.enabled', false],
+            ['MURMUR_METRICS_TOKEN', 'scrape-secret', 'server.metrics.token', 'scrape-secret'],
             ['MURMUR_PUBLIC_URL', 'https://events.test', 'public_url', 'https://events.test'],
             ['MURMUR_PUBLISH_URL', 'http://internal.test', 'publish_url', 'http://internal.test'],
             ['MURMUR_TOKEN_TTL', '600', 'token_ttl', 600],

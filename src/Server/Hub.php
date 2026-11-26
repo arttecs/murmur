@@ -28,7 +28,7 @@ class Hub
     /**
      * Create a hub with no connections.
      */
-    public function __construct()
+    public function __construct(protected ?Metrics $metrics = null)
     {
         $this->connections = new SplObjectStorage;
     }
@@ -88,6 +88,7 @@ class Hub
      */
     public function dispatch(Event $event): void
     {
+        $this->metrics?->increment('murmur_events_received_total');
         $connections = $this->topics[$event->topic] ?? null;
 
         if ($connections === null) {
@@ -148,6 +149,14 @@ class Hub
     public function connectionCount(): int
     {
         return count($this->connections);
+    }
+
+    /**
+     * Get the number of topics with at least one subscriber.
+     */
+    public function topicCount(): int
+    {
+        return count($this->topics);
     }
 
     /**

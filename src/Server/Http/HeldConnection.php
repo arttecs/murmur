@@ -5,6 +5,7 @@ namespace Arttecs\Murmur\Server\Http;
 use Arttecs\Murmur\Server\Connection;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
+use Arttecs\Murmur\Server\Metrics;
 use Arttecs\Murmur\Server\Replay;
 use Arttecs\Murmur\Server\Sse\Frame;
 use React\Stream\WritableStreamInterface;
@@ -34,9 +35,13 @@ class HeldConnection extends Connection
     /**
      * Create a held connection with the subscriber's requested replay cursor.
      */
-    public function __construct(WritableStreamInterface $stream, int $maxBufferBytes = 1048576, protected ?EventId $cursor = null)
-    {
-        parent::__construct($stream, $maxBufferBytes);
+    public function __construct(
+        WritableStreamInterface $stream,
+        int $maxBufferBytes = 1048576,
+        protected ?EventId $cursor = null,
+        ?Metrics $metrics = null,
+    ) {
+        parent::__construct($stream, $maxBufferBytes, $metrics);
     }
 
     /**
@@ -118,7 +123,7 @@ class HeldConnection extends Connection
         }
 
         foreach ($frames as [$event, $frame]) {
-            $this->writeEvent($event, $frame);
+            $this->writeEvent($event, $frame, replayed: true);
         }
 
         for ($index = 0; isset($this->held[$index]); $index++) {
@@ -149,7 +154,7 @@ class HeldConnection extends Connection
      *
      * @throws \JsonException
      */
-    protected function writeEvent(Event $event, ?string $frame = null): void
+    protected function writeEvent(Event $event, ?string $frame = null, bool $replayed = false): void
     {
         if ($this->closed || $this->hasWritten($event)) {
             return;
@@ -157,7 +162,7 @@ class HeldConnection extends Connection
 
         $frame ??= Frame::event($event);
         $this->lastWrittenId = $event->id ?? $this->lastWrittenId;
-        parent::send($frame);
+        $this->writeEventFrame($frame, $replayed);
     }
 
     /**
@@ -170,6 +175,7 @@ class HeldConnection extends Connection
         $this->heldBytes += $bytes;
 
         if ($this->heldBytes > $this->maxBufferBytes) {
+            $this->metrics?->increment('murmur_slow_consumers_total');
             $this->close();
 
             return;

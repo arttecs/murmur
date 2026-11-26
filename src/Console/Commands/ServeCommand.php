@@ -104,6 +104,8 @@ class ServeCommand extends Command
             requestTimeoutSeconds: (float) config('murmur.server.request_timeout'),
             maxReplayEvents: (int) config('murmur.server.max_replay_events'),
             shutdownGraceSeconds: (float) config('murmur.server.shutdown_grace'),
+            metricsEnabled: config('murmur.server.metrics.enabled'),
+            metricsToken: config('murmur.server.metrics.token'),
         );
     }
 

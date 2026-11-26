@@ -7,6 +7,7 @@ use Arttecs\Murmur\Exceptions\InvalidToken;
 use Arttecs\Murmur\Server\Auth\TokenVerifier;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Hub;
+use Arttecs\Murmur\Server\Metrics;
 use Arttecs\Murmur\Server\Replay;
 use Arttecs\Murmur\Server\ServerConfig;
 use Arttecs\Murmur\Server\Sse\Frame;
@@ -37,6 +38,7 @@ class SseHandler
         protected EventLog $log,
         protected Hub $hub,
         protected LoopInterface $loop,
+        protected ?Metrics $metrics = null,
     ) {
         $this->tokens = new TokenVerifier($config->secret);
     }
@@ -92,9 +94,13 @@ class SseHandler
             $cursor = EventId::tryParse($query['lastEventId']);
         }
 
+        if ($cursor !== null) {
+            $this->metrics?->increment('murmur_replays_total');
+        }
+
         $stream = new ThroughStream;
 
-        $connection = new HeldConnection($stream, $this->config->maxBufferBytes, $cursor);
+        $connection = new HeldConnection($stream, $this->config->maxBufferBytes, $cursor, $this->metrics);
 
         $this->hub->attach($connection, $topics);
         $connection->onClose(function () use ($client): void {
