@@ -365,7 +365,7 @@ it('releases listening and accepted sockets while the writer is running', functi
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'waiting')) === 1, $process);
         $child = metricsTrace($file, 'start')[0]->pid;
         $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
-        expect($reader->next()['retry'])->toBe('3000');
+        expect($reader->start()['retry'])->toBe('3000');
         touch($file.'.release');
 
         expect(fn () => $reader->next(4))->toThrow(RuntimeException::class, 'The SSE stream closed');

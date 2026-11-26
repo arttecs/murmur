@@ -10,7 +10,7 @@ it('delivers a signed publish to a subscriber of a Laravel-issued stream URL', f
     config(['murmur.publish_url' => $h->url(''), 'murmur.public_url' => $h->url(''), 'murmur.stream_cursor_margin_ms' => 0]);
     $stream = Murmur::stream('private-chat.42');
     $r = SseReader::open($stream->url());
-    $r->next();
+    $r->start();
     publishFromSubprocess($h, 'private-chat.42', 'token', ['text' => 'Résumé']);
     $frame = $r->next();
     expect($frame['event'])->toBe('token');
@@ -33,7 +33,7 @@ it('delivers a laravel broadcast event to a subscriber end to end', function () 
     $topic = 'private-orders.42';
     $query = http_build_query(['topics' => $topic, 'token' => Murmur::token([$topic])]);
     $reader = SseReader::open($h->url('/sse?'.$query));
-    $reader->next();
+    $reader->start();
 
     $process = runPublishProcess([
         __DIR__.'/../Support/broadcast.php',
@@ -52,4 +52,28 @@ it('delivers a laravel broadcast event to a subscriber end to end', function () 
 
     expect($frame['event'])->toBe(OrderShipped::class, $output);
     expect($envelope)->toBe(['topic' => $topic, 'data' => ['orderId' => 42]], $output);
+});
+
+it('delivers a laravel toOthers broadcast only to the other subscriber', function () {
+    $h = ServerHarness::start();
+    $topic = 'private-orders.42';
+    $query = http_build_query(['topics' => $topic, 'token' => Murmur::token([$topic])]);
+    $id = str_repeat('a', 32);
+    $sender = SseReader::open($h->url('/sse?'.$query.'&connection='.$id));
+    $other = SseReader::open($h->url('/sse?'.$query));
+    $sender->start();
+    $other->start();
+
+    $process = runPublishProcess([
+        __DIR__.'/../Support/broadcast.php',
+        $h->url(''),
+        config('murmur.secret'),
+        $id,
+    ]);
+
+    expect($process->getExitCode())->toBe(0, $process->getOutput().$process->getErrorOutput());
+    $frame = $other->next();
+    expect($frame['event'])->toBe(OrderShipped::class);
+    expect(json_decode($frame['data'], true))->toBe(['topic' => $topic, 'data' => ['orderId' => 42]]);
+    expect(fn () => $sender->next(0.05))->toThrow(RuntimeException::class, 'Timed out');
 });

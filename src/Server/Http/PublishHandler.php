@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Server\Http;
 
 use Arttecs\Murmur\Server\Auth\Signature;
+use Arttecs\Murmur\Server\ConnectionId;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\ServerConfig;
@@ -101,7 +102,8 @@ class PublishHandler
 
         if (! $payload instanceof stdClass
             || ! is_string($payload->topic ?? null) || ! Topic::isValid($payload->topic)
-            || ! is_string($payload->event ?? null) || ! Event::isPublishableName($payload->event)) {
+            || ! is_string($payload->event ?? null) || ! Event::isPublishableName($payload->event)
+            || (property_exists($payload, 'except') && (! is_string($payload->except) || ! ConnectionId::isValid($payload->except)))) {
             return new Response(422);
         }
 
@@ -111,7 +113,7 @@ class PublishHandler
             return new Response(422);
         }
 
-        $event = $this->log->append(new Event($payload->topic, $payload->event, $data));
+        $event = $this->log->append(new Event($payload->topic, $payload->event, $data, except: $payload->except ?? null));
 
         return new Response(202, ['Content-Type' => 'application/json'], json_encode([
             'id' => (string) $event->id,

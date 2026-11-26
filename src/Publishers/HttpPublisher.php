@@ -43,6 +43,7 @@ class HttpPublisher implements Publisher
                 'topic' => $event->topic,
                 'event' => $event->name,
                 'data' => $event->data,
+                ...($event->except === null ? [] : ['except' => $event->except]),
             ], JSON_THROW_ON_ERROR);
             $timestamp = time();
 

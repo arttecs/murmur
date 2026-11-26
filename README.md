@@ -27,7 +27,7 @@ The default address is `http://127.0.0.1:8080`. To override the bind address for
 php artisan murmur:serve --host=127.0.0.1 --port=8081
 ```
 
-A public subscription receives a reconnect interval immediately and a heartbeat every 20 seconds by default.
+A public subscription receives a reconnect interval and a connection ID immediately, followed by a heartbeat every 20 seconds by default.
 
 ```sh
 curl -N 'http://127.0.0.1:8080/sse?topics=news'
@@ -46,6 +46,8 @@ BROADCAST_CONNECTION=murmur
 Events implementing `ShouldBroadcast` publish to their Laravel channel names as SSE topics. A `Channel('news')` publishes to `news`, and a `PrivateChannel('orders.42')` publishes to `private-orders.42`. Run your Laravel queue worker if your broadcasts are queued.
 
 Register private channel callbacks with Laravel's `Broadcast::channel()` using channel patterns such as `orders.{orderId}`. An authenticated client can send `{"channels":["private-orders.42"]}` to `POST /murmur/auth`. Laravel checks access against each channel's configured guard and returns `token` and `expires_at` on success. Channel names in one request may total up to 2048 bytes. Names with non-ASCII characters grow when encoded in the subscription URL, and the server rejects a request whose headers exceed 8 KiB, so keep channel names short and ASCII. Use the token in the `token` query parameter on `/sse` along with the requested `topics`. The auth route uses the `web` middleware by default, so include the session credentials and CSRF token required by your application.
+
+Use Laravel's `broadcast($event)->toOthers()` to skip the sending subscription. Send the ID from the `murmur.connected` event in the `X-Socket-ID` header on the Laravel request that triggers the broadcast. Pass the same ID as `connection` on reconnect to keep the exclusion in replay. For a direct publication, pass the ID as the fourth argument to `Murmur::publish()`.
 
 ## Stream API
 
@@ -87,7 +89,7 @@ Replace the Pusher-compatible browser transport with `@arttecs/murmur`. If your 
 
 See the [Reverb configuration reference](https://github.com/laravel/docs/blob/13.x/reverb.md) and [default Reverb settings](https://github.com/laravel/reverb/blob/main/config/reverb.php).
 
-Presence channels, client events (whispers), `toOthers()` socket exclusion, multiple apps, and a Pusher-compatible HTTP API are unsupported in this version.
+Presence channels, client events (whispers), multiple apps, and a Pusher-compatible HTTP API are unsupported in this version.
 
 ### Client events (whispers)
 
@@ -103,9 +105,10 @@ use Arttecs\Murmur\Server\Event;
 
 $fake = Murmur::fake();
 
-Murmur::publish('news', 'updated', ['id' => 42]);
+$connectionId = '0123456789abcdef0123456789abcdef';
+Murmur::publish('news', 'updated', ['id' => 42], except: $connectionId);
 
-$fake->assertPublished('news', 'updated', fn (Event $event): bool => $event->data['id'] === 42);
+$fake->assertPublished('news', 'updated', fn (Event $event): bool => $event->data['id'] === 42 && $event->except === $connectionId);
 $fake->assertPublishedTimes('news', 'updated', 1);
 $fake->assertNotPublished('news', 'removed');
 ```
@@ -197,6 +200,8 @@ Set `MURMUR_DRIVER=example` and, independently, `MURMUR_METRICS_STORE=reports` t
 Laravel calls the `Publisher` to send events. `murmur:serve` uses the `EventLog` for live delivery and replay. Event log methods and callbacks run in the server's event loop and must never block. Return ReactPHP promises from `since()` and `ready()` and keep `healthy()` a cheap synchronous check. Metrics store writes run in the separate Artisan writer. A store's `put()` replaces one node's snapshot, `all()` returns snapshots keyed by node, and `forget()` removes a node.
 
 Run the packaged PHPUnit suites against your implementations. Extend `Testing\EventLogConformanceTestCase` and provide a new empty log with the supplied loop and a writer that appends into that log's backend. The fixture must trim to the requested capacity and return the assigned `EventId` directly or through a promise.
+
+Event logs apply the optional `since()` event filter before counting replay results against the limit. The server uses it to exclude events the connection would skip.
 
 ```php
 use App\Tests\Support\EventLogFixture;

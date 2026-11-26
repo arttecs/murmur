@@ -39,6 +39,7 @@ class RedisEventLogTest extends EventLogConformanceTestCase
         return [$log, fn (Event $event): PromiseInterface => $this->client->xadd(
             $this->key, 'MAXLEN', $capacity, '*', 'topic', $event->topic, 'name', $event->name, 'data',
             json_encode($event->data, JSON_THROW_ON_ERROR),
+            ...($event->except === null ? [] : ['except', $event->except]),
         )->then(EventId::tryParse(...))];
     }
 

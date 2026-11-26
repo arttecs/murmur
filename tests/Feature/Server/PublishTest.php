@@ -63,3 +63,9 @@ it('rejects reserved event names other than the stream end marker', function (st
     ['murmur.end', 202],
     ['murmurs.fine', 202],
 ]);
+
+it('rejects a present but malformed excluded connection identifier', function (mixed $except) {
+    $h = ServerHarness::start();
+
+    expect($h->rawPublish(json_encode(['topic' => 'news', 'event' => 'updated', 'except' => $except]))->getStatusCode())->toBe(422);
+})->with([[null], [''], [1], [str_repeat('A', 32)], [str_repeat('a', 32)."\n"]]);

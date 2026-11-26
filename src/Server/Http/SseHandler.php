@@ -5,6 +5,8 @@ namespace Arttecs\Murmur\Server\Http;
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Exceptions\InvalidToken;
 use Arttecs\Murmur\Server\Auth\TokenVerifier;
+use Arttecs\Murmur\Server\ConnectionId;
+use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Hub;
 use Arttecs\Murmur\Server\Metrics;
@@ -70,6 +72,12 @@ class SseHandler
             return new Response(400, $headers);
         }
 
+        $id = $query['connection'] ?? null;
+
+        if ($id !== null && (! is_string($id) || ! ConnectionId::isValid($id))) {
+            return new Response(400, $headers);
+        }
+
         $grant = null;
 
         if (is_string($query['token'] ?? null)) {
@@ -106,7 +114,7 @@ class SseHandler
 
         $stream = new ThroughStream;
 
-        $connection = new HeldConnection($stream, $this->config->maxBufferBytes, $cursor, $this->metrics);
+        $connection = new HeldConnection($stream, $this->config->maxBufferBytes, $cursor, $this->metrics, $id);
 
         $this->hub->attach($connection, $topics);
         $connection->onClose(function () use ($client): void {
@@ -133,6 +141,12 @@ class SseHandler
                 return;
             }
 
+            $connection->sendImmediately(Frame::connected($connection->id));
+
+            if ($connection->isClosed()) {
+                return;
+            }
+
             if ($cursor === null) {
                 $connection->release();
 
@@ -140,7 +154,12 @@ class SseHandler
             }
 
             try {
-                $replay = $this->log->since($cursor, $topics, $this->config->maxReplayEvents)->then(function (Replay $replay) use ($connection): void {
+                $replay = $this->log->since(
+                    $cursor,
+                    $topics,
+                    $this->config->maxReplayEvents,
+                    fn (Event $event): bool => $event->except !== $connection->id,
+                )->then(function (Replay $replay) use ($connection): void {
                     $connection->release($replay);
                 });
             } catch (Throwable) {

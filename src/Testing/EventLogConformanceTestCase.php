@@ -87,6 +87,30 @@ abstract class EventLogConformanceTestCase extends TestCase
     }
 
     /**
+     * Preserve an excluded connection when storing and reading the event.
+     */
+    public function test_preserves_exclusions_in_live_delivery_and_replay(): void
+    {
+        [$this->log, $append] = $this->createEventLog(10, $this->loop);
+        $cursor = $this->append($append, new Event('news', 'cursor'));
+        $delivered = new Deferred;
+        $this->log->subscribe($delivered->resolve(...));
+        $this->await($this->log->ready());
+
+        $except = str_repeat('a', 32);
+        $id = $this->append($append, new Event('news', 'update', except: $except));
+        $live = $this->await($delivered->promise());
+        $replayed = $this->await($this->log->since($cursor, ['news'], 10))->events;
+        $visibleId = $this->append($append, new Event('news', 'visible'));
+        $filtered = $this->await($this->log->since($cursor, ['news'], 1, fn (Event $event): bool => $event->except !== $except));
+
+        self::assertSame($except, $live->except);
+        self::assertEquals([new Event('news', 'update', id: $id, except: $except)], $replayed);
+        self::assertFalse($filtered->gap);
+        self::assertEquals([new Event('news', 'visible', id: $visibleId)], $filtered->events);
+    }
+
+    /**
      * Replay only matching events after the cursor and enforce the matching event limit.
      */
     public function test_replays_matching_events_after_the_cursor_up_to_the_limit(): void

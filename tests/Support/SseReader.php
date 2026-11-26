@@ -94,6 +94,23 @@ class SseReader
     }
 
     /**
+     * Read the initial retry and connection announcement.
+     *
+     * @return array{id: ?string, event: ?string, data: ?string, retry: ?string, comment: ?string}
+     */
+    public function start(): array
+    {
+        $retry = $this->next();
+        $connected = $this->next();
+
+        if ($connected['event'] !== 'murmur.connected') {
+            throw new RuntimeException('Expected murmur.connected after retry.');
+        }
+
+        return $retry;
+    }
+
+    /**
      * Wait for and parse the next complete frame.
      *
      * @return array{id: ?string, event: ?string, data: ?string, retry: ?string, comment: ?string}

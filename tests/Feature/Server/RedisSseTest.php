@@ -17,7 +17,7 @@ it('serves sse subscribers from redis, including replay', function () {
     $first = xadd($key, 'news', 'a');
     xadd($key, 'news', 'b');
     $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => $first]);
-    $r->next();
+    $r->start();
     expect($r->next()['event'])->toBe('b');
     xadd($key, 'news', 'c');
     expect($r->next()['event'])->toBe('c');
@@ -40,7 +40,7 @@ it('sends a gap to an already connected subscriber after redis trims unread even
         $readerId = redisReaderId($log);
         $h = ServerHarness::start(log: $log);
         $r = SseReader::open($h->url('/sse?topics=news'));
-        expect($r->next()['retry'])->toBe('3000');
+        expect($r->start()['retry'])->toBe('3000');
 
         waitForRedisReader($client, $readerId);
         expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
@@ -77,7 +77,7 @@ it('does not repeat an event that the replay already delivered', function () {
         $replayed = xadd($key, 'news', 'b');
         $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => $first]);
 
-        expect($r->next()['retry'])->toBe('3000');
+        expect($r->start()['retry'])->toBe('3000');
         $frame = $r->next();
         expect($frame['event'])->toBe('b')->and($frame['id'])->toBe($replayed);
 
@@ -104,7 +104,7 @@ it('binds only after redis is ready and delivers an immediate publish to a new s
 
         $r = SseReader::open($server->address().'/sse?topics=news');
         $id = xadd($key, 'news', 'immediate');
-        expect($r->next()['retry'])->toBe('3000');
+        expect($r->start()['retry'])->toBe('3000');
         expect($r->next()['id'])->toBe($id);
     } finally {
         $server->close();

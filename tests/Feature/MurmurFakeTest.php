@@ -92,3 +92,14 @@ it('keeps using the configured secret and captures broadcasts through an already
     $grant = (new TokenVerifier(config('murmur.secret')))->verify($token);
     expect($grant->topics)->toBe(['private-orders.42']);
 });
+
+it('records a direct publication with its excluded connection and rejects invalid identifiers', function () {
+    $fake = Murmur::fake();
+    $id = str_repeat('b', 32);
+    Murmur::publish('news', 'updated', ['id' => 9], except: $id);
+
+    $fake->assertPublished('news', 'updated', fn (Event $event): bool => $event->except === $id);
+    expect(fn () => Murmur::publish('news', 'updated', except: $id."\n"))
+        ->toThrow(InvalidArgumentException::class);
+    $fake->assertPublishedTimes('news', 'updated', 1);
+});

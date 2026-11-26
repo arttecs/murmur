@@ -2,6 +2,7 @@
 
 use Arttecs\Murmur\MurmurServiceProvider;
 use Arttecs\Murmur\Tests\Fixtures\OrderShipped;
+use Illuminate\Support\Facades\Broadcast;
 use Orchestra\Testbench\Foundation\Application;
 
 require __DIR__.'/../../vendor/autoload.php';
@@ -16,4 +17,5 @@ $app['config']->set([
     'murmur.secret' => $secret,
 ]);
 
-broadcast(new OrderShipped(orderId: 42, socket: '123.456'));
+$app['request']->headers->set('X-Socket-ID', $argv[3] ?? '123.456');
+Broadcast::event(new OrderShipped(orderId: 42))->toOthers();

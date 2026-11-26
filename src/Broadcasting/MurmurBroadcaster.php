@@ -5,6 +5,7 @@ namespace Arttecs\Murmur\Broadcasting;
 use Arttecs\Murmur\Exceptions\PresenceNotSupported;
 use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\MurmurManager;
+use Arttecs\Murmur\Server\ConnectionId;
 use Firebase\JWT\JWT;
 use Illuminate\Broadcasting\Broadcasters\Broadcaster;
 use Illuminate\Broadcasting\Channel;
@@ -50,10 +51,12 @@ class MurmurBroadcaster extends Broadcaster
             }
         }
 
+        $socket = $payload['socket'] ?? null;
+        $except = is_string($socket) && ConnectionId::isValid($socket) ? $socket : null;
         unset($payload['socket']);
 
         foreach ($topics as $topic) {
-            $this->manager->publish($topic, $event, $payload);
+            $this->manager->publish($topic, $event, $payload, $except);
         }
     }
 

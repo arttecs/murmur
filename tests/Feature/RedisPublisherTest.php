@@ -124,8 +124,8 @@ it('delivers the same data frame through http and redis', function (string $json
     $http = ServerHarness::start();
     $redisSubscriber = SseReader::open($redis->url('/sse?topics=news'));
     $httpSubscriber = SseReader::open($http->url('/sse?topics=news'));
-    $redisSubscriber->next();
-    $httpSubscriber->next();
+    $redisSubscriber->start();
+    $httpSubscriber->start();
 
     expect($http->rawPublish('{"topic":"news","event":"updated","data":'.$json.'}')->getStatusCode())->toBe(202);
     Murmur::publish('news', 'updated', json_decode($json, flags: JSON_THROW_ON_ERROR));
@@ -134,3 +134,36 @@ it('delivers the same data frame through http and redis', function (string $json
     expect($httpSubscriber->next()['data'])->toBe($expected);
     expect($redisSubscriber->next()['data'])->toBe($expected);
 })->with(['{"meta":{}}', '{"list":[]}', '{"list":[{},[],{"nested":[]}]}', 'null', '42', '"hello"']);
+
+it('excludes a sender on another redis-backed node and skips invalid stored identifiers', function () {
+    [$client, $key, $url] = redisStream();
+    config([
+        'murmur.driver' => 'redis',
+        'murmur.redis.url' => $url,
+        'murmur.redis.stream' => $key,
+        'database.redis.default' => ['url' => $url],
+        'database.redis.options.prefix' => '',
+    ]);
+    $firstNode = ServerHarness::start(log: app(ServeCommand::class)->makeLog());
+    $secondNode = ServerHarness::start(log: app(ServeCommand::class)->makeLog());
+    $id = str_repeat('b', 32);
+    $reader = SseReader::open($firstNode->url('/sse?topics=news'));
+    $sender = SseReader::open($secondNode->url('/sse?topics=news&connection='.$id));
+    $reader->start();
+    $sender->start();
+
+    $cursor = xadd($key, 'news', 'cursor');
+    expect($reader->next()['id'])->toBe($cursor);
+    expect($sender->next()['id'])->toBe($cursor);
+    await($client->xadd($key, '*', 'topic', 'news', 'name', 'malformed', 'data', 'null', 'except', 'short'));
+    Murmur::publish('news', 'excluded', except: $id);
+    Murmur::publish('news', 'visible');
+
+    expect($reader->next()['event'])->toBe('excluded');
+    expect($reader->next()['event'])->toBe('visible');
+    expect($sender->next()['event'])->toBe('visible');
+
+    $reopened = SseReader::open($secondNode->url('/sse?topics=news&connection='.$id.'&lastEventId='.$cursor));
+    $reopened->start();
+    expect($reopened->next()['event'])->toBe('visible');
+});

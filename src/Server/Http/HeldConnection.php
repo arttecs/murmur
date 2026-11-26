@@ -42,8 +42,9 @@ class HeldConnection extends Connection
         int $maxBufferBytes = 1048576,
         protected ?EventId $cursor = null,
         ?Metrics $metrics = null,
+        ?string $id = null,
     ) {
-        parent::__construct($stream, $maxBufferBytes, $metrics);
+        parent::__construct($stream, $maxBufferBytes, $metrics, $id);
     }
 
     /**
@@ -67,6 +68,10 @@ class HeldConnection extends Connection
      */
     public function sendEvent(Event $event, ?string $frame = null): void
     {
+        if ($this->excludes($event)) {
+            return;
+        }
+
         if ($this->held === null) {
             $this->writeEvent($event, $frame);
 
@@ -107,6 +112,10 @@ class HeldConnection extends Connection
         $gap = $replay?->gap ?? false;
 
         foreach ($replay?->events ?? [] as $event) {
+            if ($this->excludes($event)) {
+                continue;
+            }
+
             $frame = Frame::event($event);
             $bytes += strlen($frame);
 

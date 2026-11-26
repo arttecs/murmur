@@ -47,6 +47,7 @@ class RedisPublisher implements Publisher
             $id = $connection->executeRaw([
                 'XADD', $this->stream, 'MAXLEN', '~', $this->maxLength, '*',
                 'topic', $event->topic, 'name', $event->name, 'data', $data,
+                ...($event->except === null ? [] : ['except', $event->except]),
             ]);
 
             if (! is_string($id) || EventId::tryParse($id) === null) {

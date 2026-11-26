@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Server\Sse;
 
 use Arttecs\Murmur\Server\Event;
+use Arttecs\Murmur\Server\Server;
 
 /**
  * Encode server-sent event frames.
@@ -44,6 +45,16 @@ class Frame
     public static function retry(int $ms): string
     {
         return "retry: {$ms}\n\n";
+    }
+
+    /**
+     * Announce the connection ID without setting a replay cursor.
+     */
+    public static function connected(string $id): string
+    {
+        $protocol = Server::PROTOCOL;
+
+        return "event: murmur.connected\ndata: {\"connection_id\":\"{$id}\",\"protocol\":{$protocol}}\n\n";
     }
 
     /**

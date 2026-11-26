@@ -137,14 +137,15 @@ class RedisEventLog implements EventLog
      * A concurrent trim can flag a spurious gap but cannot hide missing events.
      *
      * @param  list<string>  $topics
+     * @param  (callable(Event): bool)|null  $filter
      * @return PromiseInterface<Replay>
      */
-    public function since(EventId $after, array $topics, int $limit): PromiseInterface
+    public function since(EventId $after, array $topics, int $limit, ?callable $filter = null): PromiseInterface
     {
-        return $this->query($this->replay, 'xrevrange', $this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $newest) use ($after, $topics, $limit): PromiseInterface {
+        return $this->query($this->replay, 'xrevrange', $this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $newest) use ($after, $topics, $limit, $filter): PromiseInterface {
             $tail = isset($newest[0]) ? EventId::tryParse($newest[0][0]) : null;
 
-            return $this->readReplayPage((string) $after, $topics, $limit)->then(function (?array $events) use ($after, $tail): PromiseInterface|Replay {
+            return $this->readReplayPage((string) $after, $topics, $limit, $filter)->then(function (?array $events) use ($after, $tail): PromiseInterface|Replay {
                 if ($events === null) {
                     return new Replay(true, [], $tail);
                 }
@@ -158,16 +159,17 @@ class RedisEventLog implements EventLog
      * Read at most one page of Redis entries at a time and keep only matching events.
      *
      * @param  list<string>  $topics
+     * @param  (callable(Event): bool)|null  $filter
      * @param  list<Event>  $events
      * @return PromiseInterface<list<Event>|null>
      */
-    protected function readReplayPage(string $cursor, array $topics, int $limit, array $events = []): PromiseInterface
+    protected function readReplayPage(string $cursor, array $topics, int $limit, ?callable $filter, array $events = []): PromiseInterface
     {
-        return $this->query($this->replay, 'xrange', $this->streamKey, '('.$cursor, '+', 'COUNT', 500)->then(function (array $entries) use ($topics, $limit, $events): PromiseInterface|array|null {
+        return $this->query($this->replay, 'xrange', $this->streamKey, '('.$cursor, '+', 'COUNT', 500)->then(function (array $entries) use ($topics, $limit, $filter, $events): PromiseInterface|array|null {
             foreach ($entries as $entry) {
                 $event = $this->decode($entry);
 
-                if ($event !== null && in_array($event->topic, $topics, true)) {
+                if ($event !== null && in_array($event->topic, $topics, true) && ($filter === null || $filter($event))) {
                     if (count($events) === $limit) {
                         return null;
                     }
@@ -177,7 +179,7 @@ class RedisEventLog implements EventLog
             }
 
             return count($entries) === 500
-                ? $this->readReplayPage($entries[499][0], $topics, $limit, $events)
+                ? $this->readReplayPage($entries[499][0], $topics, $limit, $filter, $events)
                 : $events;
         });
     }
@@ -472,7 +474,7 @@ class RedisEventLog implements EventLog
         }
 
         try {
-            return new Event($values['topic'], $values['name'], json_decode($values['data'], flags: JSON_THROW_ON_ERROR), $id);
+            return new Event($values['topic'], $values['name'], json_decode($values['data'], flags: JSON_THROW_ON_ERROR), $id, $values['except'] ?? null);
         } catch (InvalidArgumentException|JsonException) {
             return null;
         }

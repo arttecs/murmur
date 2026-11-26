@@ -15,10 +15,13 @@ interface EventLog
     /**
      * Replay up to the given number of events after the cursor, or report a gap.
      *
+     * Apply the optional filter before counting events against the limit.
+     *
      * @param  list<string>  $topics
+     * @param  (callable(Event): bool)|null  $filter
      * @return PromiseInterface<Replay>
      */
-    public function since(EventId $after, array $topics, int $limit): PromiseInterface;
+    public function since(EventId $after, array $topics, int $limit, ?callable $filter = null): PromiseInterface;
 
     /**
      * Register a listener that receives events with their assigned identifiers.

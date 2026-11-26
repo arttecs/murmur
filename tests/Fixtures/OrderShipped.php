@@ -2,6 +2,7 @@
 
 namespace Arttecs\Murmur\Tests\Fixtures;
 
+use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 
@@ -10,10 +11,15 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
  */
 class OrderShipped implements ShouldBroadcastNow
 {
+    use InteractsWithSockets;
+
     /**
      * Create an order shipment event.
      */
-    public function __construct(public int $orderId, public ?string $socket = null) {}
+    public function __construct(public int $orderId, ?string $socket = null)
+    {
+        $this->socket = $socket;
+    }
 
     /**
      * Get the private order channel.

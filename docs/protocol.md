@@ -1,6 +1,6 @@
 # Murmur wire protocol 1
 
-Murmur serves HTTP and Server-Sent Events (SSE). Its SSE server handles the routes below. The authorization route runs in the Laravel application and can have a different base URL. The SSE server includes `X-Murmur-Protocol: 1` in the responses it generates for `GET /sse`, `GET /health`, and `GET /ready`, including route-level errors. The PHP constant is `Server::PROTOCOL`. The header is meant for non-browser clients and probes: the server does not list it in `Access-Control-Expose-Headers`, so a cross-origin page cannot read it. The request line and headers of any request must fit in 8 KiB, which bounds the combined length of the `topics`, `token`, and `lastEventId` parameters; a larger request is answered with 431.
+Murmur serves HTTP and Server-Sent Events (SSE). Its SSE server handles the routes below. The authorization route runs in the Laravel application and can have a different base URL. The SSE server includes `X-Murmur-Protocol: 1` in the responses it generates for `GET /sse`, `GET /health`, and `GET /ready`, including route-level errors. The PHP constant is `Server::PROTOCOL`. The header is meant for non-browser clients and probes: the server does not list it in `Access-Control-Expose-Headers`, so a cross-origin page cannot read it. The request line and headers of any request must fit in 8 KiB, which bounds the combined length of the subscription query parameters; a larger request is answered with 431.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -20,6 +20,7 @@ Open a GET request to `/sse` with these URL query parameters.
 | --- | --- | --- |
 | `topics` | Yes | A comma-separated list of topic names, URL-encoded as a single query parameter. |
 | `token` | For private topics | An HS256 JWT granting access to every requested private topic. |
+| `connection` | No | A previously announced connection ID to reuse across reconnects. |
 | `lastEventId` | No | A fallback replay cursor when `Last-Event-ID` is absent or malformed. |
 
 A topic is 1–200 bytes and cannot contain a comma or ASCII whitespace. Topic names are case-sensitive. A request may contain at most `server.max_topics_per_connection` entries, 50 by default. Commas delimit entries after URL decoding, and empty entries are invalid.
@@ -27,7 +28,7 @@ A topic is 1–200 bytes and cannot contain a comma or ASCII whitespace. Topic n
 | Status | Meaning |
 | --- | --- |
 | 200 | The subscription succeeded. The response remains open for SSE frames. |
-| 400 | The topic list is missing, malformed, or over its entry limit. |
+| 400 | The topic list is missing, malformed, or over its entry limit, or the connection ID is malformed. |
 | 401 | The request includes a private topic and has no valid token. |
 | 403 | The `Origin` header is disallowed, or a valid token fails to grant at least one requested private topic. |
 | 503 | The server has reached its SSE connection limit (900 by default) or is shutting down. |
@@ -45,7 +46,17 @@ data: {"topic":"news","data":{"title":"New release"}}
 
 ```
 
-The server first sends `retry: 3000\n\n`, using `server.retry_ms` in milliseconds. This is an SSE reconnection hint. It sends `: ping\n\n` comment frames periodically, every 20 seconds by default. These frames carry no event ID and do not advance the replay cursor.
+The server first sends `retry: 3000\n\n`, using `server.retry_ms` in milliseconds. This is an SSE reconnection hint. Immediately afterward, every connection receives an announcement before any replay or live delivery.
+
+```text
+event: murmur.connected
+data: {"connection_id":"0123456789abcdef0123456789abcdef","protocol":1}
+
+```
+
+The announcement has no `id:` field and does not advance the replay cursor. A connection ID is exactly 32 lowercase hexadecimal characters. When the client omits `connection`, the server generates the ID from 16 random bytes. A supplied well-formed ID is used as is. Several streams may share an ID. An ID only causes matching events to be withheld from streams that present it and grants no access. Send this ID as the `X-Socket-ID` header on Laravel requests that can trigger a `toOthers()` broadcast.
+
+The server sends `: ping\n\n` comment frames periodically, every 20 seconds by default. These frames carry no event ID and do not advance the replay cursor.
 
 IDs use `<milliseconds>-<sequence>`. A received cursor must contain 1–18 decimal digits per component. Compare the two components numerically, milliseconds first. IDs increase strictly within one event log across all topics. Redis nodes serving the same stream share its IDs and order. In-memory logs have their own order and lose their history on restart.
 
@@ -65,7 +76,7 @@ data: {}
 
 - With an in-memory log, a cursor older than log creation or the last evicted event signals a gap. With Redis, a cursor older than the first retained entry signals a gap if Redis reports trimmed history. An unparseable first retained Redis ID also signals a gap.
 - A trim gap may be followed by matching retained events. A gap indicates that the log cannot guarantee complete history. Clients that need a complete view should refresh it from the application.
-- If replay would exceed `server.max_replay_events` matching events (1000 by default) or the encoded replay frames would exceed half of `server.max_buffer_bytes`, the server sends the gap and discards the replay batch. It continues with held and live events.
+- If replay would exceed `server.max_replay_events` events eligible for delivery (1000 by default) or the encoded replay frames for this recipient would exceed half of `server.max_buffer_bytes`, the server sends the gap and discards the replay batch. It continues with held and live events.
 - If the Redis reader loses its connection and discovers history was trimmed past its cursor, the server sends a gap to existing subscribers before resuming live delivery.
 
 The `murmur.` event namespace is reserved. `murmur.end` is published by Laravel's `Stream::close()` with a regular event ID and an envelope containing the stream topic and `"data":null`. A stream client can stop consuming that stream upon receiving the marker. The SSE server delivers the marker as an event and leaves the HTTP connection open. The Laravel broadcast and direct publish APIs reject application event names starting with `murmur.`. The server enforces the reservation on both publishing paths: `POST /publish` answers 422 for any `murmur.` name other than `murmur.end`, and the Redis reader skips such stream entries, in live delivery and in replay.
@@ -95,7 +106,7 @@ Murmur's SSE server does not emit `Access-Control-Allow-Credentials` or implemen
 
 ## Publish
 
-Send `POST /publish` to the SSE server for the HTTP driver. Use a JSON object with a valid `topic` string, a valid `event` name string, and optionally a `data` value of any JSON type. Send `Content-Type: application/json` for JSON. The handler validates the raw body as JSON regardless of its content type.
+Send `POST /publish` to the SSE server for the HTTP driver. Use a JSON object with a valid `topic` string, a valid `event` name string, and optionally a `data` value of any JSON type. Send `Content-Type: application/json` for JSON. The handler validates the raw body as JSON regardless of its content type. An optional `except` field must be a connection ID string of exactly 32 lowercase hexadecimal characters. Matching connections skip the event in live delivery and replay. The SSE envelope contains no exclusion field.
 
 ```json
 {"topic":"news","event":"updated","data":{"title":"New release"}}
@@ -116,7 +127,7 @@ The raw body may be at most `server.max_payload_bytes` bytes, 65536 by default, 
 | 202 | Accepted. The JSON response is `{"id":"<assigned ID>"}`. |
 | 401 | Missing or invalid signing headers, timestamp outside the tolerance, or incorrect signature. |
 | 413 | Body above the byte limit. |
-| 422 | A malformed body, including invalid JSON, topic, or event name, or a reserved `murmur.` event name other than `murmur.end`. |
+| 422 | A malformed body, including invalid JSON, topic, event name, or excluded connection ID, or a reserved `murmur.` event name other than `murmur.end`. |
 | 404 | HTTP publishing is unavailable on this server, including with the Redis driver. |
 
 A route failure can return 500. Publish error responses have empty bodies at the Murmur route level. The HTTP parser and intermediaries may produce their own responses.
@@ -126,10 +137,10 @@ A route failure can return 500. Publish error responses have empty bodies at the
 For the Redis driver, write to the same stream key and Redis database as the readers. The stream key is Laravel's configured Redis key prefix followed by `murmur.redis.stream` (default suffix `murmur:events`). The publisher runs this Redis command with each field value as a separate argument.
 
 ```text
-XADD <stream-key> MAXLEN ~ <log-size> * topic <topic> name <event-name> data <json-value>
+XADD <stream-key> MAXLEN ~ <log-size> * topic <topic> name <event-name> data <json-value> [except <connection-id>]
 ```
 
-The default target length is 10000 entries, shared across topics. Redis assigns the ID. Use the same topic and event name rules as HTTP. The `data` field is the JSON encoding of the payload alone and is limited to `server.max_payload_bytes` bytes. Readers skip entries with missing or invalid fields, unparseable IDs, oversized data, or invalid JSON. Redis publishing uses Redis access controls.
+The default target length is 10000 entries, shared across topics. Redis assigns the ID. Use the same topic and event name rules as HTTP. The `data` field is the JSON encoding of the payload alone and is limited to `server.max_payload_bytes` bytes. Readers skip entries with missing or invalid fields, unparseable IDs, oversized data, or invalid JSON. The optional `except` field follows the HTTP publish rules. Redis publishing uses Redis access controls.
 
 ## Probes and graceful shutdown
 

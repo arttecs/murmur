@@ -30,13 +30,21 @@ class Connection
     protected array $closeListeners = [];
 
     /**
+     * The connection identifier used for sender exclusion.
+     */
+    public readonly string $id;
+
+    /**
      * Create a connection and listen for stream events.
      */
     public function __construct(
         protected WritableStreamInterface $stream,
         protected int $maxBufferBytes = 1048576,
         protected ?Metrics $metrics = null,
+        ?string $id = null,
     ) {
+        $this->id = $id ?? bin2hex(random_bytes(16));
+
         $this->metrics?->increment('murmur_connections_opened_total');
 
         $this->stream->on('drain', function (): void {
@@ -88,7 +96,17 @@ class Connection
      */
     public function sendEvent(Event $event, ?string $frame = null): void
     {
-        $this->writeEventFrame($frame ?? Frame::event($event));
+        if (! $this->excludes($event)) {
+            $this->writeEventFrame($frame ?? Frame::event($event));
+        }
+    }
+
+    /**
+     * Determine whether the event excludes this connection.
+     */
+    protected function excludes(Event $event): bool
+    {
+        return $event->except === $this->id;
     }
 
     /**

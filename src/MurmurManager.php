@@ -281,13 +281,15 @@ class MurmurManager
      * @throws InvalidArgumentException
      * @throws PublishFailed
      */
-    public function publish(string $topic, string $event, mixed $data = null): void
+    public function publish(string $topic, string $event, mixed $data = null, ?string $except = null): void
     {
         if (str_starts_with($event, 'murmur.')) {
             throw new InvalidArgumentException('Event names starting with "murmur." are reserved.');
         }
 
-        $this->app->make(Publisher::class)->publish(new Event($topic, $event, $data));
+        $publication = new Event($topic, $event, $data, except: $except);
+
+        $this->app->make(Publisher::class)->publish($publication);
     }
 
     /**

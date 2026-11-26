@@ -19,6 +19,7 @@ class Event
         public readonly string $name,
         public readonly mixed $data = null,
         public readonly ?EventId $id = null,
+        public readonly ?string $except = null,
     ) {
         if (! Topic::isValid($topic)) {
             throw new InvalidArgumentException('Invalid event topic.');
@@ -27,6 +28,10 @@ class Event
         if (! self::isValidName($name)) {
             throw new InvalidArgumentException('Invalid event name.');
         }
+
+        if ($except !== null && ! ConnectionId::isValid($except)) {
+            throw new InvalidArgumentException('Invalid excluded connection ID.');
+        }
     }
 
     /**
@@ -34,7 +39,15 @@ class Event
      */
     public function withId(EventId $id): Event
     {
-        return new self($this->topic, $this->name, $this->data, $id);
+        return new self($this->topic, $this->name, $this->data, $id, $this->except);
+    }
+
+    /**
+     * Get a copy of the event with the given excluded connection.
+     */
+    public function withExcept(?string $except): Event
+    {
+        return new self($this->topic, $this->name, $this->data, $this->id, $except);
     }
 
     /**

@@ -28,8 +28,8 @@ it('ends streams in order with a retry frame and keeps delivering to the streams
         $url = $server->address().'/sse?topics=news';
         $first = SseReader::open($url);
         $second = SseReader::open($url);
-        expect($first->next()['retry'])->toBe('200');
-        expect($second->next()['retry'])->toBe('200');
+        expect($first->start()['retry'])->toBe('200');
+        expect($second->start()['retry'])->toBe('200');
 
         $shutdown = $server->shutdown();
         expect($first->next()['retry'])->toBe('300');
@@ -51,7 +51,7 @@ it('answers accepted ready and subscription requests with 503 while draining and
     $ready = $h->connect();
     $sse = $h->connect();
     $reader = SseReader::open($h->url('/sse?topics=news'));
-    $reader->next();
+    $reader->start();
 
     $responses = [];
     foreach (['/ready' => $ready, '/sse?topics=news' => $sse] as $path => $client) {
@@ -82,8 +82,8 @@ it('ends every open stream immediately when spreading is disabled', function () 
     $h = ServerHarness::start(['shutdownSpreadSeconds' => 0.0]);
     $first = SseReader::open($h->url('/sse?topics=news'));
     $second = SseReader::open($h->url('/sse?topics=news'));
-    $first->next();
-    $second->next();
+    $first->start();
+    $second->start();
 
     $shutdown = $h->shutdown();
 
@@ -112,7 +112,7 @@ it('fits the spread inside an explicit shorter grace so every stream gets its re
         $readers = [SseReader::open($url), SseReader::open($url), SseReader::open($url)];
 
         foreach ($readers as $reader) {
-            expect($reader->next()['retry'])->toBe('200');
+            expect($reader->start()['retry'])->toBe('200');
         }
 
         $shutdown = $server->shutdown(0.5);
