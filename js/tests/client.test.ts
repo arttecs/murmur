@@ -1003,3 +1003,37 @@ it('keeps the final statistics after close while clearing live state', async () 
   await wait(3000)
   expect(m.stats()).toStrictEqual(final)
 })
+
+it('raises the default retry cap to a larger retryMs', async () => {
+  vi.spyOn(Math, 'random').mockReturnValue(0)
+  client({ retryMs: 60_000 }).channel('news')
+  await flush()
+
+  for (const index of [0, 1]) {
+    const source = FakeEventSource.instances[index]
+    assert.isDefined(source)
+    source.fail()
+    await wait(59_999)
+    expect(FakeEventSource.instances).toHaveLength(index + 1)
+    await wait(1)
+    expect(FakeEventSource.instances).toHaveLength(index + 2)
+  }
+})
+
+it('accepts a stream retryMs above the client retry cap', () => {
+  const m = client({ retryMs: 100, maxRetryMs: 200 })
+
+  expect(() => m.stream('http://murmur.test/sse?topics=news', { retryMs: 500 })).not.toThrow()
+  expect(() => m.stream('http://murmur.test/sse?topics=news', { retryMs: 500, maxRetryMs: 499 })).toThrow(RangeError)
+})
+
+it('does not read the XSRF cookie when credentials are omitted', async () => {
+  vi.stubGlobal('document', { cookie: 'XSRF-TOKEN=from-cookie' })
+  const fetch = vi.fn(authFetch({ token: 'jwt', expires_at: nowSeconds() + 900 }))
+  client({ fetch, auth: { credentials: 'omit', headers: { Authorization: 'Bearer abc' } } }).private('orders')
+  await flush()
+
+  const headers = new Headers(fetch.mock.calls[0]?.[1]?.headers)
+  expect(headers.get('Authorization')).toBe('Bearer abc')
+  expect(headers.has('X-XSRF-TOKEN')).toBe(false)
+})

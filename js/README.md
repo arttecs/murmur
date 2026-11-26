@@ -53,7 +53,7 @@ Pass these options to `new Murmur(options)`.
 | `authorizer` | `Authorizer` | `undefined` | Function that issues a token for private topics in place of the built-in request. |
 | `namespace` | `string` | `'App.Events'` | Dotted namespace for unqualified channel event names. |
 | `retryMs` | `number` | `3000` | Delay before the first retry, in milliseconds. Must be finite and greater than zero. |
-| `maxRetryMs` | `number` | `30000` | Cap on the base retry delay before jitter, in milliseconds. Must be finite and at least `retryMs`. |
+| `maxRetryMs` | `number` | `30000`, or `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be finite and at least `retryMs`. |
 | `retryJitter` | `number` | `0.25` | Maximum fraction of the base delay added as random jitter from the second consecutive failure onward. Must be finite and between 0 and 1, inclusive. Set to `0` to disable jitter. |
 | `tokenRefreshMarginSeconds` | `number` | `30` | Remaining lifetime a cached token must exceed to be reused, in seconds. Must be finite and non-negative. |
 | `streamMaxFailures` | `number` | `3` | Number of consecutive failures that expires an independent stream. Must be an integer of at least 1. |
@@ -87,6 +87,8 @@ const murmur = new Murmur({
 ```
 
 To control how tokens are requested, pass an `authorizer` function. It receives the private wire topic names and an abort signal. It must resolve to `{ token: string, expires_at: number }`, with a finite expiration timestamp in Unix seconds. The function handles authorization in place of `authEndpoint`, `auth`, and the client's `fetch` option. Rejections enter the retry sequence.
+
+An error thrown by `auth.headers` or a rejection from `authorizer` is not reported to the application: the attempt counts as a failure, `disconnected` fires and the client retries with backoff. Only a rejection carrying a numeric `status` from 400 to 499 also fires `unauthorized`. With `credentials: 'omit'` the `XSRF-TOKEN` cookie is not read, so no `X-XSRF-TOKEN` header is sent unless you supply one.
 
 ```js
 const murmur = new Murmur({
@@ -131,7 +133,7 @@ Pass `StreamOptions` as the optional second argument to `murmur.stream(url, opti
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `retryMs` | `number` | Client's `retryMs` | Delay before the first retry in milliseconds. |
-| `maxRetryMs` | `number` | Client's `maxRetryMs` | Cap on the base retry delay before jitter, in milliseconds. Must be at least this stream's `retryMs`. |
+| `maxRetryMs` | `number` | Client's `maxRetryMs`, or this stream's `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be at least this stream's `retryMs`. |
 | `retryJitter` | `number` | Client's `retryJitter` | Maximum jitter fraction from the second consecutive failure onward. |
 | `maxFailures` | `number` | Client's `streamMaxFailures` | Consecutive failure limit for this stream. |
 
@@ -150,7 +152,7 @@ Call `stream.close()` to stop the stream and cancel any pending retry.
 | `disconnections` | `number` | Shared connection failures and unexpected drops, including authorization failures. Deliberate channel reconnects and `close()` are excluded. |
 | `events` | `number` | Valid data envelopes received on a listened-to shared event name and passed to channel dispatch, once per received event. |
 | `gaps` | `number` | `murmur.gap` signals received on the shared connection. |
-| `tokenRequests` | `number` | Authorization attempts, including custom authorizer calls. Reusing a cached token skips the request. |
+| `tokenRequests` | `number` | Authorization attempts, including custom authorizer calls and attempts cancelled before completing. Reusing a cached token skips the request. |
 | `tokenFailures` | `number` | Authorization attempts that failed before cancellation, including invalid token responses. |
 | `channels` | `number` | Currently joined channels. |
 | `streams` | `number` | Independent streams that have started and have yet to close, including streams waiting to retry. |

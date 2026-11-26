@@ -195,9 +195,10 @@ export class Murmur {
 
   /** Creates a client for the given streaming endpoint. */
   public constructor(protected readonly options: MurmurOptions) {
+    const retryMs = options.retryMs ?? 3000
     this.retryOptions = {
-      retryMs: options.retryMs ?? 3000,
-      maxRetryMs: options.maxRetryMs ?? 30_000,
+      retryMs,
+      maxRetryMs: options.maxRetryMs ?? Math.max(30_000, retryMs),
       retryJitter: options.retryJitter ?? 0.25,
     }
     validateRetryOptions(this.retryOptions)
@@ -244,9 +245,10 @@ export class Murmur {
 
   /** Opens an independent stream using a server-issued subscription URL. */
   public stream(url: string, options: StreamOptions = {}): MurmurStream {
+    const retryMs = options.retryMs ?? this.retryOptions.retryMs
     const retryOptions = {
-      retryMs: options.retryMs ?? this.retryOptions.retryMs,
-      maxRetryMs: options.maxRetryMs ?? this.retryOptions.maxRetryMs,
+      retryMs,
+      maxRetryMs: options.maxRetryMs ?? Math.max(this.retryOptions.maxRetryMs, retryMs),
       retryJitter: options.retryJitter ?? this.retryOptions.retryJitter,
     }
     const maxFailures = options.maxFailures ?? this.streamMaxFailures
@@ -433,7 +435,7 @@ export class Murmur {
       Accept: 'application/json',
       'Content-Type': 'application/json',
     }
-    if (!headers?.has('X-XSRF-TOKEN') && typeof document !== 'undefined') {
+    if (auth?.credentials !== 'omit' && !headers?.has('X-XSRF-TOKEN') && typeof document !== 'undefined') {
       const xsrf = document.cookie.split(';')
         .map(cookie => cookie.trim())
         .find(cookie => cookie.startsWith('XSRF-TOKEN='))
