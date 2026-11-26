@@ -304,3 +304,67 @@ it('does not open streams stopped before the first connection', async () => {
   await flush()
   expect(FakeEventSource.instances).toHaveLength(0)
 })
+
+it('expires streams at the client-wide failure limit', async () => {
+  const expired = vi.fn()
+  client({ streamMaxFailures: 1 }).stream(URL_1).on('expired', expired)
+  await flush()
+  const source = FakeEventSource.instances[0]
+  assert.isDefined(source)
+
+  source.fail()
+
+  expect(expired).toHaveBeenCalledExactlyOnceWith()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it('overrides client retry settings and the failure limit for one stream', async () => {
+  vi.spyOn(Math, 'random').mockReturnValue(0.5)
+  const m = client({ retryMs: 100, maxRetryMs: 400, retryJitter: 0, streamMaxFailures: 1 })
+  const expired = vi.fn()
+  m.stream(URL_1, { retryMs: 20, maxRetryMs: 30, retryJitter: 1, maxFailures: 3 }).on('expired', expired)
+  await flush()
+
+  for (const [index, delay] of [20, 45].entries()) {
+    const source = FakeEventSource.instances[index]
+    assert.isDefined(source)
+    source.fail()
+    expect(expired).not.toHaveBeenCalled()
+    await wait(delay - 1)
+    expect(FakeEventSource.instances).toHaveLength(index + 1)
+    await wait(1)
+    expect(FakeEventSource.instances).toHaveLength(index + 2)
+  }
+
+  const last = FakeEventSource.instances[2]
+  assert.isDefined(last)
+  last.fail()
+  expect(expired).toHaveBeenCalledExactlyOnceWith()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it.each([
+  ['retryMs', 0],
+  ['retryMs', -1],
+  ['retryMs', Infinity],
+  ['retryMs', NaN],
+  ['maxRetryMs', 0],
+  ['maxRetryMs', -1],
+  ['maxRetryMs', Infinity],
+  ['maxRetryMs', NaN],
+  ['maxRetryMs', 19],
+  ['retryJitter', -0.01],
+  ['retryJitter', 1.01],
+  ['retryJitter', Infinity],
+  ['retryJitter', NaN],
+  ['maxFailures', 0],
+  ['maxFailures', -1],
+  ['maxFailures', 1.5],
+  ['maxFailures', Infinity],
+  ['maxFailures', NaN],
+])('rejects invalid %s (%s) on a stream', (option, value) => {
+  const m = client({ retryMs: 20 })
+  const open = () => m.stream(URL_1, { [option]: value })
+  expect(open).toThrow(RangeError)
+  expect(open).toThrow(option)
+})

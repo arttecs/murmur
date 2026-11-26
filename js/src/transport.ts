@@ -1,9 +1,38 @@
 /** The current source and the listeners registered on it. */
 type Connection = {
+  /** The active event source. */
   source: EventSource
+  /** Handles a successful connection. */
   open: (event: Event) => void
+  /** Handles a failed connection. */
   error: (event: Event) => void
+  /** Handles a named stream message. */
   message: (event: Event) => void
+}
+
+/** Configures the delay between connection attempts. */
+export interface RetryOptions {
+  /** The delay before the first retry, in milliseconds. */
+  retryMs: number
+
+  /** The maximum base delay before jitter, in milliseconds. */
+  maxRetryMs: number
+
+  /** The maximum fraction of the base delay added as jitter after the first retry. */
+  retryJitter: number
+}
+
+/** Rejects invalid values or combinations of retry options. */
+export function validateRetryOptions({ retryMs, maxRetryMs, retryJitter }: RetryOptions): void {
+  if (!Number.isFinite(retryMs) || retryMs <= 0) {
+    throw new RangeError('retryMs must be finite and greater than zero')
+  }
+  if (!Number.isFinite(maxRetryMs) || maxRetryMs < retryMs) {
+    throw new RangeError('maxRetryMs must be finite and greater than or equal to retryMs')
+  }
+  if (!Number.isFinite(retryJitter) || retryJitter < 0 || retryJitter > 1) {
+    throw new RangeError('retryJitter must be finite and between 0 and 1')
+  }
 }
 
 /** Checks whether an event carries a stream payload. */
@@ -34,7 +63,7 @@ export class Transport {
   /** Creates a transport that prepares a fresh URL for every attempt. */
   public constructor(
     protected readonly eventSource: typeof EventSource | undefined,
-    protected readonly retryMs: number,
+    protected readonly retryOptions: RetryOptions,
     protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | Promise<string>,
     protected readonly onMessage: (event: string, data: string) => void,
     protected readonly onStatus: (event: 'connected' | 'disconnected', failures: number) => void,
@@ -159,10 +188,13 @@ export class Transport {
 
   /** Schedules a replacement connection with capped exponential backoff and jitter. */
   protected retry(): void {
-    let delay = this.retryMs
+    const { retryMs, maxRetryMs, retryJitter } = this.retryOptions
+    let delay = retryMs
     if (this.failures > 1) {
-      delay = Math.min(this.retryMs * 2 ** (this.failures - 1), 30_000)
-      delay += delay * 0.25 * Math.random()
+      delay = Math.min(retryMs * 2 ** (this.failures - 1), maxRetryMs)
+      if (retryJitter !== 0) {
+        delay += delay * retryJitter * Math.random()
+      }
     }
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined

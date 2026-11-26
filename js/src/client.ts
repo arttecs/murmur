@@ -1,14 +1,11 @@
 import { Channel, type ChannelListeners } from './channel.js'
 import { parseEnvelope } from './envelope.js'
 import { invokeListener } from './invoke-listener.js'
-import { MurmurStream } from './stream.js'
-import { Transport } from './transport.js'
-
-/** The reconnection delay used when none is configured. */
-const defaultRetryMs = 3000
+import { MurmurStream, type StreamOptions } from './stream.js'
+import { Transport, validateRetryOptions, type RetryOptions } from './transport.js'
 
 /** Configures the Murmur client. */
-export interface MurmurOptions {
+export interface MurmurOptions extends Partial<RetryOptions> {
   /** The full server-sent events endpoint. */
   url: string
 
@@ -18,8 +15,11 @@ export interface MurmurOptions {
   /** The dotted namespace for unqualified event names. */
   namespace?: string
 
-  /** The initial delay before retrying a failed connection, in milliseconds. */
-  retryMs?: number
+  /** The minimum seconds remaining before a cached token can be reused. */
+  tokenRefreshMarginSeconds?: number
+
+  /** The number of consecutive failures that expires an independent stream. */
+  streamMaxFailures?: number
 
   /** The fetch implementation used for authorization requests. */
   fetch?: typeof fetch
@@ -40,13 +40,32 @@ type ClientEventArgs = {
 type ClientEvent = keyof ClientEventArgs
 
 /** A joined channel and its registered event callbacks. */
-type Subscription = { channel: Channel; listeners: ChannelListeners }
+type Subscription = {
+  /** The subscription exposed to the application. */
+  channel: Channel
+  /** The callbacks registered by wire event name. */
+  listeners: ChannelListeners
+}
 
 /** A reusable authorization token for a specific list of private topics. */
-type CachedToken = { topics: string; token: string; expiresAt: number }
+type CachedToken = {
+  /** The sorted topics serialized as a cache key. */
+  topics: string
+  /** The token used to authorize a connection. */
+  token: string
+  /** The token expiration in Unix seconds. */
+  expiresAt: number
+}
 
 /** The prefix that identifies a private topic on the server. */
 const privatePrefix = 'private-'
+
+/** Rejects a failure limit that is not a positive integer. */
+function validateFailureLimit(value: number, option: 'streamMaxFailures' | 'maxFailures'): void {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new RangeError(option + ' must be an integer greater than or equal to 1')
+  }
+}
 
 /** Multiplexes channel subscriptions and opens independent streams. */
 export class Murmur {
@@ -69,6 +88,15 @@ export class Murmur {
   /** The active streams created by this client. */
   protected readonly streams = new Set<MurmurStream>()
 
+  /** The client's retry settings, also used as the defaults for streams. */
+  protected readonly retryOptions: RetryOptions
+
+  /** The time that must remain on a cached token for it to be reused, in seconds. */
+  protected readonly tokenRefreshMarginSeconds: number
+
+  /** The default consecutive failure limit for independent streams. */
+  protected readonly streamMaxFailures: number
+
   /** The most recent token and the private topics it authorizes. */
   protected cachedToken?: CachedToken
 
@@ -80,9 +108,24 @@ export class Murmur {
 
   /** Creates a client for the given streaming endpoint. */
   public constructor(protected readonly options: MurmurOptions) {
+    this.retryOptions = {
+      retryMs: options.retryMs ?? 3000,
+      maxRetryMs: options.maxRetryMs ?? 30_000,
+      retryJitter: options.retryJitter ?? 0.25,
+    }
+    validateRetryOptions(this.retryOptions)
+
+    this.tokenRefreshMarginSeconds = options.tokenRefreshMarginSeconds ?? 30
+    if (!Number.isFinite(this.tokenRefreshMarginSeconds) || this.tokenRefreshMarginSeconds < 0) {
+      throw new RangeError('tokenRefreshMarginSeconds must be finite and greater than or equal to zero')
+    }
+
+    this.streamMaxFailures = options.streamMaxFailures ?? 3
+    validateFailureLimit(this.streamMaxFailures, 'streamMaxFailures')
+
     this.transport = new Transport(
       options.EventSource,
-      options.retryMs ?? defaultRetryMs,
+      this.retryOptions,
       (signal, lastEventId) => this.connectionUrl(signal, lastEventId),
       (event, data) => this.receive(event, data),
       event => this.emit(event),
@@ -105,8 +148,17 @@ export class Murmur {
   }
 
   /** Opens an independent stream using a server-issued subscription URL. */
-  public stream(url: string): MurmurStream {
-    const stream = new MurmurStream(url, this.options.EventSource, this.options.retryMs ?? defaultRetryMs, closed => {
+  public stream(url: string, options: StreamOptions = {}): MurmurStream {
+    const retryOptions = {
+      retryMs: options.retryMs ?? this.retryOptions.retryMs,
+      maxRetryMs: options.maxRetryMs ?? this.retryOptions.maxRetryMs,
+      retryJitter: options.retryJitter ?? this.retryOptions.retryJitter,
+    }
+    const maxFailures = options.maxFailures ?? this.streamMaxFailures
+    validateRetryOptions(retryOptions)
+    validateFailureLimit(maxFailures, 'maxFailures')
+
+    const stream = new MurmurStream(url, this.options.EventSource, retryOptions, maxFailures, closed => {
       this.streams.delete(closed)
     })
     if (this.closed) {
@@ -224,7 +276,7 @@ export class Murmur {
   protected async tokenFor(channels: string[], signal: AbortSignal): Promise<string> {
     const topics = JSON.stringify([...channels].sort())
     const cached = this.cachedToken
-    if (cached?.topics === topics && cached.expiresAt - Date.now() / 1000 > 30) {
+    if (cached?.topics === topics && cached.expiresAt - Date.now() / 1000 > this.tokenRefreshMarginSeconds) {
       return cached.token
     }
 

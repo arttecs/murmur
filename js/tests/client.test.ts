@@ -537,3 +537,73 @@ function pendingAuthFetch() {
   })
   return { fetch, requests }
 }
+
+it.each([
+  ['retryMs', 0],
+  ['retryMs', -1],
+  ['retryMs', Infinity],
+  ['retryMs', NaN],
+  ['maxRetryMs', 0],
+  ['maxRetryMs', -1],
+  ['maxRetryMs', Infinity],
+  ['maxRetryMs', NaN],
+  ['maxRetryMs', 2999],
+  ['retryJitter', -0.01],
+  ['retryJitter', 1.01],
+  ['retryJitter', Infinity],
+  ['retryJitter', NaN],
+  ['tokenRefreshMarginSeconds', -1],
+  ['tokenRefreshMarginSeconds', Infinity],
+  ['tokenRefreshMarginSeconds', NaN],
+  ['streamMaxFailures', 0],
+  ['streamMaxFailures', -1],
+  ['streamMaxFailures', 1.5],
+  ['streamMaxFailures', Infinity],
+  ['streamMaxFailures', NaN],
+])('rejects invalid %s (%s) on the client', (option, value) => {
+  const create = () => client({ [option]: value })
+  expect(create).toThrow(RangeError)
+  expect(create).toThrow(option)
+})
+
+it.each([
+  { retryJitter: 0.5, delays: [100, 200, 200] },
+  { retryJitter: 0, delays: [100, 160, 160] },
+])('caps the base delay with retryJitter $retryJitter', async ({ retryJitter, delays }) => {
+  const random = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+  client({ retryMs: 100, maxRetryMs: 160, retryJitter }).channel('news')
+  await flush()
+
+  for (const [index, delay] of delays.entries()) {
+    const source = FakeEventSource.instances[index]
+    assert.isDefined(source)
+    source.fail()
+    await wait(delay - 1)
+    expect(FakeEventSource.instances).toHaveLength(index + 1)
+    await wait(1)
+    expect(FakeEventSource.instances).toHaveLength(index + 2)
+  }
+  expect(random).toHaveBeenCalledTimes(retryJitter === 0 ? 0 : 2)
+})
+
+it.each([
+  { margin: 5, remaining: 6, requests: 1 },
+  { margin: 60, remaining: 60, requests: 2 },
+  { margin: 60, remaining: 59, requests: 2 },
+  { margin: 0, remaining: 1, requests: 1 },
+])('uses a $margin-second margin with $remaining seconds remaining', async ({ margin, remaining, requests }) => {
+  vi.setSystemTime(0)
+  const fetch = authFetch({ token: 'jwt-1', expires_at: remaining + 1 })
+  const m = client({ fetch, retryMs: 1000, tokenRefreshMarginSeconds: margin })
+  m.private('orders')
+  await flush()
+  const source = FakeEventSource.instances[0]
+  assert.isDefined(source)
+  source.dispatchEvent(new Event('open'))
+  source.fail()
+
+  await wait(1000)
+
+  expect(FakeEventSource.instances).toHaveLength(2)
+  expect(fetch.calls).toHaveLength(requests)
+})

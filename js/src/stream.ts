@@ -1,6 +1,12 @@
 import { parseEnvelope } from './envelope.js'
 import { invokeListener } from './invoke-listener.js'
-import { Transport } from './transport.js'
+import { Transport, type RetryOptions } from './transport.js'
+
+/** Overrides the client's retry settings for one stream. */
+export interface StreamOptions extends Partial<RetryOptions> {
+  /** The number of consecutive failures that expires this stream. */
+  maxFailures?: number
+}
 
 /** Consumes an independent Murmur stream from a server-issued URL. */
 export class MurmurStream {
@@ -24,17 +30,18 @@ export class MurmurStream {
   public constructor(
     protected readonly url: string,
     eventSource: typeof EventSource | undefined,
-    retryMs: number,
+    retryOptions: RetryOptions,
+    maxFailures: number,
     onClose: (stream: MurmurStream) => void,
   ) {
     this.onClose = onClose
     this.transport = new Transport(
       eventSource,
-      retryMs,
+      retryOptions,
       (_signal, lastEventId) => this.connectionUrl(lastEventId),
       (event, data) => this.receive(event, data),
       (status, failures) => {
-        if (status === 'disconnected' && failures === 3) {
+        if (status === 'disconnected' && failures === maxFailures) {
           this.finish('expired')
         }
       },
@@ -47,6 +54,7 @@ export class MurmurStream {
   public on(event: string, callback: (data: unknown) => void): this
   /** Registers a callback for a stream control event. */
   public on(event: 'end' | 'gap' | 'expired', callback: () => void): this
+  /** Registers a callback for a data or control event. */
   public on(event: string, callback: (data?: unknown) => void): this {
     if (!this.closed) {
       const callbacks = this.listeners.get(event)
