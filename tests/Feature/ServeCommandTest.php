@@ -7,6 +7,11 @@ use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
+use Clue\Redis\Protocol\Factory as ProtocolFactory;
+use React\Promise\Deferred;
+use React\Promise\Timer\TimeoutException;
+use React\Socket\ConnectionInterface;
+use React\Socket\SocketServer;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Process\Process;
 
@@ -22,6 +27,8 @@ it('maps laravel config and options onto the server config', function () {
         'murmur.server.max_sockets' => 950,
         'murmur.server.request_timeout' => 3.5,
         'murmur.server.max_replay_events' => 15,
+        'murmur.server.signature_tolerance' => 30,
+        'murmur.server.shutdown_grace' => 0.5,
     ]);
     $command = app(ServeCommand::class);
     $command->setLaravel(app());
@@ -34,6 +41,8 @@ it('maps laravel config and options onto the server config', function () {
     expect($config->maxSockets)->toBe(950);
     expect($config->requestTimeoutSeconds)->toBe(3.5);
     expect($config->maxReplayEvents)->toBe(15);
+    expect($config->signatureToleranceSeconds)->toBe(30);
+    expect($config->shutdownGraceSeconds)->toBe(0.5);
     expect($config->allowedOrigins)->toBe(['https://app.test']);
     expect($config->secret)->toBe('test-secret-with-at-least-32-bytes');
 });
@@ -165,3 +174,47 @@ it('runs murmur serve and exits cleanly on SIGTERM', function (string $driver) {
         $reader?->close();
     }
 })->with(['http', 'redis'])->skip(! extension_loaded('pcntl'), 'SIGTERM handling requires ext-pcntl.');
+
+it('uses the configured redis query deadline and blocking read duration', function () {
+    $socket = new SocketServer('127.0.0.1:0');
+    config([
+        'murmur.driver' => 'redis',
+        'murmur.redis.url' => str_replace('tcp://', 'redis://', $socket->getAddress()),
+        'murmur.redis.query_timeout' => 0.05,
+        'murmur.redis.block_ms' => 125,
+    ]);
+    $clients = [];
+    $block = new Deferred;
+
+    $socket->on('connection', function (ConnectionInterface $client) use (&$clients, $block): void {
+        $clients[] = $client;
+        $parser = (new ProtocolFactory)->createRequestParser();
+        $client->on('data', function (string $data) use ($client, $parser, $block, &$clients): void {
+            foreach ($parser->pushIncoming($data) as $message) {
+                $command = $message->getValueNative();
+
+                if (strtoupper($command[0]) === 'XREAD') {
+                    $block->resolve($command[2]);
+                } elseif ($client === $clients[0] && strtoupper($command[0]) === 'XREVRANGE') {
+                    $client->write("*0\r\n");
+                }
+            }
+        });
+    });
+
+    $log = app(ServeCommand::class)->makeLog();
+
+    try {
+        $log->subscribe(fn () => null);
+        expect(await(timeout($block->promise(), 1.0)))->toBe('125');
+        expect(fn () => await(timeout($log->since(new EventId(0, 0), ['news'], 1), 1.0)))
+            ->toThrow(TimeoutException::class, 'Timed out after 0.05 seconds');
+    } finally {
+        $log->close();
+        $socket->close();
+
+        foreach ($clients as $client) {
+            $client->close();
+        }
+    }
+});

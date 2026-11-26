@@ -258,7 +258,7 @@ class Server
      *
      * @return PromiseInterface<null>
      */
-    public function shutdown(float $graceSeconds = 5.0): PromiseInterface
+    public function shutdown(?float $graceSeconds = null): PromiseInterface
     {
         if ($this->shutdown !== null) {
             return $this->shutdown->promise();
@@ -275,7 +275,7 @@ class Server
         if ($this->clients === []) {
             $this->close();
         } else {
-            $this->shutdownDeadline = $this->loop->addTimer($graceSeconds, $this->close(...));
+            $this->shutdownDeadline = $this->loop->addTimer($graceSeconds ?? $this->config->shutdownGraceSeconds, $this->close(...));
             $this->hub->endAll();
         }
 

@@ -103,3 +103,12 @@ it('retries an unanswered initial cursor query on a fresh redis connection', fun
         unlink($errorLog);
     }
 });
+
+it('rejects invalid redis reader timing settings', function (string $setting, int|float $value) {
+    expect(fn () => new RedisEventLog('redis://127.0.0.1:6379', 'test', ...[$setting => $value]))
+        ->toThrow(InvalidArgumentException::class, $setting);
+})->with([
+    ['queryTimeoutSeconds', 0.0],
+    ['queryTimeoutSeconds', NAN],
+    ['blockMs', 0],
+]);

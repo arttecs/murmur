@@ -101,9 +101,11 @@ class ServeCommand extends Command
             maxBufferBytes: (int) config('murmur.server.max_buffer_bytes'),
             allowedOrigins: config('murmur.server.allowed_origins'),
             publishEnabled: config('murmur.driver') !== 'redis',
-            maxSockets: (int) config('murmur.server.max_sockets', 1000),
-            requestTimeoutSeconds: (float) config('murmur.server.request_timeout', 10.0),
-            maxReplayEvents: (int) config('murmur.server.max_replay_events', 1000),
+            signatureToleranceSeconds: (int) config('murmur.server.signature_tolerance'),
+            maxSockets: (int) config('murmur.server.max_sockets'),
+            requestTimeoutSeconds: (float) config('murmur.server.request_timeout'),
+            maxReplayEvents: (int) config('murmur.server.max_replay_events'),
+            shutdownGraceSeconds: (float) config('murmur.server.shutdown_grace'),
         );
     }
 
@@ -123,6 +125,8 @@ class ServeCommand extends Command
                 MurmurServiceProvider::fullStreamKey(),
                 config('murmur.server.log_size'),
                 maxPayloadBytes: config('murmur.server.max_payload_bytes'),
+                queryTimeoutSeconds: config('murmur.redis.query_timeout'),
+                blockMs: config('murmur.redis.block_ms'),
             ),
             default => throw new InvalidArgumentException("Unsupported Murmur server driver [{$driver}]."),
         };

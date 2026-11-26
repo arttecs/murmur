@@ -108,9 +108,18 @@ class RedisEventLog implements EventLog
         ?LoopInterface $loop = null,
         protected int $maxPayloadBytes = 65536,
         protected float $queryTimeoutSeconds = 5.0,
+        protected int $blockMs = 5000,
     ) {
         if ($maxLength < 1) {
             throw new InvalidArgumentException('The event log capacity must be at least 1.');
+        }
+
+        if ($queryTimeoutSeconds <= 0 || ! is_finite($queryTimeoutSeconds)) {
+            throw new InvalidArgumentException('The queryTimeoutSeconds setting must be positive and finite.');
+        }
+
+        if ($blockMs <= 0) {
+            throw new InvalidArgumentException('The blockMs setting must be positive.');
         }
 
         $this->loop = $loop ?? Loop::get();
@@ -323,10 +332,9 @@ class RedisEventLog implements EventLog
             return;
         }
 
-        $blockMs = 5000;
-        $this->readDeadline = $this->loop->addTimer($blockMs / 1000 + 5.0, fn () => $this->disconnect($this->reader));
+        $this->readDeadline = $this->loop->addTimer($this->blockMs / 1000 + 5.0, fn () => $this->disconnect($this->reader));
 
-        $this->reader->xread('BLOCK', $blockMs, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
+        $this->reader->xread('BLOCK', $this->blockMs, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
             $this->cancelReadDeadline();
             $this->reportReaderRecovery();
 

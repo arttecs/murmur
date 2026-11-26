@@ -94,8 +94,8 @@ it('finishes a signed publish already in flight when shutdown starts', function 
     }
 });
 
-it('flushes sse output and closes unfinished sockets when the shutdown grace ends', function () {
-    $h = ServerHarness::start();
+it('flushes sse output and closes unfinished sockets when the shutdown grace ends', function (?float $graceSeconds) {
+    $h = ServerHarness::start(['shutdownGraceSeconds' => 0.15]);
     $sse = $h->connect();
     $idle = $h->connect();
     $retry = new Deferred;
@@ -117,7 +117,7 @@ it('flushes sse output and closes unfinished sockets when the shutdown grace end
         $sse->write("GET /sse?topics=news HTTP/1.1\r\nHost: localhost\r\n\r\n");
         await(timeout($retry->promise(), 1.0));
         $h->log->append(new Event('news', 'pending'));
-        $shutdown = $h->shutdown(0.15);
+        $shutdown = $h->shutdown($graceSeconds);
 
         await(timeout($flushed->promise(), 1.0));
         expect($response)->toContain('event: pending')->toEndWith("0\r\n\r\n");
@@ -129,4 +129,4 @@ it('flushes sse output and closes unfinished sockets when the shutdown grace end
         $sse->close();
         $idle->close();
     }
-});
+})->with(['configured' => [null], 'explicit' => [0.15]]);

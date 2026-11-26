@@ -10,6 +10,7 @@ use Arttecs\Murmur\Publishers\RedisPublisher;
 use Arttecs\Murmur\Server\Auth\Secret;
 use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\Foundation\CachesConfiguration;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\ServiceProvider;
@@ -25,7 +26,7 @@ class MurmurServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        $this->mergeConfigFrom(__DIR__.'/../config/murmur.php', 'murmur');
+        $this->mergeMurmurConfig();
 
         $this->app->singleton(Publisher::class, function (Application $app): Publisher {
             $config = $app['config'];
@@ -56,6 +57,27 @@ class MurmurServiceProvider extends ServiceProvider
     }
 
     /**
+     * Fill missing settings in published configuration while preserving list overrides.
+     */
+    protected function mergeMurmurConfig(): void
+    {
+        if ($this->app instanceof CachesConfiguration && $this->app->configurationIsCached()) {
+            return;
+        }
+
+        $config = $this->app['config'];
+        $defaults = require __DIR__.'/../config/murmur.php';
+        $overrides = $config->get('murmur', []);
+        $merged = array_replace($defaults, $overrides);
+
+        foreach (['server', 'http', 'auth', 'redis'] as $group) {
+            $merged[$group] = array_replace($defaults[$group], $overrides[$group] ?? []);
+        }
+
+        $config->set('murmur', $merged);
+    }
+
+    /**
      * Get the Redis stream key with Laravel's configured prefix.
      */
     public static function fullStreamKey(): string
@@ -72,7 +94,9 @@ class MurmurServiceProvider extends ServiceProvider
             $manager->extend('murmur', fn (Application $app) => $app->make(MurmurBroadcaster::class));
         });
 
-        $this->loadRoutesFrom(__DIR__.'/../routes/murmur.php');
+        if ($this->app['config']->get('murmur.auth.enabled')) {
+            $this->loadRoutesFrom(__DIR__.'/../routes/murmur.php');
+        }
 
         $this->publishes([
             __DIR__.'/../config/murmur.php' => $this->app->configPath('murmur.php'),

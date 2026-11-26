@@ -20,4 +20,7 @@ it('rejects an invalid server setting and names it in the error', function (stri
     ['maxReplayEvents', 0],
     ['requestTimeoutSeconds', 0.0],
     ['requestTimeoutSeconds', NAN],
+    ['signatureToleranceSeconds', 0],
+    ['shutdownGraceSeconds', 0.0],
+    ['shutdownGraceSeconds', INF],
 ]);

@@ -169,7 +169,7 @@ class ServerHarness
     /**
      * Drain the server until all sockets close or the grace period expires.
      */
-    public function shutdown(float $graceSeconds): PromiseInterface
+    public function shutdown(?float $graceSeconds = null): PromiseInterface
     {
         return $this->server->shutdown($graceSeconds);
     }
