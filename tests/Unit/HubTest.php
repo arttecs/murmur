@@ -4,6 +4,7 @@ use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Http\HeldConnection;
 use Arttecs\Murmur\Server\Hub;
+use Arttecs\Murmur\Server\Replay;
 use Arttecs\Murmur\Server\Sse\Frame;
 
 it('delivers an event only to connections subscribed to its topic', function () {
@@ -53,6 +54,54 @@ it('sends heartbeats to every connection', function () {
     $hub->attach($a, ['news']);
     $hub->heartbeat();
     expect($out())->toBe(": ping\n\n");
+});
+
+it('advances an idle connection past dispatched events and still delivers newer events exactly once', function () {
+    $hub = new Hub;
+    [, $out, $stream] = fakeConnection();
+    $connection = new HeldConnection($stream);
+    $hub->attach($connection, ['news']);
+    $connection->release();
+
+    $hub->dispatch(new Event('other', 'unrelated', id: new EventId(10, 2)));
+    $hub->heartbeat();
+    $hub->dispatch(new Event('news', 'already-passed', id: new EventId(10, 2)));
+    $live = new Event('news', 'live', id: new EventId(10, 3));
+    $hub->dispatch($live);
+    $hub->dispatch($live);
+
+    expect($out())->toBe(Frame::attached(null)."id: 10-2\nevent: murmur.heartbeat\ndata: {}\n\n".Frame::event($live));
+});
+
+it('uses a comment heartbeat while held and while the dispatched position is behind the marker', function () {
+    $hub = new Hub;
+    [, $out, $stream] = fakeConnection();
+    $connection = new HeldConnection($stream);
+    $hub->attach($connection, ['news']);
+
+    $hub->dispatch(new Event('news', 'held-fresh', id: new EventId(10, 2)));
+    $hub->heartbeat();
+    expect($out())->toBe('');
+
+    $tail = new EventId(10, 3);
+    $connection->release(new Replay(false, [], $tail), ['news']);
+    $hub->heartbeat();
+    $hub->dispatch(new Event('news', 'late-fresh', id: $tail));
+
+    expect($out())->toBe(Frame::attached($tail).": ping\n\n: ping\n\n");
+});
+
+it('advances a heartbeat past an excluded event without delivering it', function () {
+    $hub = new Hub;
+    [, $out, $stream] = fakeConnection();
+    $connection = new HeldConnection($stream);
+    $hub->attach($connection, ['news']);
+    $connection->release();
+
+    $hub->dispatch(new Event('news', 'excluded', id: new EventId(10, 2), except: $connection->id));
+    $hub->heartbeat();
+
+    expect($out())->toBe(Frame::attached(null)."id: 10-2\nevent: murmur.heartbeat\ndata: {}\n\n");
 });
 
 it('sends one gap frame per connection and continues after a subscriber write fails', function () {

@@ -30,6 +30,42 @@ it('does not expose the publish endpoint with a redis log', function () {
     expect($h->rawPublish('{"topic":"news","event":"x"}')->getStatusCode())->toBe(404);
 });
 
+it('does not advance heartbeats past events the redis live reader has not dispatched', function () {
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
+
+    try {
+        [$log, $key] = redisLog();
+        $client = $this->redisFixtures[$key]['client'];
+        $readerId = redisReaderId($log);
+        $h = ServerHarness::start(['heartbeatSeconds' => 0.2], $log);
+        $r = SseReader::open($h->url('/sse?topics=news'));
+        $r->start();
+        $warmup = xadd($key, 'news', 'warmup');
+        expect($r->next()['id'])->toBe($warmup);
+
+        waitForRedisReader($client, $readerId);
+        expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
+        waitForRedisRetry($log);
+        $pending = xadd($key, 'news', 'pending');
+        expect($r->next())->toMatchArray(['event' => 'murmur.heartbeat', 'id' => $warmup]);
+
+        $deadline = hrtime(true) + 3_000_000_000;
+        do {
+            $frame = $r->next();
+            if ($frame['event'] === 'murmur.heartbeat') {
+                expect($frame['id'])->toBe($warmup);
+            }
+        } while ($frame['event'] === 'murmur.heartbeat' && hrtime(true) < $deadline);
+
+        expect($frame)->toMatchArray(['event' => 'pending', 'id' => $pending]);
+        expect($r->next())->toMatchArray(['event' => 'murmur.heartbeat', 'id' => $pending]);
+    } finally {
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
+});
+
 it('sends a gap to an already connected subscriber after redis trims unread events', function () {
     $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
     $previous = ini_set('error_log', $errorLog);

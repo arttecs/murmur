@@ -115,20 +115,29 @@ it('counts SSE rejection statuses without opening or closing a stream for them',
     expect($values)->toMatchArray(['murmur_connections_opened_total' => 1, 'murmur_connections_closed_total' => 0]);
 });
 
-it('counts the bytes in a heartbeat without treating it as an event', function () {
-    $h = ServerHarness::start(['heartbeatSeconds' => 0.05]);
+it('counts the bytes in a heartbeat without treating it as an event', function (bool $numbered) {
+    $log = new MemoryEventLog(ids: new EventIdGenerator(fn (): int => 1000));
+    $h = ServerHarness::start(['heartbeatSeconds' => 0.1], $log);
     $id = str_repeat('a', 32);
     $connected = "event: murmur.connected\ndata: {\"connection_id\":\"{$id}\",\"protocol\":1}\n\n";
     $reader = SseReader::open($h->url('/sse?topics=news&connection='.$id));
     expect($reader->start()['retry'])->toBe('3000');
-    expect($reader->next()['comment'])->toBe('ping');
+
+    $heartbeat = ': ping';
+
+    if ($numbered) {
+        $log->append(new Event('other', 'unrelated'));
+        $heartbeat = "id: 1000-1\nevent: murmur.heartbeat\ndata: {}";
+    }
+
+    expect($reader->nextRaw())->toBe($heartbeat);
 
     expect(serverMetricValues($h))->toMatchArray([
-        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n{$connected}event: murmur.attached\ndata: {}\n\n: ping\n\n"),
+        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n{$connected}event: murmur.attached\ndata: {}\n\n{$heartbeat}\n\n"),
         'murmur_events_sent_total' => 0,
         'murmur_gaps_total' => 0,
     ]);
-});
+})->with([false, true]);
 
 it('counts replayed events and gap frames at the time they are written', function () {
     $log = new MemoryEventLog(ids: new EventIdGenerator(fn (): int => 1000));

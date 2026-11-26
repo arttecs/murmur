@@ -60,6 +60,7 @@ it('rejects reserved event names other than the stream end marker', function (st
 })->with([
     ['murmur.gap', 422],
     ['murmur.attached', 422],
+    ['murmur.heartbeat', 422],
     ['murmur.anything', 422],
     ['murmur.end', 202],
     ['murmurs.fine', 202],

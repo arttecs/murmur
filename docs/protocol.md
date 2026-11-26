@@ -61,7 +61,16 @@ The announcement has no `id:` field and does not advance the replay cursor. A co
 
 A connection ID grants no access. An authenticated user who can call an application endpoint that broadcasts with `toOthers()` can pass another connection's ID in `X-Socket-ID` and hide that one event from the matching connection, live and in replay. Proxy and access logs that capture the stream URL or the Laravel request header can expose the ID. This is the same class of risk as a Pusher or Reverb socket ID. [Nginx logging configuration](../README.md#nginx).
 
-The server sends `: ping\n\n` comment frames periodically, every 20 seconds by default. These frames carry no event ID and do not advance the replay cursor.
+The server sends a heartbeat every 20 seconds by default. For a live subscription, it can carry the ID of the newest event the server has dispatched across all topics.
+
+```text
+id: 1710000000000-2
+event: murmur.heartbeat
+data: {}
+
+```
+
+Treat `murmur.heartbeat` as a control frame. Advance the stored replay cursor when its ID is newer and keep it out of application event callbacks. An idle subscription can receive the same heartbeat ID more than once. The server uses the latest dispatched ID even when the Redis reader is behind the stream tail. When the server has yet to dispatch a numbered event, the subscription is still held, or its cursor is already ahead of the latest dispatched ID, the heartbeat uses a `: ping\n\n` comment with no cursor update. Heartbeat bytes count toward `murmur_bytes_sent_total`. The heartbeat itself adds nothing to `murmur_events_sent_total`.
 
 IDs use `<milliseconds>-<sequence>`. A received cursor must contain 1–18 decimal digits per component. Compare the two components numerically, milliseconds first. IDs increase strictly within one event log across all topics. Redis nodes serving the same stream share its IDs and order. In-memory logs have their own order and lose their history on restart.
 

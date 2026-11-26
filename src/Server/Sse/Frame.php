@@ -41,6 +41,14 @@ class Frame
     }
 
     /**
+     * Encode a heartbeat that advances the replay cursor.
+     */
+    public static function heartbeat(EventId $position): string
+    {
+        return "id: {$position}\nevent: murmur.heartbeat\ndata: {}\n\n";
+    }
+
+    /**
      * Encode the reconnection delay frame.
      */
     public static function retry(int $ms): string

@@ -30,7 +30,7 @@ class HeldConnection extends Connection
     protected int $heldBytes = 0;
 
     /**
-     * The latest replay cursor established for the subscriber.
+     * The highest numbered frame written to the subscriber once delivery starts.
      */
     protected ?EventId $lastWrittenId = null;
 
@@ -59,6 +59,21 @@ class HeldConnection extends Connection
         }
 
         $this->hold($frame, strlen($frame));
+    }
+
+    /**
+     * Use a comment when held or when the hub is behind this connection's cursor.
+     */
+    public function sendHeartbeat(EventId $position, string $frame, string $comment): void
+    {
+        if ($this->held !== null || ($this->lastWrittenId !== null && $position->compare($this->lastWrittenId) < 0)) {
+            $this->send($comment);
+
+            return;
+        }
+
+        $this->lastWrittenId = $position;
+        parent::sendHeartbeat($position, $frame, $comment);
     }
 
     /**

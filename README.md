@@ -27,7 +27,7 @@ The default address is `http://127.0.0.1:8080`. To override the bind address for
 php artisan murmur:serve --host=127.0.0.1 --port=8081
 ```
 
-A public subscription receives a reconnect interval, a connection ID, and an attach marker. The server sends a heartbeat every 20 seconds by default.
+A public subscription receives a reconnect interval, a connection ID, and an attach marker. The server sends a heartbeat every 20 seconds by default. A numbered `murmur.heartbeat` control frame keeps a live subscription's replay cursor current even when its topics are quiet. The server sends a comment heartbeat when it has no position that can safely advance the cursor.
 
 ```sh
 curl -N 'http://127.0.0.1:8080/sse?topics=news'
@@ -310,7 +310,7 @@ Synchronize clocks across the Laravel application, Murmur nodes, and Redis. `str
 
 ### Replay storage trade-off
 
-Murmur uses one global Redis stream for all topics. A subscriber can resume with one cursor, event IDs have a total order, and each Murmur node needs one live reader regardless of how many topics it serves. Replay queries scan entries for other topics while looking for matches. Redis trims the stream approximately to `murmur.server.log_size` entries across all topics, so a noisy topic shortens the history available to every topic. Account for aggregate publish volume when choosing a log size, especially when clients reconnect after long interruptions or subscribe to quiet topics on a busy stream.
+Murmur uses one global Redis stream for all topics. A subscriber can resume with one cursor, event IDs have a total order, and each Murmur node needs one live reader regardless of how many topics it serves. Replay queries scan entries for other topics while looking for matches. Redis trims the stream approximately to `murmur.server.log_size` entries across all topics, so a noisy topic shortens the history available to every topic. Clients that track numbered heartbeats can resume quiet subscriptions from a recent cursor, reducing replay work and the chance of a gap after unrelated traffic has trimmed the stream. Account for aggregate publish volume when choosing a log size, especially when clients reconnect after long interruptions.
 
 ### Redis Sentinel and Cluster
 

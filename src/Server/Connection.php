@@ -65,6 +65,14 @@ class Connection
     }
 
     /**
+     * Send a heartbeat at the hub's dispatched position.
+     */
+    public function sendHeartbeat(EventId $position, string $frame, string $comment): void
+    {
+        $this->send($frame);
+    }
+
+    /**
      * Hand a frame to a writable stream and track bytes and backpressure.
      */
     protected function writeFrame(string $frame): bool

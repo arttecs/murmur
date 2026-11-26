@@ -28,6 +28,11 @@ class Hub
     protected SplObjectStorage $connections;
 
     /**
+     * The newest event identifier dispatched across all topics.
+     */
+    protected ?EventId $lastDispatchedId = null;
+
+    /**
      * Create a hub with no connections.
      */
     public function __construct(protected ?Metrics $metrics = null)
@@ -93,12 +98,14 @@ class Hub
         $this->metrics?->increment('murmur_events_received_total');
         $connections = $this->topics[$event->topic] ?? null;
 
-        if ($connections === null) {
-            return;
+        if ($connections !== null) {
+            $frame = Frame::event($event);
+            $this->sendTo($connections, fn (Connection $connection) => $connection->sendEvent($event, $frame));
         }
 
-        $frame = Frame::event($event);
-        $this->sendTo($connections, fn (Connection $connection) => $connection->sendEvent($event, $frame));
+        if ($event->id !== null && ($this->lastDispatchedId === null || $event->id->compare($this->lastDispatchedId) > 0)) {
+            $this->lastDispatchedId = $event->id;
+        }
     }
 
     /**
@@ -134,15 +141,21 @@ class Hub
     }
 
     /**
-     * Send a heartbeat frame to all connections.
+     * Share one numbered heartbeat and one fallback comment across the connections.
      */
     public function heartbeat(): void
     {
-        $frame = Frame::comment();
+        $position = $this->lastDispatchedId;
+        $comment = Frame::comment();
 
-        foreach (iterator_to_array($this->connections, false) as $connection) {
-            $connection->send($frame);
+        if ($position === null) {
+            $this->sendTo($this->connections, fn (Connection $connection) => $connection->send($comment));
+
+            return;
         }
+
+        $frame = Frame::heartbeat($position);
+        $this->sendTo($this->connections, fn (Connection $connection) => $connection->sendHeartbeat($position, $frame, $comment));
     }
 
     /**

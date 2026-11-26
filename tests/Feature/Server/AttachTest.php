@@ -19,21 +19,21 @@ use function React\Promise\Timer\timeout;
 /**
  * Open the selected log and return a publisher that yields the assigned ID.
  */
-function attachTestLog(string $driver): array
+function attachTestLog(string $driver, int $capacity = 10000): array
 {
     if ($driver === 'redis') {
-        [$log, $key] = redisLog();
+        [$log, $key] = redisLog(maxLength: $capacity);
 
         $client = test()->target->redisFixtures[$key]['client'];
 
-        return [$log, function (string $topic, string $name, ?string $except = null) use ($client, $key): string {
+        return [$log, function (string $topic, string $name, ?string $except = null) use ($client, $key, $capacity): string {
             $fields = $except === null ? [] : ['except', $except];
 
-            return await($client->xadd($key, '*', 'topic', $topic, 'name', $name, 'data', 'null', ...$fields));
+            return await($client->xadd($key, 'MAXLEN', '=', $capacity, '*', 'topic', $topic, 'name', $name, 'data', 'null', ...$fields));
         }];
     }
 
-    $log = new MemoryEventLog;
+    $log = new MemoryEventLog($capacity);
 
     return [$log, fn (string $topic, string $name, ?string $except = null): string => (string) $log->append(new Event($topic, $name, except: $except))->id];
 }
@@ -211,6 +211,44 @@ it('resumes a newly joined topic from the acknowledged join after disconnecting'
     expect($resumed->attached()['id'])->toBe($missedOld);
     $live = $publish('new', 'live');
     expect($resumed->next()['id'])->toBe($live);
+})->with(['memory', 'redis']);
+
+it('resumes a quiet subscription without a gap after unrelated traffic trims its previous cursor', function (string $driver) {
+    [$log, $publish] = attachTestLog($driver, capacity: 2);
+    $h = ServerHarness::start(['heartbeatSeconds' => 0.2], $log);
+    $previous = $publish('old', 'before-attach');
+    $initial = SseReader::open($h->url('/sse?topics=old'));
+    $initial->start(replaying: true);
+    expect($initial->attached()['id'])->toBe($previous);
+
+    $dispatched = new Deferred;
+    $log->subscribe(function (Event $event) use ($dispatched): void {
+        if ($event->name === 'last-noise') {
+            $dispatched->resolve(null);
+        }
+    });
+    for ($i = 0; $i < 6; $i++) {
+        $publish('other', 'noise');
+    }
+    $latest = $publish('other', 'last-noise');
+    await(timeout($dispatched->promise(), 1.0));
+
+    $deadline = hrtime(true) + 1_000_000_000;
+    do {
+        $heartbeat = $initial->next();
+    } while ($heartbeat['id'] !== $latest && hrtime(true) < $deadline);
+    expect($heartbeat)->toMatchArray(['event' => 'murmur.heartbeat', 'id' => $latest, 'data' => '{}']);
+    $initial->close();
+
+    $stale = SseReader::open($h->url('/sse?topics=old'), ['Last-Event-ID' => $previous]);
+    $stale->start(replaying: true);
+    expect($stale->next()['event'])->toBe('murmur.gap');
+    expect($stale->attached()['id'])->toBe($latest);
+    $stale->close();
+
+    $resumed = SseReader::open($h->url('/sse?topics=old'), ['Last-Event-ID' => $heartbeat['id']]);
+    $resumed->start(replaying: true);
+    expect($resumed->attached()['id'])->toBe($latest);
 })->with(['memory', 'redis']);
 
 it('acknowledges a cursor below a stale client cursor and continues live', function (string $driver) {
