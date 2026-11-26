@@ -205,13 +205,27 @@ echo.private('orders.1')
 | `streamMaxFailures` | Sets the failure limit for independent streams opened on the underlying client. |
 | `fetch`, `EventSource` | Override the Fetch implementation for token requests and the EventSource constructor for SSE. |
 
-The built-in token request uses Murmur's JSON and CSRF cookie conventions. It accepts static or function-valued `auth.headers` at runtime. Echo 2.6.3's TypeScript declarations accept a static header record. TypeScript callers can use `authorizer` to control a dynamic token request. [Authorization options](#authorization)
+The built-in token request uses Murmur's JSON and CSRF cookie conventions; Echo's `csrfToken` option and its `<meta name="csrf-token">` lookup are not used. `bearerToken` is ignored when `authorizer` is supplied. `auth.credentials` and function-valued `auth.headers` work at runtime, but Echo 2.6.3's TypeScript declarations accept only a static header record, so in TypeScript build the options as a `MurmurConnectorOptions` value and pass them with a cast, or use `authorizer`. [Authorization options](#authorization)
+
+```ts
+import Echo, { type EchoOptions } from 'laravel-echo'
+import { MurmurConnector, type MurmurConnectorOptions } from '@arttecs/murmur/echo'
+
+const options: MurmurConnectorOptions = {
+  url: 'https://events.example.com/sse',
+  auth: { credentials: 'omit', headers: () => ({ Authorization: `Bearer ${currentToken()}` }) },
+}
+
+const echo = new Echo<'function'>({ broadcaster: MurmurConnector, withoutInterceptors: true, ...options } as EchoOptions<'function'>)
+```
+
+The connector does not import `laravel-echo`, so installing `@arttecs/murmur` places no constraint on the Echo version in your project. It was written and tested against Echo 2.6.3. Pass `withoutInterceptors: true`: Echo's request interceptors exist to send the socket ID, which this connector does not have, and Echo's Turbo interceptor would otherwise send a literal `X-Socket-Id: undefined` header.
 
 Public channels, private channels, and Laravel broadcast notifications share one SSE connection. Event names follow Echo's formatter. For example, `Sub.OrderShipped` resolves to `App\Events\Sub\OrderShipped`, while `.order.shipped` listens for the literal `order.shipped`. An initial backslash also marks a literal event name.
 
 - `stopListening(event, callback)` removes one callback. Omit the callback to remove all listeners for the event. `stopListeningForNotification(callback)` removes one notification callback.
-- Register `subscribed(callback)` before the connection opens to receive the initial notification. The callback runs again when the shared connection reopens with that channel joined.
-- On a private channel, `error(callback)` receives the numeric status of a denied token request. Murmur retries the shared connection.
+- Register `subscribed(callback)` before the connection opens to receive the initial notification. The callback runs again every time the shared connection reopens with that channel joined. Joining or leaving any other channel reopens the connection, so a callback that loads initial state will run again then.
+- On a private channel, `error(callback)` receives the numeric status of a denied token request. One token covers every joined private channel, so a denial is reported to all private channels, not only the one that was refused, and it stops the whole shared connection, public channels included, while Murmur keeps retrying. Leave the denied channel inside the callback to let the others reconnect.
 - `leave('orders.1')` leaves both public and private variants. `leaveChannel('private-orders.1')` leaves just the private one. The `private-` prefix identifies an authorized topic.
 - `connectionStatus()` reports `disconnected`, `connecting`, `connected`, or `reconnecting`. `onConnectionChange(callback)` on the connector returns an unsubscribe function.
 - `echo.connector.murmur` exposes the underlying client for statistics, streams, and replay gaps. In TypeScript, read `echo.connector` into an `unknown` variable and narrow it with `instanceof MurmurConnector` to access the typed client.
@@ -220,11 +234,11 @@ Public channels, private channels, and Laravel broadcast notifications share one
 Murmur's Echo connector has these limitations.
 
 - Presence and encrypted private channels throw an unsupported-channel error.
-- Client events are unavailable. `whisper`, `listenForWhisper`, and `stopListeningForWhisper` are chainable no-ops.
+- Client events are unavailable. `whisper`, `listenForWhisper`, and `stopListeningForWhisper` are chainable no-ops; the first `whisper` or `listenForWhisper` call on a connector prints one console warning.
 - Wildcard event listeners are unavailable. Register named events with `listen`.
 - `socketId()` returns `undefined`. Laravel's `toOthers()` cannot exclude the sender.
 
-`@laravel/echo-react` and `@laravel/echo-vue` 2.6.3 were tested with the built connector in jsdom using a fake EventSource. In both packages, mounted consumers received public events, private events, and notifications. The connection-status hook reached `connected`, and unmounting released the channels and closed the connection.
+`@laravel/echo-react` and `@laravel/echo-vue` 2.6.3 were checked once by hand with the built connector in jsdom using a fake EventSource; that check is not part of this repository's test suite. In both packages, mounted consumers received public events, private events, and notifications. The connection-status hook reached `connected`, and unmounting released the channels and closed the connection.
 
 ## Development
 

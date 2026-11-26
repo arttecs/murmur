@@ -1,4 +1,3 @@
-import { EventFormatter, type ConnectionStatus } from 'laravel-echo'
 import type { Channel } from './channel.js'
 import { Murmur, type AuthOptions, type MurmurOptions } from './client.js'
 import { invokeListener } from './invoke-listener.js'
@@ -10,6 +9,24 @@ export interface MurmurConnectorOptions extends Omit<MurmurOptions, 'namespace'>
 
   /** The token sent as an Authorization header on token requests. */
   bearerToken?: string | null
+}
+
+/** The connection states Laravel Echo reports for a connector. */
+export type MurmurConnectionStatus = 'connected' | 'disconnected' | 'connecting' | 'reconnecting' | 'failed'
+
+/** Formats event names the way Laravel Echo does, without importing Echo. */
+class EventFormatter {
+  /** Creates a formatter for a dotted namespace, or none when it is false or empty. */
+  public constructor(protected readonly namespace: string | false) {}
+
+  /** Resolves an Echo event name to the wire name Laravel broadcasts. */
+  public format(event: string): string {
+    if (event.startsWith('.') || event.startsWith('\\')) {
+      return event.substring(1)
+    }
+
+    return (this.namespace ? `${this.namespace}.${event}` : event).replace(/\./g, '\\')
+  }
 }
 
 /** The prefix Echo and Murmur use for private channels. */
@@ -65,10 +82,11 @@ class MurmurEchoChannel {
   /** Whether the channel remains joined. */
   protected active = true
 
-  /** Wraps a topic subscription and uses Echo's event formatter. */
+  /** Wraps a topic subscription and formats event names as Echo does. */
   public constructor(
     protected readonly channel: Channel,
     protected readonly formatter: EventFormatter,
+    protected readonly onWhisper: () => void = () => {},
   ) {}
 
   /** Registers an Echo callback for a formatted event. */
@@ -139,8 +157,9 @@ class MurmurEchoChannel {
     return this.stopListening(this.notificationCreatedEvent, callback)
   }
 
-  /** Preserves fluent setup for unsupported client events. */
+  /** Preserves fluent setup for unsupported client events and warns once. */
   public listenForWhisper(_event: string, _callback: CallableFunction): this {
+    this.onWhisper()
     return this
   }
 
@@ -193,8 +212,9 @@ class MurmurEchoChannel {
 
 /** Adapts an authorized Murmur subscription to Echo's private channel API. */
 class MurmurEchoPrivateChannel extends MurmurEchoChannel {
-  /** Preserves method chaining without sending an unsupported client event. */
+  /** Preserves method chaining without sending an unsupported client event and warns once. */
   public whisper(_event: string, _data: Record<string, unknown>): this {
+    this.onWhisper()
     return this
   }
 }
@@ -214,10 +234,13 @@ export class MurmurConnector {
   protected active = false
 
   /** The last reported connection state. */
-  protected status: ConnectionStatus = 'disconnected'
+  protected status: MurmurConnectionStatus = 'disconnected'
+
+  /** Whether the unsupported client events warning was already printed. */
+  protected whisperWarned = false
 
   /** The observers of Echo connection status changes. */
-  protected readonly statusListeners = new Set<(status: ConnectionStatus) => void>()
+  protected readonly statusListeners = new Set<(status: MurmurConnectionStatus) => void>()
 
   /** Creates a connector from the options passed through Echo. */
   public constructor(protected readonly options: MurmurConnectorOptions) {
@@ -274,7 +297,7 @@ export class MurmurConnector {
     if (existing) {
       return existing
     }
-    const channel = new MurmurEchoChannel(this.client.channel(name), this.formatter)
+    const channel = new MurmurEchoChannel(this.client.channel(name), this.formatter, () => this.warnAboutWhispers())
     this.track(name, channel)
     return channel
   }
@@ -286,7 +309,7 @@ export class MurmurConnector {
     if (existing instanceof MurmurEchoPrivateChannel) {
       return existing
     }
-    const channel = new MurmurEchoPrivateChannel(this.client.private(name), this.formatter)
+    const channel = new MurmurEchoPrivateChannel(this.client.private(name), this.formatter, () => this.warnAboutWhispers())
     this.track(topic, channel)
     return channel
   }
@@ -332,12 +355,12 @@ export class MurmurConnector {
   }
 
   /** Returns the current Echo connection status. */
-  public connectionStatus(): ConnectionStatus {
+  public connectionStatus(): MurmurConnectionStatus {
     return this.status
   }
 
   /** Subscribes to status changes and returns a cleanup function. */
-  public onConnectionChange(callback: (status: ConnectionStatus) => void): () => void {
+  public onConnectionChange(callback: (status: MurmurConnectionStatus) => void): () => void {
     this.statusListeners.add(callback)
     return () => { this.statusListeners.delete(callback) }
   }
@@ -364,12 +387,20 @@ export class MurmurConnector {
   }
 
   /** Notifies observers when the connector changes state. */
-  protected setStatus(status: ConnectionStatus): void {
+  protected setStatus(status: MurmurConnectionStatus): void {
     if (status !== this.status) {
       this.status = status
       for (const callback of this.statusListeners) {
         invokeListener(callback, status)
       }
+    }
+  }
+
+  /** Warns once per connector that client events are not delivered. */
+  protected warnAboutWhispers(): void {
+    if (!this.whisperWarned) {
+      this.whisperWarned = true
+      console.warn('Murmur does not support client events: whisper and listenForWhisper do nothing.')
     }
   }
 }

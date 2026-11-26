@@ -193,6 +193,7 @@ it('throws an unsupported-channel error for presence and encrypted channels', ()
 it('keeps whisper methods chainable without registering or sending client events', async () => {
   const channel = echo().private('orders')
   const whisper = vi.fn()
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
   const broadcast = vi.fn()
   expect(channel.listenForWhisper('typing', whisper).whisper('typing', { id: 1 })).toBe(channel)
   channel.listen('.client-typing', broadcast).stopListeningForWhisper('typing')
@@ -201,6 +202,7 @@ it('keeps whisper methods chainable without registering or sending client events
   source.emit('client-typing', { topic: 'private-orders', data: { id: 2 } }, '1-0')
 
   expect(whisper).not.toHaveBeenCalled()
+  expect(warn).toHaveBeenCalledExactlyOnceWith('Murmur does not support client events: whisper and listenForWhisper do nothing.')
   expect(broadcast).toHaveBeenCalledExactlyOnceWith({ id: 2 })
   expect(authFetch.calls).toHaveLength(1)
 })
@@ -246,7 +248,7 @@ it('waits for the next open when a subscription callback joins a channel', async
   expect(subscribed).toHaveBeenCalledExactlyOnceWith()
 })
 
-it('reports the authorization status to affected private channels only', async () => {
+it('reports a denied token request to every private channel and to no public channel', async () => {
   const fetch = vi.fn<typeof globalThis.fetch>()
     .mockResolvedValueOnce(new Response(null, { status: 403 }))
     .mockResolvedValueOnce(new Response(null, { status: 500 }))
