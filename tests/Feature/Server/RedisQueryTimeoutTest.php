@@ -223,7 +223,7 @@ it('retries from the previous cursor if a live trim check fails', function (bool
                         $client->write($serializer->getReplyMessage([$entry('1-0', 'before')]));
                         break;
                     case 'XREAD':
-                        $reads[] = $arguments[5];
+                        $reads[] = $arguments[7];
 
                         if (count($reads) === 1) {
                             $client->write($serializer->getReplyMessage([['test', [$entry('2-0', 'unverified'), $entry('3-0', 'unverified')]]]));

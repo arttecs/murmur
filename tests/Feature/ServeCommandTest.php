@@ -226,7 +226,7 @@ it('uses the configured redis query deadline and blocking read duration', functi
                 $command = $message->getValueNative();
 
                 if (strtoupper($command[0]) === 'XREAD') {
-                    $block->resolve($command[2]);
+                    $block->resolve($command[array_search('BLOCK', $command, true) + 1]);
                 } elseif ($client === $clients[0] && strtoupper($command[0]) === 'XREVRANGE') {
                     $client->write("*0\r\n");
                 }

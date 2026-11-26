@@ -133,7 +133,7 @@ it('applies the cursor and fresh topics to events held before the tail is sample
                         'XREVRANGE' => $reader
                             ? $client->write($serializer->getReplyMessage([$history]))
                             : $sample->promise()->then(fn () => $client->write($serializer->getReplyMessage([$entries[2]]))),
-                        'XREAD' => $arguments[5] === '10-1'
+                        'XREAD' => $arguments[7] === '10-1'
                             ? $read->promise()->then(fn () => $client->write($serializer->getReplyMessage([['test', $entries]])))
                             : null,
                         'XRANGE' => $client->write($serializer->getReplyMessage($entries)),

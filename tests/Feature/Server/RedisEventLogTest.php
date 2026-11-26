@@ -117,13 +117,14 @@ it('skips malformed entries and delivers valid entries that follow them', functi
     await($client->xadd($key, '*', 'topic', 'invalid topic', 'name', 'updated', 'data', 'null'));
     await($client->xadd($key, '*', 'topic', 'news', 'name', "invalid\nname", 'data', 'null'));
     await($client->xadd($key, '*', 'topic', 'news', 'name', 'murmur.gap', 'data', 'null'));
+    await($client->xadd($key, '*', 'topic', "news\xff", 'name', 'updated', 'data', 'null'));
     await($client->xadd($key, '*', 'topic', 'news', 'name', 'murmur.attached', 'data', 'null'));
     await($client->xadd($key, '*', 'topic', 'news', 'name', 'murmur.heartbeat', 'data', 'null'));
     $id = xadd($key, 'news', 'valid');
 
     await(timeout($delivered->promise(), 2.0));
     expect($seen)->toBe([$id]);
-    $replay = await($log->since(new EventId(0, 0), ['news', 'invalid topic'], 1000));
+    $replay = await($log->since(new EventId(0, 0), ['news', 'invalid topic', "news\xff"], 1000));
     expect(array_map(fn (Event $event) => (string) $event->id, $replay->events))->toBe([$id]);
 });
 

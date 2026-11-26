@@ -70,7 +70,7 @@ it('replaces a stalled redis reader and reports only the loss and recovery trans
         expect($firstClosed)->toBeTrue();
         expect(hrtime(true) - $started)->toBeGreaterThanOrEqual(11_900_000_000);
         expect(array_map(fn (array $read) => array_slice($read, 1), array_slice($reads, 0, 3)))
-            ->toBe(array_fill(0, 3, ['BLOCK', '5000', 'STREAMS', 'test', '1-0']));
+            ->toBe(array_fill(0, 3, ['COUNT', '1000', 'BLOCK', '5000', 'STREAMS', 'test', '1-0']));
         expect((string) $event->id)->toBe('2-0');
 
         $lines = file($errorLog, FILE_IGNORE_NEW_LINES);
@@ -123,7 +123,7 @@ it('reports trimmed history once across failed reader recoveries and again in a 
                         $client->write($serializer->getReplyMessage(['length', 1, 'entries-added', 3, 'first-entry', [$id, []]]));
                         break;
                     case 'XREAD':
-                        $cursor = $command[5];
+                        $cursor = $command[7];
 
                         if ($attempt < 4 || ($attempt === 4 && $cursor === '3-0')) {
                             $client->close();

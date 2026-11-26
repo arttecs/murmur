@@ -33,9 +33,9 @@ use function React\Promise\Timer\timeout;
 class RedisEventLog implements EventLog
 {
     /**
-     * The default reply limit when Redis 7.0 wakes a blocked XREAD.
+     * The most entries one live read may return, so a lagging reader is detected on every Redis version.
      */
-    protected const BLOCKED_READ_DEFAULT_COUNT = 1000;
+    protected const READ_COUNT = 1000;
 
     /**
      * The connection reserved for blocking stream reads.
@@ -359,11 +359,11 @@ class RedisEventLog implements EventLog
 
         $this->readDeadline = $this->loop->addTimer($this->blockMs / 1000 + 5.0, fn () => $this->disconnect($this->reader));
 
-        $this->reader->xread('BLOCK', $this->blockMs, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
+        $this->reader->xread('COUNT', static::READ_COUNT, 'BLOCK', $this->blockMs, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
             $this->cancelReadDeadline();
             $entries = $streams[0][1] ?? [];
 
-            if (count($entries) < min($this->maxLength, self::BLOCKED_READ_DEFAULT_COUNT)) {
+            if (count($entries) < min($this->maxLength, static::READ_COUNT)) {
                 $this->deliver($entries);
 
                 return;
@@ -516,7 +516,7 @@ class RedisEventLog implements EventLog
 
         try {
             $data = json_decode($values['data'], flags: JSON_THROW_ON_ERROR);
-            json_encode($data, JSON_THROW_ON_ERROR);
+            json_encode(['topic' => $values['topic'], 'data' => $data], JSON_THROW_ON_ERROR);
 
             return new Event($values['topic'], $values['name'], $data, $id, $values['except'] ?? null);
         } catch (InvalidArgumentException|JsonException) {
