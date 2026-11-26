@@ -186,13 +186,19 @@ function consumeStream(subscriptionUrl, lastEventId) {
     .on('gap', () => console.log('Some events are missing'))
 
   stream.on('expired', async () => {
-    consumeStream(await getSubscriptionUrl(), stream.lastEventId)
+    try {
+      consumeStream(await getSubscriptionUrl(), stream.lastEventId)
+    } catch (error) {
+      console.error('Could not resume the stream', error)
+    }
   })
   return stream
 }
 
 consumeStream(await getSubscriptionUrl())
 ```
+
+This example resumes every time the stream expires, without a limit. Add your own limit or delay if the application should eventually give up.
 
 Call `stream.close()` to stop the stream and cancel any pending retry.
 
