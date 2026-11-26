@@ -65,7 +65,7 @@ it('writes the literal handshake and replay before live delivery', function (str
     expect($r->nextRaw())->toBe('retry: 3000');
     expect($r->nextRaw())->toBe("event: murmur.connected\ndata: {\"connection_id\":\"{$id}\",\"protocol\":1}");
 
-    if ($cursor && $history !== 'within limit') {
+    if ($cursor && $history === 'over limit') {
         expect($r->nextRaw())->toBe("event: murmur.gap\ndata: {}");
     }
 
@@ -273,14 +273,13 @@ it('resumes a quiet subscription without a gap after unrelated traffic trims its
     expect($resumed->attached()['id'])->toBe($latest);
 })->with(['memory', 'redis']);
 
-it('signals a gap before resetting a stale client cursor to the tail', function (string $driver, bool $fresh) {
+it('resets a client cursor ahead of the log to the tail without signalling a gap', function (string $driver, bool $fresh) {
     [$log, $publish] = attachTestLog($driver);
     $h = ServerHarness::start(log: $log);
     $tail = $publish('news', 'tail');
     $path = '/sse?topics=news&lastEventId=999999999999999999-0'.($fresh ? '&fresh=news' : '');
     $r = SseReader::open($h->url($path));
     $r->start(replaying: true);
-    expect($r->nextRaw())->toBe("event: murmur.gap\ndata: {}");
     expect($r->nextRaw())->toBe("id: {$tail}\nevent: murmur.attached\ndata: {}");
 
     $live = $publish('news', 'live');
@@ -296,7 +295,6 @@ it('supplies a new cursor in a heartbeat after an empty log could not number the
     for ($i = 0; $i < 2; $i++) {
         $r = SseReader::open($path, ['Last-Event-ID' => $cursor]);
         $r->start(replaying: true);
-        expect($r->nextRaw())->toBe("event: murmur.gap\ndata: {}");
         expect($r->attached()['id'])->toBeNull();
         expect($r->nextRaw())->toBe(': ping');
 

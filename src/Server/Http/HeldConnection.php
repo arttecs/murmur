@@ -126,9 +126,7 @@ class HeldConnection extends Connection
 
         $frames = [];
         $bytes = 0;
-        $gap = $this->cursor !== null && $replay !== null && (
-            $replay->gap || $tail === null || $this->cursor->compare($tail) > 0
-        );
+        $gap = $this->cursor !== null && ($replay?->gap ?? false);
 
         foreach ($replay?->events ?? [] as $event) {
             if ($this->excludes($event)) {
