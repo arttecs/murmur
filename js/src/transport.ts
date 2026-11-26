@@ -63,6 +63,7 @@ export class Transport {
   /** Creates a transport that prepares a fresh URL for every attempt. */
   public constructor(
     protected readonly eventSource: typeof EventSource | undefined,
+    protected readonly withCredentials: boolean,
     protected readonly retryOptions: RetryOptions,
     protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | Promise<string>,
     protected readonly onMessage: (event: string, data: string) => void,
@@ -140,7 +141,8 @@ export class Transport {
       }
 
       const EventSource = this.eventSource ?? globalThis.EventSource
-      this.attach(new EventSource(url), url)
+      const source = this.withCredentials ? new EventSource(url, { withCredentials: true }) : new EventSource(url)
+      this.attach(source, url)
     } catch {
       if (!attempt.signal.aborted) {
         this.handleFailure()

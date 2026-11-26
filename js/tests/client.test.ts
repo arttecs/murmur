@@ -1,4 +1,5 @@
 import { afterEach, assert, beforeEach, expect, it, vi } from 'vitest'
+import type { Authorizer } from '../src/index'
 import { FakeEventSource } from './fake-event-source'
 import { authFetch, client, failingThenOk, flush, nowSeconds, reset, topicsOf, wait } from './helpers'
 
@@ -606,4 +607,203 @@ it.each([
 
   expect(FakeEventSource.instances).toHaveLength(2)
   expect(fetch.calls).toHaveLength(requests)
+})
+
+it('merges static auth headers case-insensitively and sends the configured credentials', async () => {
+  vi.stubGlobal('document', { cookie: 'XSRF-TOKEN=from-cookie' })
+  const fetch = vi.fn(authFetch({ token: 'jwt', expires_at: nowSeconds() + 900 }))
+  client({
+    fetch,
+    authEndpoint: '/api/tokens',
+    auth: {
+      credentials: 'omit',
+      headers: { Authorization: 'Bearer abc', 'x-xsrf-token': 'from-header', accept: 'application/vnd.api+json' },
+    },
+  }).private('orders')
+  await flush()
+
+  expect(fetch).toHaveBeenCalledExactlyOnceWith('/api/tokens', expect.objectContaining({
+    credentials: 'omit',
+    method: 'POST',
+    body: '{"channels":["private-orders"]}',
+  }))
+  const headers = new Headers(fetch.mock.calls[0]?.[1]?.headers)
+  expect(headers.get('Authorization')).toBe('Bearer abc')
+  expect(headers.get('X-XSRF-TOKEN')).toBe('from-header')
+  expect(headers.get('Accept')).toBe('application/vnd.api+json')
+  expect(headers.get('Content-Type')).toBe('application/json')
+})
+
+it('reads auth headers on each token request', async () => {
+  let bearer = 'first'
+  const fetch = vi.fn(authFetch({ token: 'jwt', expires_at: nowSeconds() + 900 }))
+  const m = client({ fetch, auth: { headers: () => ({ Authorization: 'Bearer ' + bearer }) } })
+  m.private('orders')
+  await flush()
+  bearer = 'second'
+  m.private('alerts')
+  await flush()
+
+  expect(fetch.mock.calls.map(([, init]) => new Headers(init?.headers).get('Authorization')))
+    .toEqual(['Bearer first', 'Bearer second'])
+})
+
+it('waits for async auth headers before making the token request', async () => {
+  let resolveHeaders: ((headers: Record<string, string>) => void) | undefined
+  const headers = new Promise<Record<string, string>>(resolve => { resolveHeaders = resolve })
+  const fetch = vi.fn(authFetch({ token: 'jwt', expires_at: nowSeconds() + 900 }))
+  client({ fetch, auth: { headers: () => headers } }).private('orders')
+  await flush()
+  expect(fetch).not.toHaveBeenCalled()
+
+  resolveHeaders?.({ Authorization: 'Bearer async' })
+  await flush()
+  expect(fetch).toHaveBeenCalledTimes(1)
+  expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).get('Authorization')).toBe('Bearer async')
+  expect(FakeEventSource.instances).toHaveLength(1)
+})
+
+it('does not fetch an obsolete token when async auth headers finish after close', async () => {
+  let resolveHeaders: ((headers: Record<string, string>) => void) | undefined
+  const headers = new Promise<Record<string, string>>(resolve => { resolveHeaders = resolve })
+  const fetch = vi.fn(authFetch({ token: 'jwt', expires_at: nowSeconds() + 900 }))
+  const m = client({ fetch, auth: { headers: () => headers } })
+  m.private('orders')
+  await flush()
+
+  m.close()
+  resolveHeaders?.({ Authorization: 'Bearer late' })
+  await flush()
+
+  expect(fetch).not.toHaveBeenCalled()
+  expect(FakeEventSource.instances).toHaveLength(0)
+})
+
+it('uses the custom authorizer in place of the built-in request and reuses its token', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>()
+  const headers = vi.fn(() => ({ Authorization: 'Bearer unused' }))
+  const authorizer = vi.fn(async (_channels: string[], _signal: AbortSignal) => ({
+    token: 'custom', expires_at: nowSeconds() + 900,
+  }))
+  const m = client({ fetch, authEndpoint: '/unused', auth: { headers }, authorizer, retryMs: 10 })
+  m.private('orders')
+  await flush()
+
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  expect(authorizer).toHaveBeenCalledExactlyOnceWith(['private-orders'], expect.any(AbortSignal))
+  expect(new URL(first.url).searchParams.get('token')).toBe('custom')
+  first.dispatchEvent(new Event('open'))
+  first.fail()
+  await wait(10)
+
+  const retry = FakeEventSource.instances[1]
+  assert.isDefined(retry)
+  expect(new URL(retry.url).searchParams.get('token')).toBe('custom')
+  expect(authorizer).toHaveBeenCalledTimes(1)
+  expect(fetch).not.toHaveBeenCalled()
+  expect(headers).not.toHaveBeenCalled()
+})
+
+it.each([null, { token: 123, expires_at: 1 }, { token: 'bad' }, { token: 'bad', expires_at: Infinity }])(
+  'rejects an invalid custom authorization result (%j) and retries',
+  async invalid => {
+    const authorizer = vi.fn<Authorizer>()
+      .mockResolvedValueOnce(invalid as Awaited<ReturnType<Authorizer>>)
+      .mockResolvedValue({ token: 'valid', expires_at: nowSeconds() + 900 })
+    const m = client({ authorizer, retryMs: 10 })
+    const disconnected = vi.fn()
+    m.on('disconnected', disconnected)
+    m.private('orders')
+    await flush()
+
+    expect(disconnected).toHaveBeenCalledExactlyOnceWith()
+    expect(FakeEventSource.instances).toHaveLength(0)
+    await wait(10)
+    expect(authorizer).toHaveBeenCalledTimes(2)
+    const retry = FakeEventSource.instances[0]
+    assert.isDefined(retry)
+    expect(new URL(retry.url).searchParams.get('token')).toBe('valid')
+  },
+)
+
+it.each([
+  { error: { status: 400 }, statuses: [400] },
+  { error: { status: 499 }, statuses: [499] },
+  { error: { status: 500 }, statuses: [] },
+  { error: { status: '403' }, statuses: [] },
+  { error: new Error('Authorization unavailable'), statuses: [] },
+  { error: null, statuses: [] },
+])('retries a rejected authorizer and emits unauthorized only for numeric 4xx statuses ($error)', async ({
+  error, statuses,
+}) => {
+  const authorizer = vi.fn()
+    .mockRejectedValueOnce(error)
+    .mockResolvedValue({ token: 'valid', expires_at: nowSeconds() + 900 })
+  const unauthorized = vi.fn()
+  const m = client({ authorizer, retryMs: 10 })
+  m.on('unauthorized', unauthorized)
+  m.private('orders')
+  await flush()
+
+  expect(unauthorized.mock.calls.flat()).toEqual(statuses)
+  expect(FakeEventSource.instances).toHaveLength(0)
+  await wait(9)
+  expect(authorizer).toHaveBeenCalledTimes(1)
+  await wait(1)
+  expect(authorizer).toHaveBeenCalledTimes(2)
+  expect(FakeEventSource.instances).toHaveLength(1)
+})
+
+it('aborts the custom authorizer on close and ignores a late unauthorized rejection', async () => {
+  let rejectToken: ((error: unknown) => void) | undefined
+  const authorizer = vi.fn((_channels: string[], _signal: AbortSignal) =>
+    new Promise<{ token: string; expires_at: number }>((_resolve, reject) => { rejectToken = reject }),
+  )
+  const unauthorized = vi.fn()
+  const m = client({ authorizer })
+  m.on('unauthorized', unauthorized)
+  m.private('orders')
+  await flush()
+  const signal = authorizer.mock.calls[0]?.[1]
+  assert.isDefined(signal)
+
+  m.close()
+  expect(signal.aborted).toBe(true)
+  rejectToken?.({ status: 401 })
+  await flush()
+
+  expect(unauthorized).not.toHaveBeenCalled()
+  expect(FakeEventSource.instances).toHaveLength(0)
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it.each([
+  { withCredentials: true, expected: [{ withCredentials: true }] },
+  { withCredentials: false, expected: [] },
+  { withCredentials: undefined, expected: [] },
+])('passes EventSource credentials for channels and streams when set to $withCredentials', async ({
+  withCredentials, expected,
+}) => {
+  const constructorArgs = vi.fn()
+
+  /** Records the exact arguments supplied to the transport's EventSource. */
+  class ObservedEventSource extends FakeEventSource {
+    /** Records optional arguments before initializing the source. */
+    public constructor(url: string | URL, ...options: [EventSourceInit?]) {
+      super(url, ...options)
+      constructorArgs(String(url), ...options)
+    }
+  }
+
+  const m = client({ EventSource: ObservedEventSource, withCredentials })
+  m.channel('news')
+  await flush()
+  m.stream('https://app.test/sse?topics=alerts')
+  await flush()
+
+  expect(constructorArgs.mock.calls).toEqual([
+    ['https://app.test/sse?topics=news', ...expected],
+    ['https://app.test/sse?topics=alerts', ...expected],
+  ])
 })

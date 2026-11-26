@@ -4,6 +4,23 @@ import { invokeListener } from './invoke-listener.js'
 import { MurmurStream, type StreamOptions } from './stream.js'
 import { Transport, validateRetryOptions, type RetryOptions } from './transport.js'
 
+/** Configures the built-in authorization request. */
+export interface AuthOptions {
+  /** Extra headers or a provider called before each token request. */
+  headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>)
+
+  /** The browser's credential mode for the token request. */
+  credentials?: RequestCredentials
+}
+
+/** Issues a token for private topics in place of the built-in request. */
+export type Authorizer = (channels: string[], signal: AbortSignal) => Promise<{
+  /** The token used to authorize the SSE connection. */
+  token: string
+  /** The token expiration in Unix seconds. */
+  expires_at: number
+}>
+
 /** Configures the Murmur client. */
 export interface MurmurOptions extends Partial<RetryOptions> {
   /** The full server-sent events endpoint. */
@@ -11,6 +28,12 @@ export interface MurmurOptions extends Partial<RetryOptions> {
 
   /** The endpoint that issues tokens for private topics. */
   authEndpoint?: string
+
+  /** Options for the built-in authorization request. */
+  auth?: AuthOptions
+
+  /** Replaces the built-in authorization request. */
+  authorizer?: Authorizer
 
   /** The dotted namespace for unqualified event names. */
   namespace?: string
@@ -26,6 +49,9 @@ export interface MurmurOptions extends Partial<RetryOptions> {
 
   /** The EventSource constructor used for streaming. */
   EventSource?: typeof EventSource
+
+  /** Sends browser credentials on channel and stream connections. */
+  withCredentials?: boolean
 }
 
 /** The arguments delivered to listeners for each client event. */
@@ -125,6 +151,7 @@ export class Murmur {
 
     this.transport = new Transport(
       options.EventSource,
+      options.withCredentials ?? false,
       this.retryOptions,
       (signal, lastEventId) => this.connectionUrl(signal, lastEventId),
       (event, data) => this.receive(event, data),
@@ -158,9 +185,14 @@ export class Murmur {
     validateRetryOptions(retryOptions)
     validateFailureLimit(maxFailures, 'maxFailures')
 
-    const stream = new MurmurStream(url, this.options.EventSource, retryOptions, maxFailures, closed => {
-      this.streams.delete(closed)
-    })
+    const stream = new MurmurStream(
+      url,
+      this.options.EventSource,
+      this.options.withCredentials ?? false,
+      retryOptions,
+      maxFailures,
+      closed => { this.streams.delete(closed) },
+    )
     if (this.closed) {
       stream.close()
     } else {
@@ -280,34 +312,7 @@ export class Murmur {
       return cached.token
     }
 
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    }
-    const xsrf = typeof document === 'undefined' ? undefined : document.cookie
-      .split(';')
-      .map(cookie => cookie.trim())
-      .find(cookie => cookie.startsWith('XSRF-TOKEN='))
-    if (xsrf !== undefined) {
-      headers['X-XSRF-TOKEN'] = decodeURIComponent(xsrf.slice('XSRF-TOKEN='.length))
-    }
-
-    const fetch = this.options.fetch ?? globalThis.fetch.bind(globalThis)
-    const response = await fetch(this.options.authEndpoint ?? '/murmur/auth', {
-      method: 'POST',
-      credentials: 'include',
-      headers,
-      body: JSON.stringify({ channels }),
-      signal,
-    })
-    if (!response.ok) {
-      if (!signal.aborted && response.status >= 400 && response.status < 500) {
-        this.emit('unauthorized', response.status)
-      }
-      throw new Error('Murmur authorization failed')
-    }
-
-    const body: unknown = await response.json()
+    const body = await this.requestToken(channels, signal)
     if (
       body === null || typeof body !== 'object' ||
       !('token' in body) || typeof body.token !== 'string' ||
@@ -320,6 +325,63 @@ export class Murmur {
       this.cachedToken = { topics, token: body.token, expiresAt: body.expires_at }
     }
     return body.token
+  }
+
+  /** Requests an authorization response from the provider or the built-in endpoint. */
+  protected async requestToken(channels: string[], signal: AbortSignal): Promise<unknown> {
+    const { authorizer } = this.options
+    if (authorizer) {
+      try {
+        return await authorizer(channels, signal)
+      } catch (error) {
+        if (!signal.aborted && error !== null && typeof error === 'object' &&
+          'status' in error && typeof error.status === 'number' && error.status >= 400 && error.status < 500) {
+          this.emit('unauthorized', error.status)
+        }
+        throw error
+      }
+    }
+
+    const { auth, authEndpoint } = this.options
+    const supplied = typeof auth?.headers === 'function' ? await auth.headers() : auth?.headers
+    signal.throwIfAborted()
+    const headers = supplied === undefined ? undefined : new Headers(supplied)
+    const defaults: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    }
+    if (!headers?.has('X-XSRF-TOKEN') && typeof document !== 'undefined') {
+      const xsrf = document.cookie.split(';')
+        .map(cookie => cookie.trim())
+        .find(cookie => cookie.startsWith('XSRF-TOKEN='))
+      if (xsrf !== undefined) {
+        defaults['X-XSRF-TOKEN'] = decodeURIComponent(xsrf.slice('XSRF-TOKEN='.length))
+      }
+    }
+    if (headers) {
+      for (const [name, value] of Object.entries(defaults)) {
+        if (!headers.has(name)) {
+          headers.set(name, value)
+        }
+      }
+    }
+
+    const fetch = this.options.fetch ?? globalThis.fetch.bind(globalThis)
+    const response = await fetch(authEndpoint ?? '/murmur/auth', {
+      method: 'POST',
+      credentials: auth?.credentials ?? 'include',
+      headers: headers ?? defaults,
+      body: JSON.stringify({ channels }),
+      signal,
+    })
+    if (!response.ok) {
+      if (!signal.aborted && response.status >= 400 && response.status < 500) {
+        this.emit('unauthorized', response.status)
+      }
+      throw new Error('Murmur authorization failed')
+    }
+
+    return response.json()
   }
 
   /** Dispatches a stream event to its channel or emits a gap notification. */

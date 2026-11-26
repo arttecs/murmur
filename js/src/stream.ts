@@ -30,6 +30,7 @@ export class MurmurStream {
   public constructor(
     protected readonly url: string,
     eventSource: typeof EventSource | undefined,
+    withCredentials: boolean,
     retryOptions: RetryOptions,
     maxFailures: number,
     onClose: (stream: MurmurStream) => void,
@@ -37,6 +38,7 @@ export class MurmurStream {
     this.onClose = onClose
     this.transport = new Transport(
       eventSource,
+      withCredentials,
       retryOptions,
       (_signal, lastEventId) => this.connectionUrl(lastEventId),
       (event, data) => this.receive(event, data),
