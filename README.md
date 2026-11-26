@@ -220,6 +220,8 @@ Run the packaged PHPUnit suites against your implementations. Extend `Testing\Ev
 
 Event logs sample the tail before querying replay history and return it even when the topic list is empty. An empty topic list returns no events, and an empty log returns a null tail. Return events through the sampled tail and apply the optional `since()` event filter before counting results against the limit.
 
+Deliver events to listeners in strictly increasing identifier order across all topics, including when listeners subscribe to the same log at different times. Each tail sample must be at or after every event already delivered to listeners when the sample is taken. The server uses that order and tail to assign attachment and heartbeat cursors. An idle subscription can silently skip events if the driver violates these guarantees.
+
 ```php
 use App\Tests\Support\EventLogFixture;
 use Arttecs\Murmur\Testing\EventLogConformanceTestCase;

@@ -16,7 +16,9 @@ interface EventLog
      * Replay up to the given number of events after the cursor, or report a gap.
      *
      * Sample the current tail before querying history and return null for an
-     * empty log. With no requested topics, return the tail and no events.
+     * empty log. The sampled tail must cover every identifier already delivered
+     * to listeners when the sample is taken. With no requested topics, return
+     * the tail and no events.
      * Replay events up to that tail, applying the optional filter before
      * counting them against the limit.
      *
@@ -28,6 +30,10 @@ interface EventLog
 
     /**
      * Register a listener that receives events with their assigned identifiers.
+     *
+     * Deliver in strictly increasing identifier order across all topics. Never
+     * deliver an identifier at or below one already delivered to the listener.
+     * Otherwise a numbered heartbeat may cause an idle connection to skip events.
      *
      * @param  callable(Event): void  $listener
      */

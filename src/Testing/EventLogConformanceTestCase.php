@@ -63,11 +63,35 @@ abstract class EventLogConformanceTestCase extends TestCase
         $ids = array_map(fn (Event $event): EventId => $this->append($append, $event), $events);
         $this->await($delivered->promise());
 
-        self::assertLessThan(0, $ids[0]->compare($ids[1]));
-        self::assertLessThan(0, $ids[1]->compare($ids[2]));
         $expected = array_map(fn (Event $event, EventId $id): Event => $event->withId($id), $events, $ids);
         self::assertEquals($expected, $first);
         self::assertEquals($expected, $second);
+
+        foreach ([$first, $second] as $received) {
+            self::assertLessThan(0, $received[0]->id->compare($received[1]->id));
+            self::assertLessThan(0, $received[1]->id->compare($received[2]->id));
+        }
+    }
+
+    /**
+     * Report a tail at least as new as the latest live event, even on another topic.
+     */
+    public function test_reports_a_tail_at_or_after_the_last_delivered_event(): void
+    {
+        [$this->log, $append] = $this->createEventLog(10, $this->loop);
+        $cursor = $this->append($append, new Event('news', 'cursor'));
+        $delivered = new Deferred;
+        $this->log->subscribe($delivered->resolve(...));
+        $this->await($this->log->ready());
+        $this->append($append, new Event('weather', 'live'));
+        $live = $this->await($delivered->promise());
+
+        foreach ([[], ['news']] as $topics) {
+            $tail = $this->await($this->log->since($cursor, $topics, 10))->tail;
+
+            self::assertNotNull($tail, 'A log that has delivered events must report a tail.');
+            self::assertGreaterThanOrEqual(0, $tail->compare($live->id), 'The tail must cover events already delivered to listeners.');
+        }
     }
 
     /**
