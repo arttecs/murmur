@@ -166,6 +166,66 @@ murmur.on('disconnected', () => {
 })
 ```
 
+## Laravel Echo
+
+Install Murmur and Laravel Echo 2.6.3 or a later 2.x release.
+
+```sh
+npm install @arttecs/murmur laravel-echo@^2.6.3
+```
+
+Pass `MurmurConnector` as the Echo broadcaster.
+
+```js
+import Echo from 'laravel-echo'
+import { MurmurConnector } from '@arttecs/murmur/echo'
+
+const echo = new Echo({
+  broadcaster: MurmurConnector,
+  url: 'https://events.example.com/sse',
+  authEndpoint: '/murmur/auth',
+})
+
+echo.private('orders.1')
+  .listen('OrderShipped', event => console.log(event))
+```
+
+| Echo option | Murmur behavior |
+| --- | --- |
+| `broadcaster` | Set to `MurmurConnector` to use SSE. |
+| `url` | Required SSE endpoint. |
+| `authEndpoint` | Private token endpoint. Defaults to `/murmur/auth`. |
+| `auth.headers`, `auth.credentials` | Headers and Fetch credential mode for the token request. |
+| `bearerToken` | A non-empty token sets `Authorization: Bearer <token>`, replacing any supplied authorization header. |
+| `authorizer` | Replaces the built-in token request. Accepts private wire topic names and an abort signal. |
+| `withCredentials` | Sends browser credentials with SSE requests. |
+| `namespace` | Defaults to `App.Events`. Set to `false` to omit the prefix. |
+| `retryMs`, `maxRetryMs`, `retryJitter` | Control the retry delay with the same defaults as the standalone client. |
+| `tokenRefreshMarginSeconds` | Controls when a cached private token needs refreshing. |
+| `streamMaxFailures` | Sets the failure limit for independent streams opened on the underlying client. |
+| `fetch`, `EventSource` | Override the Fetch implementation for token requests and the EventSource constructor for SSE. |
+
+The built-in token request uses Murmur's JSON and CSRF cookie conventions. It accepts static or function-valued `auth.headers` at runtime. Echo 2.6.3's TypeScript declarations accept a static header record. TypeScript callers can use `authorizer` to control a dynamic token request. [Authorization options](#authorization)
+
+Public channels, private channels, and Laravel broadcast notifications share one SSE connection. Event names follow Echo's formatter. For example, `Sub.OrderShipped` resolves to `App\Events\Sub\OrderShipped`, while `.order.shipped` listens for the literal `order.shipped`. An initial backslash also marks a literal event name.
+
+- `stopListening(event, callback)` removes one callback. Omit the callback to remove all listeners for the event. `stopListeningForNotification(callback)` removes one notification callback.
+- Register `subscribed(callback)` before the connection opens to receive the initial notification. The callback runs again when the shared connection reopens with that channel joined.
+- On a private channel, `error(callback)` receives the numeric status of a denied token request. Murmur retries the shared connection.
+- `leave('orders.1')` leaves both public and private variants. `leaveChannel('private-orders.1')` leaves just the private one. The `private-` prefix identifies an authorized topic.
+- `connectionStatus()` reports `disconnected`, `connecting`, `connected`, or `reconnecting`. `onConnectionChange(callback)` on the connector returns an unsubscribe function.
+- `echo.connector.murmur` exposes the underlying client for statistics, streams, and replay gaps. In TypeScript, read `echo.connector` into an `unknown` variable and narrow it with `instanceof MurmurConnector` to access the typed client.
+- `echo.disconnect()` closes the shared connection, cancels retries, and closes independent streams. Call `echo.connect()` to create a fresh connector, then rejoin the channels you need.
+
+Murmur's Echo connector has these limitations.
+
+- Presence and encrypted private channels throw an unsupported-channel error.
+- Client events are unavailable. `whisper`, `listenForWhisper`, and `stopListeningForWhisper` are chainable no-ops.
+- Wildcard event listeners are unavailable. Register named events with `listen`.
+- `socketId()` returns `undefined`. Laravel's `toOthers()` cannot exclude the sender.
+
+`@laravel/echo-react` and `@laravel/echo-vue` 2.6.3 were tested with the built connector in jsdom using a fake EventSource. In both packages, mounted consumers received public events, private events, and notifications. The connection-status hook reached `connected`, and unmounting released the channels and closed the connection.
+
 ## Development
 
 - The build and test tooling requires Node.js `^22.18.0 || ^24.11.0 || >=26.0.0`.
