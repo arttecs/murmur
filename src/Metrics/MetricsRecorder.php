@@ -97,11 +97,13 @@ class MetricsRecorder
     /**
      * Launch the writer before the server establishes any network connections.
      *
+     * The writer shares the server's standard error so its logs reach the same place.
+     *
      * @throws RuntimeException
      */
     public function launch(): void
     {
-        $process = new Process('exec '.$this->command);
+        $process = new Process('exec '.$this->command, null, null, [['pipe', 'r'], ['pipe', 'w'], STDERR]);
 
         try {
             $process->start($this->loop, 0.01);
@@ -112,7 +114,6 @@ class MetricsRecorder
         $this->process = $process;
         $process->on('exit', $this->exited(...));
         $process->stdout->on('data', $this->receive(...));
-        $process->stderr->on('data', static function (): void {});
         $process->stdin->on('drain', function (): void {
             $this->backpressured = false;
         });
@@ -322,7 +323,6 @@ class MetricsRecorder
         $this->shutdownTimer = $this->loop->addTimer(0.2, function () use ($process): void {
             $process->terminate(static::KILL_SIGNAL);
             $process->stdout->close();
-            $process->stderr->close();
         });
         $process->terminate();
     }

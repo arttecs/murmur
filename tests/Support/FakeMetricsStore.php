@@ -30,10 +30,9 @@ class FakeMetricsStore implements MetricsStore
         if ($this->mode === 'noisy' && $first) {
             $chunk = str_repeat('sensitive writer output ', 2048);
             for ($i = 0; $i < 32; $i++) {
-                fwrite(STDERR, $chunk);
                 fwrite(STDOUT, $chunk);
             }
-            fwrite(STDERR, "\n");
+            fwrite(STDERR, "writer diagnostic line\n");
             fwrite(STDOUT, "\n");
         }
 

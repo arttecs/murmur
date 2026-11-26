@@ -153,7 +153,7 @@ it('reports failed acknowledgements and keeps recording with the same writer', f
     }
 });
 
-it('drains noisy pipes, rejects an over-long reply, and accepts the next acknowledgement', function () {
+it('discards writer output, passes its diagnostics through, and accepts the next acknowledgement', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
     $process = metricsServingProcess(ServerHarness::availablePort(), [
         'MURMUR_TEST_METRICS_FILE' => $file,
@@ -166,7 +166,7 @@ it('drains noisy pipes, rejects an over-long reply, and accepts the next acknowl
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 2, $process);
         [$first, $second] = metricsTrace($file, 'saved');
 
-        expect($process->getErrorOutput())->toContain('invalid acknowledgement')->not->toContain('sensitive writer output');
+        expect($process->getErrorOutput())->toContain('invalid acknowledgement')->toContain('writer diagnostic line')->not->toContain('sensitive writer output');
         expect($process->getOutput())->not->toContain('sensitive writer output');
         expect($second->samples[0]->value)->toBeGreaterThanOrEqual(1);
         expect($second->pid)->toBe($first->pid);

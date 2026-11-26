@@ -18,11 +18,6 @@ use Throwable;
 class RecordMetricsCommand extends Command
 {
     /**
-     * Maximum time in a store operation when pcntl cannot inspect the parent PID.
-     */
-    protected const STORE_DEADLINE = 300;
-
-    /**
      * The command name used by the server's recorder.
      */
     protected $signature = 'murmur:record-metrics';
@@ -42,13 +37,10 @@ class RecordMetricsCommand extends Command
      */
     public function handle(MurmurManager $manager): int
     {
-        $deadline = $this->watchParent();
+        $this->watchParent();
         ob_start(static fn (): string => '', 8192);
 
         try {
-            if ($deadline) {
-                pcntl_alarm(static::STORE_DEADLINE);
-            }
 
             try {
                 $store = $manager->metricsStore();
@@ -64,21 +56,9 @@ class RecordMetricsCommand extends Command
 
             $this->clearQueryLogs();
 
-            if ($deadline) {
-                pcntl_alarm(0);
-            }
-
             while (($line = @fgets(STDIN, Snapshot::MAX_DOCUMENT_BYTES + 2)) !== false) {
                 if (str_ends_with($line, "\n")) {
-                    if ($deadline) {
-                        pcntl_alarm(static::STORE_DEADLINE);
-                    }
-
                     $saved = $this->writeSnapshot($store, $line);
-
-                    if ($deadline) {
-                        pcntl_alarm(0);
-                    }
                 } else {
                     unset($line);
                     $this->discardLine();
@@ -159,23 +139,19 @@ class RecordMetricsCommand extends Command
 
     /**
      * Let the server handle Ctrl-C and detect parent death during a store call.
-     *
-     * @return bool Whether to use an operation deadline in place of checking the parent PID.
      */
-    protected function watchParent(): bool
+    protected function watchParent(): void
     {
-        if (! function_exists('pcntl_signal') || ! function_exists('pcntl_alarm')) {
-            return false;
+        if (! function_exists('pcntl_signal')) {
+            return;
         }
 
         if (! stream_isatty(STDIN)) {
             pcntl_signal(SIGINT, SIG_IGN);
         }
 
-        if (! function_exists('posix_getppid') || ! function_exists('pcntl_async_signals')) {
-            pcntl_signal(SIGALRM, SIG_DFL);
-
-            return true;
+        if (! function_exists('posix_getppid') || ! function_exists('pcntl_alarm') || ! function_exists('pcntl_async_signals')) {
+            return;
         }
 
         $parent = posix_getppid();
@@ -189,8 +165,6 @@ class RecordMetricsCommand extends Command
         }, restart_syscalls: false);
 
         pcntl_alarm(1);
-
-        return false;
     }
 
     /**
