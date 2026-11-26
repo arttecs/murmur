@@ -22,7 +22,19 @@ class MetricsTestServiceProvider extends ServiceProvider
     public function boot(): void
     {
         if ($lifecycleFile = getenv('MURMUR_TEST_LIFECYCLE_FILE')) {
-            $this->traceLifecycle($lifecycleFile, getenv('MURMUR_TEST_LIFECYCLE_MODE') ?: '');
+            $mode = getenv('MURMUR_TEST_LIFECYCLE_MODE') ?: '';
+            $this->traceLifecycle($lifecycleFile, $mode);
+
+            if ($mode === 'slow-shutdown') {
+                Murmur::serving(function (Server $server) use ($lifecycleFile): void {
+                    register_shutdown_function(function () use ($server, $lifecycleFile): void {
+                        file_put_contents($lifecycleFile, json_encode([
+                            'phase' => 'shutdown',
+                            'dropped' => $server->metrics()->value('murmur_lifecycle_dropped_total'),
+                        ], JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
+                    });
+                });
+            }
         }
 
         Murmur::extendMetrics('fake', function (): MetricsStore {
@@ -90,6 +102,16 @@ class MetricsTestServiceProvider extends ServiceProvider
         };
 
         $this->app['events']->listen([ConnectionOpened::class, ConnectionClosed::class], function (ConnectionOpened|ConnectionClosed $event) use ($record, $mode): void {
+            if ($mode === 'slow-shutdown' && $event instanceof ConnectionClosed) {
+                pcntl_signal(SIGTERM, SIG_IGN);
+                $record(['phase' => 'waiting']);
+                $until = hrtime(true) + 15_000_000_000;
+
+                while (hrtime(true) < $until) {
+                    usleep(50_000);
+                }
+            }
+
             $fields = (array) $event;
             $fields['topics'] = array_map(base64_encode(...), $event->topics);
             $record(['phase' => $event instanceof ConnectionOpened ? 'opened' : 'closed', ...$fields]);

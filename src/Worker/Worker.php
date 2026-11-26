@@ -74,6 +74,16 @@ class Worker
     protected ?string $lastSent = null;
 
     /**
+     * Whether the server has finished draining and every waiting record is due.
+     */
+    protected bool $drained = false;
+
+    /**
+     * The number of lifecycle records awaiting acknowledgement.
+     */
+    protected int $pendingLifecycle = 0;
+
+    /**
      * Whether the worker's input has been closed for shutdown.
      */
     protected bool $inputClosing = false;
@@ -218,16 +228,22 @@ class Worker
             return;
         }
 
-        if ($this->lifecycleDue && (! $this->metricsDue || $this->lastSent === 'metrics')) {
+        $lifecycleDue = $this->recorder?->pending($this->lifecycleDue || $this->drained ? 1 : $this->lifecycle->batch);
+
+        if ($lifecycleDue && (! $this->metricsDue || $this->lastSent === 'metrics')) {
             $this->lifecycleDue = false;
             $this->sendLifecycle();
-
-            return;
-        }
-
-        if ($this->metricsDue) {
+        } elseif ($this->metricsDue) {
             $this->metricsDue = false;
             $this->record($this->metrics);
+        }
+
+        if ($this->drained) {
+            if (! $this->recorder->pending()) {
+                $this->finishInput();
+            } elseif ($this->pending === null) {
+                $this->loop->futureTick($this->flush(...));
+            }
         }
     }
 
@@ -243,6 +259,7 @@ class Worker
         $this->metrics?->increment('murmur_lifecycle_dropped_total', $dropped);
 
         if ($sent > 0) {
+            $this->pendingLifecycle = $sent;
             $this->send('lifecycle', $payload, $this->config?->timeout ?? 10.0);
             $this->metrics?->increment('murmur_lifecycle_sent_total', $sent);
         }
@@ -254,7 +271,7 @@ class Worker
      * @param  PromiseInterface<null>|null  $drained
      * @return PromiseInterface<null>
      */
-    public function stop(?PromiseInterface $drained = null): PromiseInterface
+    public function stop(?PromiseInterface $drained = null, float $graceSeconds = 1.0): PromiseInterface
     {
         if ($this->stopping === null) {
             $this->stopping = new Deferred;
@@ -265,9 +282,12 @@ class Worker
             if ($this->process === null) {
                 $this->stopping->resolve(null);
             } else {
-                $this->shutdownTimer = $this->loop->addTimer(1.0, $this->terminate(...));
+                $this->shutdownTimer = $this->loop->addTimer($draining ? $graceSeconds : 1.0, $this->terminate(...));
+
                 if ($draining) {
-                    $drained->then(fn () => $this->loop->futureTick($this->finishInput(...)));
+                    $drained->then(fn () => $this->loop->futureTick($this->finishDraining(...)));
+                } elseif ($this->recorder !== null) {
+                    $this->finishDraining();
                 } else {
                     $this->finishInput();
                 }
@@ -278,27 +298,32 @@ class Worker
     }
 
     /**
-     * Send one final batch if the slot is free, then signal EOF.
+     * Mark all queued lifecycle records due and flush until the queue is empty.
+     */
+    protected function finishDraining(): void
+    {
+        $this->drained = true;
+        $this->flush();
+    }
+
+    /**
+     * Stop scheduling messages and signal EOF after any buffered write.
      */
     protected function finishInput(): void
     {
-        if ($this->recorder !== null && $this->available() && $this->recorder->pending()) {
-            $this->sendLifecycle();
-        }
-
         $this->cancelWrites();
-        $this->discardLifecycle();
         $this->inputClosing = true;
         $this->process?->stdin->end();
     }
 
     /**
-     * Discard pending lifecycle records and count those losses.
+     * Count queued and unacknowledged lifecycle records when the worker stops.
      */
     protected function discardLifecycle(): void
     {
         if ($this->recorder !== null) {
-            $dropped = $this->recorder->stop();
+            $dropped = $this->recorder->stop() + $this->pendingLifecycle;
+            $this->pendingLifecycle = 0;
             $this->metrics?->increment('murmur_lifecycle_dropped_total', $dropped);
         }
     }
@@ -370,7 +395,7 @@ class Worker
      */
     protected function receive(string $chunk): void
     {
-        if ($this->inputClosing) {
+        if ($this->inputClosing && $this->pending !== 'lifecycle') {
             return;
         }
 
@@ -424,6 +449,7 @@ class Worker
 
         $type = $this->pending;
         $this->pending = null;
+        $this->pendingLifecycle = 0;
         $this->cancelDeadline();
 
         if ($reply === 'error') {
@@ -490,6 +516,11 @@ class Worker
      */
     protected function terminate(): void
     {
+        if ($this->recorder !== null) {
+            $this->discardLifecycle();
+            $this->finishInput();
+        }
+
         $process = $this->process;
         $this->shutdownTimer = $this->loop->addTimer(0.2, function () use ($process): void {
             $process->terminate(static::KILL_SIGNAL);

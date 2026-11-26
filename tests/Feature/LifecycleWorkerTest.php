@@ -11,6 +11,7 @@ use React\EventLoop\Loop;
 use Symfony\Component\Process\Process;
 
 use function React\Async\await;
+use function React\Async\delay;
 
 function lifecycleWorkerRecord(array $fields = []): array
 {
@@ -111,7 +112,7 @@ it('flushes on its interval and caps ordered batches by count and by encoded siz
         'murmur.lifecycle.enabled' => true,
         'murmur.lifecycle.buffer' => 400,
         'murmur.lifecycle.batch' => $large ? 400 : 2,
-        'murmur.lifecycle.interval' => 0.2,
+        'murmur.lifecycle.interval' => $large ? 0.2 : 0.5,
     ]);
     $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg('$ack = fopen("php://fd/3", "w"); while ($line = fgets(STDIN)) { file_put_contents($argv[1], $line, FILE_APPEND | LOCK_EX); fwrite($ack, "ok\n"); }').' '.escapeshellarg($file);
     $worker = new Worker($loop, null, 'edge', $command, LifecycleConfig::from(config()), $recorder);
@@ -128,6 +129,12 @@ it('flushes on its interval and caps ordered batches by count and by encoded siz
         }
 
         expect($metrics->value('murmur_lifecycle_sent_total'))->toBe(0);
+        if (! $large) {
+            waitForMetricsCondition(fn () => $metrics->value('murmur_lifecycle_sent_total') >= 2);
+            delay(0.2);
+            expect($metrics->value('murmur_lifecycle_sent_total'))->toBe(4);
+        }
+
         waitForMetricsCondition(fn () => $metrics->value('murmur_lifecycle_sent_total') === $total);
         await($worker->stop());
 
@@ -173,10 +180,10 @@ it('discards buffered and future lifecycle records when the worker exits', funct
         expect(posix_kill((int) file_get_contents($file), SIGKILL))->toBeTrue();
         waitForMetricsCondition(fn () => ! $worker->running());
 
-        expect($metrics->value('murmur_lifecycle_dropped_total'))->toBe(1);
+        expect($metrics->value('murmur_lifecycle_dropped_total'))->toBe(2);
         $hub->attach($second, ['news']);
         $second->close();
-        expect($metrics->value('murmur_lifecycle_dropped_total'))->toBe(3);
+        expect($metrics->value('murmur_lifecycle_dropped_total'))->toBe(4);
         expect($metrics->value('murmur_lifecycle_sent_total'))->toBe(1);
     } finally {
         await($worker->stop());

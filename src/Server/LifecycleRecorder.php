@@ -49,11 +49,11 @@ class LifecycleRecorder
     }
 
     /**
-     * Determine whether records are waiting to be sent.
+     * Determine whether at least the given number of records are waiting.
      */
-    public function pending(): bool
+    public function pending(int $minimum = 1): bool
     {
-        return $this->records !== null && ! $this->records->isEmpty();
+        return ($this->records?->count() ?? 0) >= $minimum;
     }
 
     /**

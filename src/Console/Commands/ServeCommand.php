@@ -115,7 +115,7 @@ class ServeCommand extends Command
             $manager->callServingCallbacks($server, $loop);
 
             $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];
-            $shutdown = function () use ($server, $worker, $loop, &$shuttingDown): void {
+            $shutdown = function () use ($server, $worker, $config, $loop, &$shuttingDown): void {
                 if ($shuttingDown) {
                     return;
                 }
@@ -128,7 +128,7 @@ class ServeCommand extends Command
                 }
 
                 $drained = new Deferred;
-                $stopped = $worker->stop($drained->promise());
+                $stopped = $worker->stop($drained->promise(), $config->shutdownGraceSeconds);
                 $server->shutdown()->then($drained->resolve(...));
 
                 all([$stopped, $drained->promise()])->then($loop->stop(...));

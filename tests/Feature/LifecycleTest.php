@@ -171,13 +171,14 @@ it('rejects invalid lifecycle settings before binding the port', function (array
     [['murmur.metrics.node' => "invalid\n"], 'valid worker node name'],
 ]);
 
-it('sends a final batch for all connections closed together on shutdown', function () {
+it('sends every final batch for connections closed together on shutdown', function () {
     $port = ServerHarness::availablePort();
     $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-');
     $process = workerServingProcess($port, [
         'MURMUR_METRICS_STORE' => '',
         'MURMUR_LIFECYCLE_EVENTS' => 'true',
         'MURMUR_LIFECYCLE_INTERVAL' => '60',
+        'MURMUR_LIFECYCLE_BATCH' => '2',
         'MURMUR_TEST_LIFECYCLE_FILE' => $file,
         'MURMUR_SHUTDOWN_SPREAD' => '0',
     ]);
@@ -271,3 +272,52 @@ it('forwards listener output to server stderr without consuming acknowledgement 
         unlink($file);
     }
 });
+
+it('flushes every shutdown close with the default spread or counts undelivered records at the deadline', function (int $count, string $mode) {
+    $port = ServerHarness::availablePort();
+    $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-');
+    $process = workerServingProcess($port, [
+        'MURMUR_METRICS_STORE' => '',
+        'MURMUR_LIFECYCLE_EVENTS' => 'true',
+        'MURMUR_TEST_LIFECYCLE_FILE' => $file,
+        'MURMUR_TEST_LIFECYCLE_MODE' => $mode,
+    ]);
+
+    try {
+        $process->start();
+        waitForMetricsCondition(fn () => str_contains($process->getOutput(), 'Murmur is listening'), $process);
+
+        $ids = array_map(fn (int $i) => sprintf('%032x', $i), range(1, $count));
+        foreach ($ids as $id) {
+            SseReader::open("http://127.0.0.1:{$port}/sse?topics=news&connection={$id}")->start();
+        }
+
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'opened')) === $count, $process);
+        $start = hrtime(true);
+        $process->signal(SIGTERM);
+        waitForMetricsCondition(fn () => ! $process->isRunning());
+        $elapsed = (hrtime(true) - $start) / 1_000_000_000;
+
+        expect($process->getExitCode())->toBe(0, $process->getErrorOutput())
+            ->and($elapsed)->toBeLessThan(5.4);
+
+        $closed = metricsTrace($file, 'closed');
+        if ($mode === 'slow-shutdown') {
+            expect($elapsed)->toBeGreaterThanOrEqual(5.0)
+                ->and($closed)->toBe([])
+                ->and(metricsTrace($file, 'waiting'))->toHaveCount(1)
+                ->and(metricsTrace($file, 'shutdown')[0]->dropped)->toBe($count);
+        } else {
+            expect(array_column($closed, 'connectionId'))->toBe($ids)
+                ->and(array_unique(array_column($closed, 'reason')))->toBe(['shutdown']);
+        }
+    } finally {
+        $process->stop(2);
+        unlink($file);
+    }
+})->with([
+    '10 healthy streams' => [10, ''],
+    '50 healthy streams' => [50, ''],
+    '500 healthy streams' => [500, ''],
+    '150 streams with a blocked listener' => [150, 'slow-shutdown'],
+])->skip(! extension_loaded('pcntl'), 'Signal-driven shutdown requires ext-pcntl.');

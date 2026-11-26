@@ -380,7 +380,7 @@ Murmur starts one Artisan worker before the server opens sockets when either met
 
 When a store write fails, the worker reports the exception through Laravel's exception handler and sends an error acknowledgement. The worker forwards standard output and standard error from stores and listeners to the server's standard error. It sends acknowledgements on a dedicated pipe. If the worker exits during serving, Murmur reports its exit code or signal once and stops both features until the server restarts. The server keeps accepting connections.
 
-On graceful shutdown, the server stops scheduling snapshots and lets the worker finish a pending write. The server sends SIGTERM after one second if the worker is still running and escalates to SIGKILL 200 ms later. Readers ignore snapshots when their age reaches the TTL. Use a TTL greater than the interval and keep the server and application clocks synchronized.
+On graceful shutdown, the server stops scheduling snapshots and lets the worker finish a pending write. With metrics persistence alone, the server sends SIGTERM after one second if the worker is still running. With lifecycle events enabled, the worker has until `server.shutdown_grace` from the start of shutdown. Murmur escalates to SIGKILL 200 ms after SIGTERM if the worker is still running. Readers ignore snapshots when their age reaches the TTL. Use a TTL greater than the interval and keep the server and application clocks synchronized.
 
 The worker requires Linux or macOS, `proc_open()`, a POSIX `sh`, an Artisan entry point that resolves to an absolute path, and PHP built without `--enable-sigchild`. It runs the server's PHP binary with its default configuration. `murmur:serve` exits with a one-line error when startup preflight fails. With `pcntl` and `posix`, the worker checks for parent death while processing messages when PHP can dispatch signals. Without both extensions, an orphaned worker exits on end-of-input once its current operation returns.
 
@@ -419,7 +419,7 @@ php artisan murmur:forget-metrics
 | `murmur_gaps_total` | counter | — | Murmur gap frames written to connections. |
 | `murmur_publish_requests_total` | counter | `status` | HTTP publish responses by status. |
 | `murmur_event_loop_lag_exceeded_total` | counter | — | Lag measurements, taken every 100 ms, above `server.loop_lag_threshold_ms`. |
-| `murmur_lifecycle_dropped_total` | counter | — | Lifecycle records discarded before handoff to the worker, including on overflow or worker loss. |
+| `murmur_lifecycle_dropped_total` | counter | — | Lifecycle records discarded or left unacknowledged when the worker stops. |
 | `murmur_lifecycle_sent_total` | counter | — | Lifecycle records handed to the worker. |
 | `murmur_errors_total` | counter | — | Errors reported, including rate-limited reports. |
 | `murmur_connections` | gauge | — | Open SSE connections. |
@@ -467,9 +467,9 @@ class RecordConnectionOpened implements ShouldQueue
 
 Murmur attempts delivery in the server's recorded order and hands each batch to the worker at most once. Batches are capped by both `lifecycle.batch` and the worker's 1 MiB input limit. If a listener throws, the worker continues with the next event. It reports the first exception in each failed batch through Laravel's exception handler and writes one summary with the count of failed events. The listener's queue applies its own execution order and retry policy.
 
-Use the events for best-effort notifications and a durable audit log for auditing. Buffer overflow drops the oldest records, and worker death and shutdown can also lose events. On shutdown the server sends a final batch if the worker can accept it within the existing shutdown budget.
+Use the events for best-effort notifications and a durable audit log for auditing. Buffer overflow drops the oldest records, and worker death and shutdown can also lose events. On shutdown the server keeps sending batches while streams drain, then flushes the remaining queue as each acknowledgement arrives. When the queue is empty, it closes the worker's input. The server counts queued and unacknowledged records as dropped if the worker reaches `server.shutdown_grace` or exits unexpectedly.
 
-Lifecycle events use the same [worker and platform requirements as metrics persistence](#store-snapshots-for-laravel) and work with or without a metrics store. The worker accepts one batch or snapshot at a time. A slow store delays lifecycle batches, which accumulate until the buffer fills. A slow listener delays both later batches and metrics snapshots. The SSE server continues serving while the worker is busy.
+Lifecycle events use the same [worker and platform requirements as metrics persistence](#store-snapshots-for-laravel) and work with or without a metrics store. The worker accepts one batch or snapshot at a time. Full batches can follow each acknowledgement, alternating with due snapshots when both are ready. Smaller batches normally wait for the next lifecycle interval. Throughput depends on how quickly the worker acknowledges each message, and the queue stays bounded by `lifecycle.buffer`. A slow store delays lifecycle batches, which accumulate until the buffer fills. A slow listener delays both later batches and metrics snapshots. The SSE server continues serving while the worker is busy.
 
 ## Logging
 
