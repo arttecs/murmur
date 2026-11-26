@@ -6,6 +6,7 @@ use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Server\Http\PublishHandler;
 use Arttecs\Murmur\Server\Http\SseHandler;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
+use Arttecs\Murmur\Server\Sse\Frame;
 use Closure;
 use LogicException;
 use Psr\Http\Message\ResponseInterface;
@@ -110,6 +111,13 @@ class Server
     protected ?TimerInterface $shutdownDeadline = null;
 
     /**
+     * The timers for ending individual streams during shutdown.
+     *
+     * @var array<int, TimerInterface>
+     */
+    protected array $streamEndTimers = [];
+
+    /**
      * The error counter installed on the reporter while listening.
      *
      * @var Closure(): void|null
@@ -195,6 +203,7 @@ class Server
                 $response = match ($route) {
                     'POST /publish' => $publish === null ? new Response(404) : $publish($request),
                     'GET /sse' => $this->shutdown === null ? $sse($request, $client) : new Response(503),
+                    'GET /ready' => $this->readinessResponse(),
                     'GET /health' => new Response(200, ['Content-Type' => 'application/json'], json_encode([
                         'status' => 'ok',
                         'connections' => $this->hub->connectionCount(),
@@ -318,6 +327,19 @@ class Server
     }
 
     /**
+     * Report whether this server can accept subscriptions and deliver live events.
+     */
+    protected function readinessResponse(): ResponseInterface
+    {
+        $ready = $this->socket !== null && $this->shutdown === null && $this->log->healthy();
+
+        return new Response($ready ? 200 : 503, [
+            'Content-Type' => 'application/json',
+            'Cache-Control' => 'no-store',
+        ], $ready ? '{"status":"ready"}' : '{"status":"unavailable"}');
+    }
+
+    /**
      * Report a route failure and respond with an internal server error.
      */
     protected function errorResponse(Throwable $error): ResponseInterface
@@ -408,10 +430,54 @@ class Server
             $this->close();
         } else {
             $this->shutdownDeadline = $this->loop->addTimer($graceSeconds ?? $this->config->shutdownGraceSeconds, $this->close(...));
-            $this->hub->endAll();
+            $this->drainStreams();
         }
 
         return $this->shutdown->promise();
+    }
+
+    /**
+     * Schedule stream endings at equal intervals in connection order.
+     */
+    protected function drainStreams(): void
+    {
+        $connections = $this->hub->connections();
+        $step = $this->config->shutdownSpreadSeconds / max(1, count($connections) - 1);
+
+        foreach ($connections as $index => $connection) {
+            if ($index === 0 || $step === 0.0) {
+                $this->endStream($connection);
+
+                continue;
+            }
+
+            if (! $this->closed && ! $connection->isClosed()) {
+                $this->streamEndTimers[$index] = $this->loop->addTimer($step * $index, function () use ($index, $connection): void {
+                    unset($this->streamEndTimers[$index]);
+                    $this->endStream($connection);
+                });
+            }
+        }
+    }
+
+    /**
+     * Suggest a reconnect delay and flush the stream.
+     */
+    protected function endStream(Connection $connection): void
+    {
+        if (! $connection->isClosed()) {
+            $min = $this->config->retryMs;
+            $max = $min + min($min, PHP_INT_MAX - $min);
+            $connection->end(Frame::retry($this->randomRetryMs($min, $max)));
+        }
+    }
+
+    /**
+     * Pick a uniform reconnect delay in milliseconds.
+     */
+    protected function randomRetryMs(int $min, int $max): int
+    {
+        return mt_rand($min, $max);
     }
 
     /**
@@ -446,6 +512,12 @@ class Server
             $this->loop->cancelTimer($this->shutdownDeadline);
             $this->shutdownDeadline = null;
         }
+
+        foreach ($this->streamEndTimers as $timer) {
+            $this->loop->cancelTimer($timer);
+        }
+
+        $this->streamEndTimers = [];
 
         try {
             $this->log->close();

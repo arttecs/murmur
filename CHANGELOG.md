@@ -22,4 +22,4 @@
 
 ### Changed
 
-- `Contracts\EventLog` gained `onGap()` and `ready()` during pre-release development. Custom event logs must implement both methods.
+- `Contracts\EventLog` gained `onGap()`, `ready()`, and `healthy()` during pre-release development. Custom event logs must implement all three methods.

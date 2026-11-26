@@ -287,6 +287,14 @@ class RedisEventLog implements EventLog
     }
 
     /**
+     * Report whether the live reader has started and is outside a recovery cycle.
+     */
+    public function healthy(): bool
+    {
+        return ! $this->closed && $this->cursor !== null && ! $this->readerDisconnected;
+    }
+
+    /**
      * Stop reading and close both Redis connections.
      */
     public function close(): void

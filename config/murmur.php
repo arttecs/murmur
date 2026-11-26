@@ -62,6 +62,8 @@ return [
         'loop_lag_threshold_ms' => (int) env('MURMUR_LOOP_LAG_THRESHOLD_MS', 100),
         /** Seconds to drain connections on shutdown before closing the remaining sockets. */
         'shutdown_grace' => (float) env('MURMUR_SHUTDOWN_GRACE', 5.0),
+        /** Seconds over which to end open streams. Set to 0 to end them together. */
+        'shutdown_spread' => (float) env('MURMUR_SHUTDOWN_SPREAD', 2.0),
         /**
          * Laravel channel for server errors and lifecycle messages. The
          * server writes from inside the event loop. Choose a fast local

@@ -104,10 +104,14 @@ class Connection
     }
 
     /**
-     * End the stream and let buffered output flush.
+     * End the stream, optionally writing a final frame before flushing.
      */
-    public function end(): void
+    public function end(?string $frame = null): void
     {
+        if ($frame !== null) {
+            $this->writeFrame($frame);
+        }
+
         $this->stream->end();
     }
 

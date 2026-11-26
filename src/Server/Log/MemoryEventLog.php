@@ -10,8 +10,10 @@ use Arttecs\Murmur\Server\EventIdGenerator;
 use Arttecs\Murmur\Server\Replay;
 use InvalidArgumentException;
 use React\Promise\PromiseInterface;
+use RuntimeException;
 use Throwable;
 
+use function React\Promise\reject;
 use function React\Promise\resolve;
 
 /**
@@ -54,6 +56,11 @@ class MemoryEventLog implements EventLog
      * @var list<callable(): void>
      */
     protected array $gapListeners = [];
+
+    /**
+     * Indicates whether live delivery has been closed.
+     */
+    protected bool $closed = false;
 
     /**
      * Create a new in-memory event log.
@@ -130,7 +137,9 @@ class MemoryEventLog implements EventLog
      */
     public function subscribe(callable $listener): void
     {
-        $this->listeners[] = $listener;
+        if (! $this->closed) {
+            $this->listeners[] = $listener;
+        }
     }
 
     /**
@@ -140,7 +149,9 @@ class MemoryEventLog implements EventLog
      */
     public function onGap(callable $listener): void
     {
-        $this->gapListeners[] = $listener;
+        if (! $this->closed) {
+            $this->gapListeners[] = $listener;
+        }
     }
 
     /**
@@ -150,14 +161,23 @@ class MemoryEventLog implements EventLog
      */
     public function ready(): PromiseInterface
     {
-        return resolve(null);
+        return $this->closed ? reject(new RuntimeException('The in-memory event log is closed.')) : resolve(null);
     }
 
     /**
-     * Drop all registered listeners.
+     * Report whether the log is open for live delivery.
+     */
+    public function healthy(): bool
+    {
+        return ! $this->closed;
+    }
+
+    /**
+     * Stop delivering live events and drop all registered listeners.
      */
     public function close(): void
     {
+        $this->closed = true;
         $this->listeners = [];
         $this->gapListeners = [];
     }

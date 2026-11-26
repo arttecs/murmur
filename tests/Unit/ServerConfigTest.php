@@ -24,4 +24,9 @@ it('rejects an invalid server setting and names it in the error', function (stri
     ['signatureToleranceSeconds', 0],
     ['shutdownGraceSeconds', 0.0],
     ['shutdownGraceSeconds', INF],
+    ['shutdownSpreadSeconds', -0.1],
+    ['shutdownSpreadSeconds', 5.0],
+    ['shutdownSpreadSeconds', 6.0],
+    ['shutdownSpreadSeconds', NAN],
+    ['shutdownSpreadSeconds', INF],
 ]);

@@ -95,7 +95,7 @@ it('finishes a signed publish already in flight when shutdown starts', function 
 });
 
 it('flushes sse output and closes unfinished sockets when the shutdown grace ends', function (?float $graceSeconds) {
-    $h = ServerHarness::start(['shutdownGraceSeconds' => 0.15]);
+    $h = ServerHarness::start(['shutdownGraceSeconds' => 0.15, 'shutdownSpreadSeconds' => 0.0]);
     $sse = $h->connect();
     $idle = $h->connect();
     $retry = new Deferred;

@@ -86,6 +86,14 @@ class SlowReplayLog implements EventLog
     }
 
     /**
+     * Report the health of the underlying event log.
+     */
+    public function healthy(): bool
+    {
+        return $this->log->healthy();
+    }
+
+    /**
      * Close the underlying event log.
      */
     public function close(): void

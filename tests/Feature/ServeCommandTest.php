@@ -34,6 +34,7 @@ it('maps laravel config and options onto the server config', function () {
         'murmur.server.max_replay_events' => 15,
         'murmur.server.signature_tolerance' => 30,
         'murmur.server.shutdown_grace' => 0.5,
+        'murmur.server.shutdown_spread' => 0.2,
         'murmur.server.loop_lag_threshold_ms' => 25,
     ]);
     $command = app(ServeCommand::class);
@@ -50,6 +51,7 @@ it('maps laravel config and options onto the server config', function () {
     expect($config->signatureToleranceSeconds)->toBe(30);
     expect($config->loopLagThresholdMs)->toBe(25);
     expect($config->shutdownGraceSeconds)->toBe(0.5);
+    expect($config->shutdownSpreadSeconds)->toBe(0.2);
     expect($config->allowedOrigins)->toBe(['https://app.test']);
     expect($config->secret)->toBe('test-secret-with-at-least-32-bytes');
 });

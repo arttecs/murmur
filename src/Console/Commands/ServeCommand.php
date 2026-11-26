@@ -214,6 +214,7 @@ class ServeCommand extends Command
             maxReplayEvents: (int) config('murmur.server.max_replay_events'),
             shutdownGraceSeconds: (float) config('murmur.server.shutdown_grace'),
             loopLagThresholdMs: (int) config('murmur.server.loop_lag_threshold_ms'),
+            shutdownSpreadSeconds: (float) config('murmur.server.shutdown_spread'),
         );
     }
 

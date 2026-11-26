@@ -36,6 +36,7 @@ readonly class ServerConfig
         public int $maxReplayEvents = 1000,
         public float $shutdownGraceSeconds = 5.0,
         public int $loopLagThresholdMs = 100,
+        public float $shutdownSpreadSeconds = 2.0,
     ) {
         Secret::assertValid($secret);
 
@@ -60,6 +61,10 @@ readonly class ServerConfig
             if ($value <= 0 || ! is_finite((float) $value)) {
                 throw new InvalidArgumentException("The {$setting} setting must be positive and finite.");
             }
+        }
+
+        if (! is_finite($shutdownSpreadSeconds) || $shutdownSpreadSeconds < 0 || $shutdownSpreadSeconds >= $shutdownGraceSeconds) {
+            throw new InvalidArgumentException('The shutdownSpreadSeconds setting must be non-negative and less than shutdownGraceSeconds.');
         }
 
         if ($maxSockets < $maxConnections) {

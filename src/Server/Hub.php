@@ -160,13 +160,13 @@ class Hub
     }
 
     /**
-     * End every attached stream so its output can flush.
+     * Snapshot the connections in attachment order.
+     *
+     * @return list<Connection>
      */
-    public function endAll(): void
+    public function connections(): array
     {
-        foreach (iterator_to_array($this->connections, false) as $connection) {
-            $connection->end();
-        }
+        return iterator_to_array($this->connections, false);
     }
 
     /**

@@ -42,6 +42,11 @@ interface EventLog
     public function ready(): PromiseInterface;
 
     /**
+     * Report whether the log can currently deliver live events without performing I/O.
+     */
+    public function healthy(): bool;
+
+    /**
      * Close the event log.
      */
     public function close(): void;
