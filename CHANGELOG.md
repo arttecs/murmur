@@ -19,7 +19,14 @@
 - JavaScript client options for retry delays, jitter, token refresh margin, and stream failure limits, with per-stream overrides.
 - JavaScript client authorization headers, credentials mode, custom authorizers, and credentialed SSE connections.
 - JavaScript client statistics through `stats()`.
+- Event loop lag metrics and rate-limited warnings, plus a startup notice and socket-limit check for `stream_select`.
+- `GET /ready` for live event log readiness and staggered graceful shutdown with SSE reconnect hints.
+- `murmur:install` to publish configuration and set the application's environment values for Murmur.
+- Protocol 1 documentation and the `X-Murmur-Protocol` response header on subscriptions and probes.
+- `Murmur::fake()` and PHPUnit conformance suites for event logs and metrics stores.
+- Guides for migrating from Reverb, writing drivers, testing applications, and operating Murmur.
 
 ### Changed
 
 - `Contracts\EventLog` gained `onGap()`, `ready()`, and `healthy()` during pre-release development. Custom event logs must implement all three methods.
+- Murmur supplies the Laravel broadcast connection by default and marks classes outside the supported PHP surface as internal.

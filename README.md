@@ -8,14 +8,12 @@ Murmur requires PHP 8.3 or later and Laravel 12 or 13.
 
 ```sh
 composer require arttecs/murmur
-php artisan vendor:publish --tag=murmur-config
+php artisan murmur:install
 ```
 
-Generate a shared secret of at least 32 bytes and set `MURMUR_SECRET` in your Laravel `.env` file. Laravel and the SSE server use the same secret to sign and verify subscription tokens and HTTP publish requests.
+The installer publishes `config/murmur.php`, fills in a missing or blank `MURMUR_SECRET` in `.env`, and sets `BROADCAST_CONNECTION=murmur`. If another broadcaster is configured, the installer asks before changing it. In non-interactive mode it keeps the existing broadcaster unless you pass `--force`. That flag also allows replacing the published configuration.
 
-```sh
-php -r "echo bin2hex(random_bytes(32));"
-```
+Laravel and every Murmur server must share the same signing secret of at least 32 bytes. The installer generates a 64-character hexadecimal secret and stores it in `.env`. It adds a blank secret placeholder to an existing `.env.example` when needed.
 
 Start the server from your Laravel application directory.
 
@@ -37,13 +35,7 @@ curl -N 'http://127.0.0.1:8080/sse?topics=news'
 
 ## Laravel broadcasting
 
-If your application does not have a `config/broadcasting.php` file yet, publish it with `php artisan config:publish broadcasting`. Then add a `murmur` entry to its `connections` array.
-
-```php
-'murmur' => [
-    'driver' => 'murmur',
-],
-```
+Murmur registers the `murmur` broadcast connection when the application has no entry for it. You can set an application-specific entry in `config/broadcasting.php`.
 
 Make Murmur your application's default broadcast connection in `.env`. This is required: Laravel registers the callbacks from `routes/channels.php` on the default connection, so `POST /murmur/auth` can only authorize channels when that connection is `murmur`.
 
@@ -77,6 +69,49 @@ Use a distinct topic for each stream run. Reusing a topic can replay the previou
 
 Use `@arttecs/murmur` to subscribe to channels and consume streams in the browser. See the [JavaScript client README](js/README.md) for installation and usage.
 
+## Migrating from Laravel Reverb
+
+Keep your Laravel broadcast events, `routes/channels.php` authorization callbacks, and `Channel` and `PrivateChannel` classes. Set `BROADCAST_CONNECTION=murmur` and start `php artisan murmur:serve`. The app and server use one `MURMUR_SECRET` in place of the Reverb app ID, key, and secret.
+
+Replace the Pusher-compatible browser transport with `@arttecs/murmur`. If your frontend uses Laravel Echo, use the [Murmur Echo connector](js/README.md#laravel-echo). Private subscriptions exchange channel access for an SSE token through `/murmur/auth` by default.
+
+| Setting | Reverb | Murmur |
+| --- | --- | --- |
+| Default broadcast connection | `BROADCAST_CONNECTION=reverb` | `BROADCAST_CONNECTION=murmur` |
+| Server bind address and port | `REVERB_SERVER_HOST`, `REVERB_SERVER_PORT` | `server.host` and `server.port` via `MURMUR_HOST` and `MURMUR_PORT` |
+| URL Laravel uses to publish | `REVERB_SCHEME`, `REVERB_HOST`, `REVERB_PORT` | `publish_url` via `MURMUR_PUBLISH_URL` in HTTP mode |
+| Address the browser connects to | `VITE_REVERB_SCHEME`, `VITE_REVERB_HOST`, `VITE_REVERB_PORT` in the usual Echo setup | `public_url` via `MURMUR_PUBLIC_URL` for stream URLs. Use the same public base URL in the browser configuration. |
+| Browser origin allowlist | App-level `allowed_origins` in `config/reverb.php` | `server.allowed_origins` via `MURMUR_ALLOWED_ORIGINS`. Enter complete origins, including the scheme and any non-default port. |
+| Open client connection cap | `REVERB_APP_MAX_CONNECTIONS` | `server.max_connections` via `MURMUR_MAX_CONNECTIONS` |
+| Multi-node event delivery | `REVERB_SCALING_ENABLED=true` and Redis connection settings | `MURMUR_DRIVER=redis`, `MURMUR_REDIS_URL`, and `MURMUR_REDIS_CONNECTION` |
+
+See the [Reverb configuration reference](https://github.com/laravel/docs/blob/13.x/reverb.md) and [default Reverb settings](https://github.com/laravel/reverb/blob/main/config/reverb.php).
+
+Presence channels, client events (whispers), `toOthers()` socket exclusion, multiple apps, and a Pusher-compatible HTTP API are unsupported in this version.
+
+### Client events (whispers)
+
+Murmur does not support whispers. Send the action to your Laravel application over HTTP, authorize it there, and broadcast the resulting event to the appropriate topic.
+
+## Testing
+
+Call `Murmur::fake()` before exercising Laravel code that publishes events. The fake records direct publishes, streams, and broadcasts through the `murmur` connection in memory. The server can stay stopped.
+
+```php
+use Arttecs\Murmur\Facades\Murmur;
+use Arttecs\Murmur\Server\Event;
+
+$fake = Murmur::fake();
+
+Murmur::publish('news', 'updated', ['id' => 42]);
+
+$fake->assertPublished('news', 'updated', fn (Event $event): bool => $event->data['id'] === 42);
+$fake->assertPublishedTimes('news', 'updated', 1);
+$fake->assertNotPublished('news', 'removed');
+```
+
+Use `assertNothingPublished()` when no events should be sent. `published()` returns the recorded `Event` objects in publication order. If you omit the event name from `assertPublished()` or `assertNotPublished()`, the assertion considers every event on the topic. The fake can issue private subscription tokens using a fixed test secret when the application has no configured secret.
+
 ## Configuration
 
 Edit `config/murmur.php` after publishing it. The environment variables shown below map to the corresponding configuration keys.
@@ -99,7 +134,9 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `server.max_buffer_bytes` | `MURMUR_MAX_BUFFER_BYTES` | `1048576` | Maximum buffered bytes per SSE connection. Lower this to shed slow subscribers earlier. |
 | `server.allowed_origins` | `MURMUR_ALLOWED_ORIGINS` | `["*"]` | Comma-separated browser origins allowed for SSE. Replace * to restrict cross-origin reads. |
 | `server.signature_tolerance` | `MURMUR_SIGNATURE_TOLERANCE` | `60` | Allowed difference in seconds between the server clock and an HTTP publish timestamp. |
+| `server.loop_lag_threshold_ms` | `MURMUR_LOOP_LAG_THRESHOLD_MS` | `100` | Warn when the event loop timer fires more than this many milliseconds late. Must be positive. |
 | `server.shutdown_grace` | `MURMUR_SHUTDOWN_GRACE` | `5.0` | Seconds to drain connections on shutdown before closing the remaining sockets. |
+| `server.shutdown_spread` | `MURMUR_SHUTDOWN_SPREAD` | `2.0` | Seconds over which to end open streams on shutdown. Set to zero to end them together. Must be less than the shutdown grace period. |
 | `server.log_channel` | `MURMUR_LOG_CHANNEL` | `null` | Laravel channel for server errors and lifecycle messages. The server writes from inside the event loop. Choose a fast local channel such as stderr, a file, or syslog that makes no network requests. |
 | `public_url` | `MURMUR_PUBLIC_URL` | `http://127.0.0.1:8080` | Base URL for browser subscriptions. Set it to the public proxy or load balancer URL when browsers reach the server through an intermediary. |
 | `publish_url` | `MURMUR_PUBLISH_URL` | `http://127.0.0.1:8080` | Base URL Laravel uses for HTTP publishing. Set it to the address reachable from the Laravel application. |
@@ -132,41 +169,71 @@ Write `MURMUR_ALLOWED_ORIGINS` and `MURMUR_AUTH_MIDDLEWARE` as comma-separated l
 
 A subscriber receives `murmur.gap` in place of a replay if the requested history exceeds `server.max_replay_events` matching events or if the encoded replay frames exceed half of `server.max_buffer_bytes`. The connection continues delivering live events.
 
-## Custom drivers
+## Writing a driver
 
-Register a publisher factory and an event log factory with `Murmur::extend()` in a Laravel service provider's `boot()` method. This example uses the HTTP publisher and a 5,000-event in-memory log under the name `local`. Set `MURMUR_DRIVER=local` to use it.
+Implement `Contracts\Publisher` and `Contracts\EventLog` for an event transport. Implement `Contracts\MetricsStore` to store per-node snapshots. Register the implementations in a Laravel service provider's `boot()` method.
 
 ```php
+use App\Murmur\ExampleEventLog;
+use App\Murmur\ExampleMetricsStore;
+use App\Murmur\ExamplePublisher;
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Contracts\MetricsStore;
 use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Facades\Murmur;
-use Arttecs\Murmur\Publishers\HttpPublisher;
-use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Illuminate\Contracts\Foundation\Application;
-use Illuminate\Http\Client\Factory;
 
 Murmur::extend(
-    'local',
-    fn (Application $app): Publisher => new HttpPublisher(
-        $app->make(Factory::class),
-        config('murmur.publish_url'),
-        config('murmur.secret'),
-        config('murmur.http.timeout'),
-        config('murmur.http.connect_timeout'),
-    ),
-    fn (Application $app): EventLog => new MemoryEventLog(5000),
+    'example',
+    fn (Application $app): Publisher => $app->make(ExamplePublisher::class),
+    fn (Application $app): EventLog => $app->make(ExampleEventLog::class),
 );
+
+Murmur::extendMetrics('reports', fn (Application $app): MetricsStore => $app->make(ExampleMetricsStore::class));
 ```
 
-Each factory receives the Laravel application. Laravel calls the publisher factory to publish events, and `murmur:serve` calls the event log factory to serve live events and replay. Provide your own implementations of `Contracts\Publisher` and `Contracts\EventLog` to use a different transport. The server exposes `POST /publish` for custom drivers whose log is a `MemoryEventLog`. Driver names may contain lowercase ASCII letters, digits, underscores, and hyphens. Murmur reserves `http` and `redis`.
+Set `MURMUR_DRIVER=example` and, independently, `MURMUR_METRICS_STORE=reports` to use those implementations. Names may contain lowercase ASCII letters, digits, underscores, and hyphens. The built-in event driver names are `http` and `redis`. The built-in metrics store names are `database`, `redis`, and `cache`.
+
+Laravel calls the `Publisher` to send events. `murmur:serve` uses the `EventLog` for live delivery and replay. Event log methods and callbacks run in the server's event loop and must never block. Return ReactPHP promises from `since()` and `ready()` and keep `healthy()` a cheap synchronous check. Metrics store writes run in the separate Artisan writer. A store's `put()` replaces one node's snapshot, `all()` returns snapshots keyed by node, and `forget()` removes a node.
+
+Run the packaged PHPUnit suites against your implementations. Extend `Testing\EventLogConformanceTestCase` and provide a new empty log with the supplied loop and a writer that appends into that log's backend. The fixture must trim to the requested capacity and return the assigned `EventId` directly or through a promise.
+
+```php
+use App\Tests\Support\EventLogFixture;
+use Arttecs\Murmur\Testing\EventLogConformanceTestCase;
+use React\EventLoop\LoopInterface;
+
+class ExampleEventLogTest extends EventLogConformanceTestCase
+{
+    protected function createEventLog(int $capacity, LoopInterface $loop): array
+    {
+        $fixture = new EventLogFixture($capacity, $loop);
+
+        return [$fixture->log(), $fixture->append(...)];
+    }
+}
+```
+
+For a metrics store, extend `Testing\MetricsStoreConformanceTestCase` and implement `createMetricsStore(): MetricsStore` to return an empty, isolated store for each test. Both suites use plain PHPUnit.
 
 ## Deployment
 
 Run Murmur behind a reverse proxy. Keep `POST /publish` on a trusted network. A signed request is replayable within the default 60-second timestamp tolerance.
 
-ReactPHP's default event loop uses `stream_select()` and supports about 1024 file descriptors. The defaults cap SSE connections at 900 and accepted sockets at 1000 to leave room for other descriptors. To scale beyond the default loop's limit, use `ext-uv`, `ext-ev`, or `ext-event` and raise `ulimit -n` before increasing the connection and socket limits.
+Without `ext-uv`, `ext-ev`, or `ext-event`, ReactPHP uses `stream_select()` and is limited to about 1000 sockets. `murmur:serve` prints a startup notice for this backend and refuses to start when `server.max_sockets` exceeds 1000. The defaults cap SSE connections at 900 and accepted sockets at 1000. To scale further, install one of the extensions and raise `ulimit -n` before increasing the connection and socket limits.
 
-`GET /health` returns HTTP 200 with a JSON object containing `"status":"ok"` and `connections`, the current number of SSE subscriptions.
+Use `GET /health` for liveness. It returns HTTP 200 with `"status":"ok"` and the current number of SSE subscriptions in `connections`. Use `GET /ready` to decide where to route new subscriptions. It returns HTTP 200 with `{"status":"ready"}` while the listener and live log are ready, and 503 with `{"status":"unavailable"}` when the live log is unavailable or the server is draining. A Redis-backed server starts listening after it can resolve its starting cursor.
+
+For Kubernetes, bind to an address reachable from the kubelet, such as `MURMUR_HOST=0.0.0.0`, and configure a readiness probe on the Murmur container.
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+```
+
+With `ext-pcntl` enabled in CLI PHP, `SIGTERM` and `SIGINT` stop new TCP connections and start graceful shutdown. Existing SSE streams finish at evenly spaced intervals across `MURMUR_SHUTDOWN_SPREAD`, 2 seconds by default. Each receives a final SSE `retry:` hint between `MURMUR_RETRY_MS` and twice that value. Set the spread to zero to end streams together. Keep it below `MURMUR_SHUTDOWN_GRACE`, which defaults to 5 seconds and bounds how long remaining sockets can stay open.
 
 ### Nginx
 
@@ -185,7 +252,7 @@ location = /sse {
 
 ### Supervisor
 
-Run `murmur:serve` under Supervisor to start it at boot and restart it after an exit. Adjust the paths and application user for your deployment. With `ext-pcntl` enabled in CLI PHP, Murmur stops accepting connections on `SIGTERM` or `SIGINT` and allows up to 5 seconds by default for open streams to flush and in-flight requests to finish. Set `MURMUR_SHUTDOWN_GRACE` to change the deadline. It closes any remaining sockets before stopping the event loop.
+Run `murmur:serve` under Supervisor to start it at boot and restart it after an exit. Adjust the paths and application user for your deployment.
 
 ```ini
 [program:murmur]
@@ -213,9 +280,17 @@ Configure the Laravel connection named by `MURMUR_REDIS_CONNECTION` to reach the
 
 Run `php artisan murmur:serve` on each node and route `/sse` through a load balancer with response buffering disabled. With the Redis driver, a node starts listening only after it can reach Redis and resolve its starting cursor. It logs one message while waiting for Redis. A node listens on `127.0.0.1` by default, so set `MURMUR_HOST` to an address the load balancer can reach. Set `MURMUR_PUBLIC_URL` to the load balancer's public base URL. Each node reads the same stream, so a reconnect can resume on any node while its cursor is retained. The Redis driver disables the server's `POST /publish` endpoint.
 
-Replay history is one global log shared by all topics. Redis trims it approximately to `murmur.server.log_size` entries. During a Redis outage, each server retries its stream read one second after a failure. Murmur logs when the reader loses its connection and when it recovers. If Redis trimmed events during the outage, Murmur sends a `murmur.gap` event to connected subscribers before it resumes delivering retained events. The check errs towards signalling: a subscriber may receive `murmur.gap` when the only trimmed entries were ones it had already received. Replay queries share one Redis connection and each has a 5 second deadline by default, so a Redis slower than that fails the replays in flight and those subscribers reconnect.
+During a Redis outage, each server retries its stream read one second after a failure. Murmur logs when the reader loses its connection and when it recovers. If Redis trimmed events during the outage, Murmur sends a `murmur.gap` event to connected subscribers before it resumes delivering retained events. The check errs towards signalling: a subscriber may receive `murmur.gap` when the only trimmed entries were ones it had already received. Replay queries share one Redis connection and each has a 5 second deadline by default, so a Redis slower than that fails the replays in flight and those subscribers reconnect.
 
 Synchronize clocks across the Laravel application, Murmur nodes, and Redis. `stream_cursor_margin_ms` sets how much skew to allow in stream start cursors.
+
+### Replay storage trade-off
+
+Murmur uses one global Redis stream for all topics. A subscriber can resume with one cursor, event IDs have a total order, and each Murmur node needs one live reader regardless of how many topics it serves. Replay queries scan entries for other topics while looking for matches. Redis trims the stream approximately to `murmur.server.log_size` entries across all topics, so a noisy topic shortens the history available to every topic. Account for aggregate publish volume when choosing a log size, especially when clients reconnect after long interruptions or subscribe to quiet topics on a busy stream.
+
+### Redis Sentinel and Cluster
+
+The server's `clue/redis-react` client connects to one endpoint. It supports `redis://` over TCP, `rediss://` over TLS, and `redis+unix://` for a Unix socket. It supports password-only `AUTH` and database selection through the URI. Redis ACL usernames, Sentinel discovery, and Cluster slot routing and redirects are unsupported by this client. For failover, give Murmur a stable endpoint or proxy that routes to the writable primary and supports blocking stream reads. Configure Laravel's publishing connection to reach the same Redis database. [Client documentation](https://github.com/clue/reactphp-redis/blob/v2.8.0/README.md), [connection source](https://github.com/clue/reactphp-redis/blob/v2.8.0/src/Factory.php), [Redis reply handling](https://github.com/clue/reactphp-redis/blob/v2.8.0/src/StreamingClient.php).
 
 ## Metrics
 
@@ -228,6 +303,7 @@ Each server process collects metrics in memory. Storing snapshots is off by defa
 - `snapshot()` returns a list of samples, each with `name`, `type`, `help`, `labels`, and `value`.
 - `value($name, $labels = [])` returns one series, or `null` when it has no sample yet.
 - `toPrometheus()` returns the snapshot in the Prometheus text exposition format (0.0.4).
+- `Metrics::names()` lists the metric names supplied by the server.
 
 Register a callback with `Murmur::serving()` in a service provider's `boot()` method to receive the server and its event loop before it starts listening.
 
@@ -292,26 +368,6 @@ php artisan murmur:forget-metrics
 
 `murmur:status` shows the snapshot age, open connections, topics, events sent, errors, and memory per node, followed by a totals row. Use `--json` for the snapshots and totals as JSON, and `--node` to limit both to one node. The command exits with status 1 if the store is disabled or no fresh snapshots match. `murmur:forget-metrics` removes the named node or clears all stale snapshots when no name is supplied. Use it to remove stale database rows or Redis hash fields that remain after their snapshots have aged out.
 
-### Register a custom store
-
-Call `Murmur::extendMetrics()` from a Laravel service provider's `boot()` method. The factory receives the application and returns an implementation of `Arttecs\Murmur\Contracts\MetricsStore`. The manager resolves it once per process on demand. This example registers a store backed by Laravel's `redis` cache with its own prefix. Set `MURMUR_METRICS_STORE=reports` to use it.
-
-```php
-use Arttecs\Murmur\Contracts\MetricsStore;
-use Arttecs\Murmur\Facades\Murmur;
-use Arttecs\Murmur\Metrics\CacheMetricsStore;
-use Illuminate\Contracts\Cache\Factory as CacheFactory;
-use Illuminate\Contracts\Foundation\Application;
-
-Murmur::extendMetrics('reports', fn (Application $app): MetricsStore => new CacheMetricsStore(
-    $app->make(CacheFactory::class)->store('redis'),
-    'reports:murmur:',
-    (int) ceil((float) config('murmur.metrics.ttl')),
-));
-```
-
-To use a different backend, implement `put()` to replace one node's snapshot, `all()` to return the snapshots keyed by node, and `forget()` to remove a node. Custom names use lowercase ASCII letters, digits, underscores, or hyphens. Murmur reserves `database`, `redis`, and `cache`.
-
 ### Metric names
 
 | Metric | Type | Labels | Meaning |
@@ -327,6 +383,7 @@ To use a different backend, implement `put()` to replace one node's snapshot, `a
 | `murmur_replayed_events_total` | counter | — | Event frames written from replay. |
 | `murmur_gaps_total` | counter | — | Murmur gap frames written to connections. |
 | `murmur_publish_requests_total` | counter | `status` | HTTP publish responses by status. |
+| `murmur_event_loop_lag_exceeded_total` | counter | — | One-second timer measurements above `server.loop_lag_threshold_ms`. |
 | `murmur_errors_total` | counter | — | Errors reported, including rate-limited reports. |
 | `murmur_connections` | gauge | — | Open SSE connections. |
 | `murmur_sockets` | gauge | — | Accepted TCP sockets currently open. |
@@ -334,12 +391,15 @@ To use a different backend, implement `put()` to replace one node's snapshot, `a
 | `murmur_uptime_seconds` | gauge | — | Seconds since the server started listening. |
 | `murmur_memory_bytes` | gauge | — | Bytes of memory allocated by PHP. |
 | `murmur_memory_peak_bytes` | gauge | — | Peak bytes of memory allocated by PHP. |
+| `murmur_event_loop_lag_seconds` | gauge | — | Most recent event loop timer delay in seconds, or zero before the first measurement. |
 
 ## Logging
 
 Set `MURMUR_LOG_CHANNEL` to a Laravel log channel to receive server delivery errors and informational messages when the server starts listening and when graceful shutdown begins and ends. Choose a fast local channel such as stderr, a file, or syslog because the server writes inside its event loop. Listeners of Laravel's `MessageLogged` event run inside the loop as well, so they must not perform network requests either. `murmur:serve` exits with an error when the channel is not defined in `logging.channels`.
 
 Delivery errors go to PHP's error log by default and fall back to it if the configured logger throws. Murmur rate-limits these messages to one per second and includes the number of suppressed errors in the next message. Redis reader connection transitions use PHP's error log.
+
+When the event loop timer runs late by more than `MURMUR_LOOP_LAG_THRESHOLD_MS`, Murmur warns through the configured log channel or through PHP's error log. Warnings show the delay in milliseconds and are limited to one every ten seconds per server. The breach counter records every measurement above the threshold.
 
 ## Version 1 limits
 
