@@ -83,6 +83,21 @@ class Server
     protected ?TimerInterface $heartbeat = null;
 
     /**
+     * The timer that measures event loop lag.
+     */
+    protected ?TimerInterface $lagTimer = null;
+
+    /**
+     * The most recent event loop lag measurement in seconds.
+     */
+    protected float $loopLag = 0.0;
+
+    /**
+     * The monotonic timestamp of the last loop lag warning.
+     */
+    protected int|float|null $lastLagWarningAt = null;
+
+    /**
      * The pending or completed graceful shutdown.
      *
      * @var Deferred<null>|null
@@ -125,6 +140,7 @@ class Server
         $this->metrics->gauge('murmur_uptime_seconds', 'Seconds since the server started listening.', fn (): float => $this->startedAt === null ? 0.0 : (hrtime(true) - $this->startedAt) / 1_000_000_000);
         $this->metrics->gauge('murmur_memory_bytes', 'Bytes of memory allocated by PHP.', fn (): int => memory_get_usage(true));
         $this->metrics->gauge('murmur_memory_peak_bytes', 'Peak bytes of memory allocated by PHP.', fn (): int => memory_get_peak_usage(true));
+        $this->metrics->gauge('murmur_event_loop_lag_seconds', 'Seconds the last event loop timer tick was late.', fn (): float => $this->loopLag);
     }
 
     /**
@@ -233,7 +249,43 @@ class Server
         }
 
         $this->heartbeat = $this->loop->addPeriodicTimer($this->config->heartbeatSeconds, $this->hub->heartbeat(...));
+        $previousTick = hrtime(true);
+        $this->lagTimer = $this->loop->addPeriodicTimer(1.0, function () use (&$previousTick): void {
+            $now = hrtime(true);
+            $this->loopLag = max(0.0, ($now - $previousTick) / 1_000_000_000 - 1.0);
+            $previousTick = $now;
+
+            if ($this->loopLag * 1000 > $this->config->loopLagThresholdMs) {
+                $this->reportLoopLag($now);
+            }
+        });
         $this->logInfo('Murmur is listening on '.$this->address());
+    }
+
+    /**
+     * Count a lag threshold breach and report it at most once per ten seconds.
+     */
+    protected function reportLoopLag(int|float $now): void
+    {
+        $this->metrics->increment('murmur_event_loop_lag_exceeded_total');
+
+        if ($this->lastLagWarningAt !== null && $now - $this->lastLagWarningAt < 10_000_000_000) {
+            return;
+        }
+
+        $this->lastLagWarningAt = $now;
+        $message = sprintf('Murmur event loop lag exceeded the threshold: %.2F ms.', $this->loopLag * 1000);
+
+        if ($this->logger !== null) {
+            try {
+                $this->logger->warning($message);
+
+                return;
+            } catch (Throwable) {
+            }
+        }
+
+        error_log($message);
     }
 
     /**
@@ -383,6 +435,11 @@ class Server
         if ($this->heartbeat !== null) {
             $this->loop->cancelTimer($this->heartbeat);
             $this->heartbeat = null;
+        }
+
+        if ($this->lagTimer !== null) {
+            $this->loop->cancelTimer($this->lagTimer);
+            $this->lagTimer = null;
         }
 
         if ($this->shutdownDeadline !== null) {

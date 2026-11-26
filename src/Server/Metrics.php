@@ -24,6 +24,7 @@ class Metrics
         'murmur_replayed_events_total' => ['Event frames written from replay.', false],
         'murmur_gaps_total' => ['Murmur gap frames written to connections.', false],
         'murmur_publish_requests_total' => ['HTTP publish responses by status.', true],
+        'murmur_event_loop_lag_exceeded_total' => ['Event loop lag measurements above the warning threshold.', false],
         'murmur_errors_total' => ['Errors reported, including rate-limited reports.', false],
     ];
 
@@ -37,6 +38,7 @@ class Metrics
         'murmur_uptime_seconds',
         'murmur_memory_bytes',
         'murmur_memory_peak_bytes',
+        'murmur_event_loop_lag_seconds',
     ];
 
     /**

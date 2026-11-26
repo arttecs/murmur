@@ -34,6 +34,7 @@ it('maps laravel config and options onto the server config', function () {
         'murmur.server.max_replay_events' => 15,
         'murmur.server.signature_tolerance' => 30,
         'murmur.server.shutdown_grace' => 0.5,
+        'murmur.server.loop_lag_threshold_ms' => 25,
     ]);
     $command = app(ServeCommand::class);
     $command->setLaravel(app());
@@ -47,9 +48,26 @@ it('maps laravel config and options onto the server config', function () {
     expect($config->requestTimeoutSeconds)->toBe(3.5);
     expect($config->maxReplayEvents)->toBe(15);
     expect($config->signatureToleranceSeconds)->toBe(30);
+    expect($config->loopLagThresholdMs)->toBe(25);
     expect($config->shutdownGraceSeconds)->toBe(0.5);
     expect($config->allowedOrigins)->toBe(['https://app.test']);
     expect($config->secret)->toBe('test-secret-with-at-least-32-bytes');
+});
+
+it('refuses to start above the stream select socket limit', function () {
+    $previousLoop = Loop::get();
+    $loop = new StreamSelectLoop;
+    Loop::set($loop);
+    $loop->addTimer(0.0, $loop->stop(...));
+    config(['murmur.server.max_sockets' => 1001]);
+
+    try {
+        $this->artisan('murmur:serve')
+            ->expectsOutputToContain('stream_select')
+            ->assertExitCode(1);
+    } finally {
+        Loop::set($previousLoop);
+    }
 });
 
 it('refuses to start without a secret', function () {
@@ -238,6 +256,7 @@ it('writes server lifecycle messages to the configured laravel log channel', fun
 
     try {
         $this->artisan('murmur:serve', ['--port' => $port])
+            ->expectsOutputToContain('ext-uv, ext-ev or ext-event')
             ->expectsOutput("Murmur is listening on http://127.0.0.1:{$port}")
             ->assertSuccessful();
 

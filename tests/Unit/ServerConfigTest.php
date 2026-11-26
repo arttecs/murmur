@@ -9,6 +9,7 @@ it('rejects an invalid server setting and names it in the error', function (stri
     ['port', 0],
     ['port', 65536],
     ['heartbeatSeconds', 0.0],
+    ['loopLagThresholdMs', 0],
     ['heartbeatSeconds', INF],
     ['retryMs', -1],
     ['maxConnections', 0],

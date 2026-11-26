@@ -61,6 +61,7 @@ class ConfigTest extends TestCase
         $this->assertSame([], config('murmur.auth.middleware'));
         $this->assertSame('app-events', config('murmur.redis.stream'));
         $this->assertSame(5.0, config('murmur.server.shutdown_grace'));
+        $this->assertSame(100, config('murmur.server.loop_lag_threshold_ms'));
         $this->assertSame(5000, config('murmur.redis.block_ms'));
         $this->assertTrue(config('murmur.auth.enabled'));
         $this->assertNull(config('murmur.metrics.store'));
@@ -92,6 +93,7 @@ class ConfigTest extends TestCase
             ['MURMUR_MAX_BUFFER_BYTES', '65536', 'server.max_buffer_bytes', 65536],
             ['MURMUR_ALLOWED_ORIGINS', 'a, b,,c', 'server.allowed_origins', ['a', 'b', 'c']],
             ['MURMUR_SIGNATURE_TOLERANCE', '45', 'server.signature_tolerance', 45],
+            ['MURMUR_LOOP_LAG_THRESHOLD_MS', '25', 'server.loop_lag_threshold_ms', 25],
             ['MURMUR_SHUTDOWN_GRACE', '7.5', 'server.shutdown_grace', 7.5],
             ['MURMUR_AUTH_ENABLED', 'no', 'auth.enabled', false],
             ['MURMUR_LOG_CHANNEL', '', 'server.log_channel', null],

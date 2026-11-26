@@ -35,6 +35,7 @@ readonly class ServerConfig
         public float $requestTimeoutSeconds = 10.0,
         public int $maxReplayEvents = 1000,
         public float $shutdownGraceSeconds = 5.0,
+        public int $loopLagThresholdMs = 100,
     ) {
         Secret::assertValid($secret);
 
@@ -54,6 +55,7 @@ readonly class ServerConfig
             'requestTimeoutSeconds',
             'signatureToleranceSeconds',
             'shutdownGraceSeconds',
+            'loopLagThresholdMs',
         ) as $setting => $value) {
             if ($value <= 0 || ! is_finite((float) $value)) {
                 throw new InvalidArgumentException("The {$setting} setting must be positive and finite.");

@@ -5,6 +5,7 @@ namespace Arttecs\Murmur\Console\Commands;
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Metrics\MetricsRecorder;
 use Arttecs\Murmur\MurmurManager;
+use Arttecs\Murmur\Server\LoopBackend;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Illuminate\Console\Command;
@@ -42,9 +43,11 @@ class ServeCommand extends Command
     {
         $loop = Loop::get();
         $manager = app(MurmurManager::class);
+        $backend = new LoopBackend($loop::class);
 
         try {
             $config = $this->makeConfig();
+            $backend->validate($config->maxSockets);
             $metrics = $manager->metricsConfiguration();
             $host = gethostname();
             $recorder = $metrics === null ? null : new MetricsRecorder(
@@ -73,6 +76,10 @@ class ServeCommand extends Command
             $this->error($exception->getMessage());
 
             return self::FAILURE;
+        }
+
+        if (($notice = $backend->notice()) !== null) {
+            $this->info($notice);
         }
 
         $server = null;
@@ -206,6 +213,7 @@ class ServeCommand extends Command
             requestTimeoutSeconds: (float) config('murmur.server.request_timeout'),
             maxReplayEvents: (int) config('murmur.server.max_replay_events'),
             shutdownGraceSeconds: (float) config('murmur.server.shutdown_grace'),
+            loopLagThresholdMs: (int) config('murmur.server.loop_lag_threshold_ms'),
         );
     }
 

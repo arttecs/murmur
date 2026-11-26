@@ -58,6 +58,8 @@ return [
         'allowed_origins' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('MURMUR_ALLOWED_ORIGINS', '*'))), fn (string $origin): bool => $origin !== '')),
         /** Allowed difference in seconds between the server clock and an HTTP publish timestamp. */
         'signature_tolerance' => (int) env('MURMUR_SIGNATURE_TOLERANCE', 60),
+        /** Event loop delay in milliseconds above which the server warns. */
+        'loop_lag_threshold_ms' => (int) env('MURMUR_LOOP_LAG_THRESHOLD_MS', 100),
         /** Seconds to drain connections on shutdown before closing the remaining sockets. */
         'shutdown_grace' => (float) env('MURMUR_SHUTDOWN_GRACE', 5.0),
         /**

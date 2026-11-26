@@ -7,6 +7,7 @@ use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Psr\Log\AbstractLogger;
+use React\EventLoop\StreamSelectLoop;
 
 use function React\Async\await;
 
@@ -157,4 +158,78 @@ it('does not let a throwing error counter interrupt a report', function () {
     ErrorReporter::report(new RuntimeException('Reported anyway.'));
 
     expect(array_column($this->logger->entries, 1))->toBe(['RuntimeException: Reported anyway.']);
+});
+
+it('measures blocked loop ticks and warns once while counting each breach', function () {
+    $loop = new StreamSelectLoop;
+    $server = new Server(
+        new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 10),
+        new MemoryEventLog,
+        $loop,
+        $this->logger,
+    );
+
+    try {
+        await($server->listen());
+        $loop->addTimer(0.9, fn () => usleep(180_000));
+        $loop->addTimer(1.98, fn () => usleep(180_000));
+        $loop->addTimer(2.4, $loop->stop(...));
+        $loop->run();
+
+        expect($server->metrics()->value('murmur_event_loop_lag_seconds'))->toBeFloat()->toBeGreaterThan(0.01);
+        expect($server->metrics()->value('murmur_event_loop_lag_exceeded_total'))->toBe(2);
+        $warnings = array_values(array_filter($this->logger->entries, fn (array $entry) => $entry[0] === 'warning'));
+        expect($warnings)->toHaveCount(1);
+        expect((string) $warnings[0][1])->toMatch('/\d+\.\d+ ms/');
+    } finally {
+        $server->close();
+    }
+});
+
+it('does not warn below the threshold and cancels lag measurement on close', function () {
+    $loop = new StreamSelectLoop;
+    $server = new Server(
+        new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 1000),
+        new MemoryEventLog,
+        $loop,
+        $this->logger,
+    );
+
+    try {
+        await($server->listen());
+        $loop->addTimer(1.05, $loop->stop(...));
+        $loop->run();
+        $lag = $server->metrics()->value('murmur_event_loop_lag_seconds');
+        expect($lag)->toBeFloat()->toBeGreaterThanOrEqual(0.0);
+        expect($server->metrics()->value('murmur_event_loop_lag_exceeded_total'))->toBe(0);
+        expect(array_column($this->logger->entries, 0))->toBe(['info']);
+
+        $server->close();
+        $loop->addTimer(0.9, fn () => usleep(180_000));
+        $loop->addTimer(1.2, $loop->stop(...));
+        $loop->run();
+        expect($server->metrics()->value('murmur_event_loop_lag_seconds'))->toBe($lag);
+    } finally {
+        $server->close();
+    }
+});
+
+it('reports a blocked loop through the PHP error log without a logger', function () {
+    $loop = new StreamSelectLoop;
+    $server = new Server(
+        new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 10),
+        new MemoryEventLog,
+        $loop,
+    );
+
+    try {
+        await($server->listen());
+        $loop->addTimer(0.9, fn () => usleep(180_000));
+        $loop->addTimer(1.2, $loop->stop(...));
+        $loop->run();
+
+        expect(file_get_contents($this->errorLog))->toMatch('/event loop lag.*\d+\.\d+ ms/');
+    } finally {
+        $server->close();
+    }
 });
