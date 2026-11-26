@@ -14,7 +14,7 @@ class Topic
      */
     public static function isValid(string $name): bool
     {
-        return preg_match('/\A[^\s,]{1,200}\z/', $name) === 1;
+        return preg_match('/\A[^\s,]{1,200}\z/', $name) === 1 && preg_match('//u', $name) === 1;
     }
 
     /**

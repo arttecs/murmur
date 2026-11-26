@@ -60,3 +60,24 @@ it('rejects reserved event names when publishing or emitting application events'
     expect(fn () => $stream->emit('murmur.end'))->toThrow(InvalidArgumentException::class);
     expect($publisher->events)->toBe([]);
 });
+
+it('validates wire topic names before publishing, creating streams, or signing tokens', function (string $topic, bool $valid) {
+    $publisher = fakePublisher();
+
+    if (! $valid) {
+        expect(fn () => Murmur::publish($topic, 'updated'))->toThrow(InvalidArgumentException::class)
+            ->and(fn () => Murmur::stream($topic))->toThrow(InvalidArgumentException::class)
+            ->and(fn () => Murmur::token([$topic]))->toThrow(InvalidArgumentException::class)
+            ->and($publisher->events)->toBe([]);
+
+        return;
+    }
+
+    Murmur::publish($topic, 'updated');
+    parse_str(parse_url(Murmur::stream($topic)->url(), PHP_URL_QUERY), $query);
+    $grant = (new TokenVerifier(config('murmur.secret')))->verify(Murmur::token([$topic]));
+
+    expect($publisher->events[0]->topic)->toBe($topic)
+        ->and($query['topics'])->toBe($topic)
+        ->and($grant->topics)->toBe([$topic]);
+})->with('wire topic boundaries');

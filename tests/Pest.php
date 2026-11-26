@@ -294,3 +294,15 @@ function metricsTrace(string $file, ?string $phase = null): array
 
     return array_values(array_filter($entries, fn (object $entry): bool => $phase === null || $entry->phase === $phase));
 }
+
+dataset('wire topic boundaries', function () {
+    yield 'invalid UTF-8' => [chr(255), false];
+
+    foreach (['accent' => 'é', 'CJK' => '界', 'emoji' => '😀'] as $label => $character) {
+        foreach ([199, 200, 201] as $length) {
+            $topic = str_repeat('a', 8).str_pad(str_repeat($character, intdiv($length - 8, strlen($character))), $length - 8, 'a');
+
+            yield "{$label} at {$length} bytes" => [$topic, $length <= 200];
+        }
+    }
+});

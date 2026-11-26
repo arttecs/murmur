@@ -53,3 +53,18 @@ it('rejects reserved event names when broadcasting', function () {
         ->toThrow(InvalidArgumentException::class, 'Event names starting with "murmur." are reserved.');
     expect($publisher->events)->toBe([]);
 });
+
+it('validates broadcast topic UTF-8 and byte length', function (string $topic, bool $valid) {
+    $publisher = fakePublisher();
+    $broadcast = fn () => Broadcast::connection('murmur')->broadcast([$topic], 'updated');
+
+    if (! $valid) {
+        expect($broadcast)->toThrow(InvalidArgumentException::class)
+            ->and($publisher->events)->toBe([]);
+
+        return;
+    }
+
+    $broadcast();
+    expect($publisher->events[0]->topic)->toBe($topic);
+})->with('wire topic boundaries');

@@ -156,3 +156,11 @@ it('withholds excluded events that arrive while the connection is held', functio
     expect($r->next()['id'])->toBe((string) $visible);
     expect($h->metrics()->value('murmur_events_sent_total'))->toBe(1);
 });
+
+it('applies the topic byte limit and UTF-8 validation to subscriptions and fresh topics', function (string $topic, bool $valid) {
+    $h = ServerHarness::start();
+    $topic = rawurlencode($topic);
+
+    expect(SseReader::open($h->url("/sse?topics={$topic}"))->status())->toBe($valid ? 200 : 400);
+    expect(SseReader::open($h->url("/sse?topics={$topic}&fresh={$topic}"))->status())->toBe($valid ? 200 : 400);
+})->with('wire topic boundaries');

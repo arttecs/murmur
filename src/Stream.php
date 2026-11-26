@@ -6,6 +6,7 @@ use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\Topic;
+use InvalidArgumentException;
 
 /**
  * Publish events and build a subscription URL for a single topic.
@@ -19,6 +20,8 @@ class Stream
 
     /**
      * Create a stream and capture its creation time.
+     *
+     * @throws InvalidArgumentException
      */
     public function __construct(
         protected MurmurManager $manager,
@@ -26,13 +29,17 @@ class Stream
         protected int $cursorMarginMs,
         protected Publisher $publisher,
     ) {
+        if (! Topic::isValid($topic)) {
+            throw new InvalidArgumentException('Invalid event topic.');
+        }
+
         $this->createdAtMs = now()->getTimestampMs();
     }
 
     /**
      * Publish an event to the stream topic.
      *
-     * @throws \InvalidArgumentException
+     * @throws InvalidArgumentException
      * @throws PublishFailed
      */
     public function emit(string $event, mixed $data = null): void

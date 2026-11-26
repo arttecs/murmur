@@ -443,3 +443,12 @@ it('delivers the next redis event through a held connection when its cursor is a
 
     expect($output())->toContain("id: {$id}\nevent: live\n");
 })->with(['empty log' => [true], 'nonempty log' => [false]]);
+
+it('replays valid Redis topic names within the byte limit', function (string $topic, bool $valid) {
+    [$log, $key] = redisLog();
+    $id = xadd($key, $topic, 'updated');
+
+    $result = await($log->since(new EventId(0, 0), [$topic], 10));
+
+    expect(array_map(fn (Event $event) => (string) $event->id, $result->events))->toBe($valid ? [$id] : []);
+})->with('wire topic boundaries');

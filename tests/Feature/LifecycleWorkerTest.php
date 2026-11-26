@@ -179,3 +179,18 @@ it('discards buffered and future lifecycle records when the worker exits', funct
         unlink($file);
     }
 })->skip(! extension_loaded('posix'), 'Checking worker death requires ext-posix.');
+
+it('validates decoded lifecycle topic UTF-8 and byte length', function (string $topic, bool $valid) {
+    $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-worker-');
+
+    try {
+        $record = lifecycleWorkerRecord(['topics' => [base64_encode($topic)]]);
+        $process = lifecycleWorkerProcess($file, lifecycleWorkerLine([$record]));
+
+        expect($process->getExitCode())->toBe(0, $process->getErrorOutput())
+            ->and($process->getOutput())->toBe($valid ? "ok\n" : "error\n")
+            ->and(array_column(metricsTrace($file, 'opened'), 'topics'))->toBe($valid ? [$record['topics']] : []);
+    } finally {
+        unlink($file);
+    }
+})->with('wire topic boundaries');

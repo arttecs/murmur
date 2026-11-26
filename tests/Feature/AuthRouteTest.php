@@ -95,3 +95,17 @@ it('registers no package authorization route even with legacy configuration', fu
     $this->postJson('/murmur/auth')->assertNotFound();
     $this->postJson('/old/auth')->assertNotFound();
 });
+
+it('authorizes only well-formed UTF-8 private names within the byte limit', function (string $topic, bool $valid) {
+    $topic = strlen($topic) >= 199 ? substr($topic, strlen('private-')) : $topic;
+
+    Broadcast::channel($topic, fn (): bool => true);
+    $response = $this->actingAs(new User(['id' => 9]))
+        ->post('/broadcasting/auth', ['channel_name' => 'private-'.$topic])
+        ->assertStatus($valid ? 200 : 403);
+
+    if ($valid) {
+        expect((new TokenVerifier(config('murmur.secret')))->verify($response->json('token'))->topics)
+            ->toBe(['private-'.$topic]);
+    }
+})->with('wire topic boundaries');

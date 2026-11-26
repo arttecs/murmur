@@ -10,3 +10,7 @@ it('detects private topics', function () {
     expect(Topic::isPrivate('private-orders.1'))->toBeTrue();
     expect(Topic::isPrivate('orders.1'))->toBeFalse();
 });
+
+it('requires well-formed UTF-8 within the byte limit', function (string $topic, bool $valid) {
+    expect(Topic::isValid($topic))->toBe($valid);
+})->with('wire topic boundaries');
