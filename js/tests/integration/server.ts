@@ -93,9 +93,9 @@ export function tokenFor(topics: string[], ttl: number): { token: string; expire
 }
 
 /** Signs a publish request and returns the server-assigned event ID. */
-export async function publish(address: string, topic: string, event: string, data: unknown): Promise<string> {
+export async function publish(address: string, topic: string, event: string, data: unknown, except?: string): Promise<string> {
   const timestamp = String(Math.floor(Date.now() / 1000))
-  const body = JSON.stringify({ topic, event, data })
+  const body = JSON.stringify({ topic, event, data, except })
   const signature = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex')
   const response = await fetch(`${address}/publish`, {
     method: 'POST',

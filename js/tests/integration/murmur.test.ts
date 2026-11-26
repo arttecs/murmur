@@ -12,6 +12,8 @@ type Attempt = {
   url: URL
   /** The status returned by the server. */
   status?: number
+  /** Aborts the HTTP response without affecting other SSE requests. */
+  interrupt: () => void
 }
 
 /** The server shared by the integration cases. */
@@ -75,9 +77,13 @@ function client(options: Partial<MurmurOptions> = {}, attempts: Attempt[] = []):
       super(url, {
         ...init,
         fetch: async (url, request) => {
-          const attempt: Attempt = { url: new URL(url) }
+          const controller = new AbortController()
+          const attempt: Attempt = { url: new URL(url), interrupt: () => controller.abort(new Error('SSE connection interrupted')) }
           attempts.push(attempt)
-          const response = await fetch(url, request)
+          const signal = request?.signal
+            ? AbortSignal.any([request.signal, controller.signal])
+            : controller.signal
+          const response = await fetch(url, { ...request, signal })
           attempt.status = response.status
           return response
         },
@@ -259,7 +265,7 @@ describe('Murmur client and PHP server', () => {
 
     expect(received.mock.calls).toEqual([[{ phase: 'initial' }], [{ phase: 'missed' }], [{ phase: 'live again' }]])
     expect(disconnected).toHaveBeenCalledExactlyOnceWith()
-    expect(requests).toEqual([{ channel_name: topic }, { channel_name: topic }])
+    expect(requests).toEqual([{ channel_name: topic }, { channel_name: topic, socket_id: m.socketId() }])
     expect(attempts.map(attempt => attempt.status)).toEqual([200, 200])
     expect(attempts[1]?.url.searchParams.get('token')).not.toBe(attempts[0]?.url.searchParams.get('token'))
     expect(attempts[1]?.url.searchParams.get('lastEventId')).toBe(firstId)
@@ -318,6 +324,42 @@ describe('Murmur client and PHP server', () => {
     } finally {
       echo.disconnect()
     }
+  })
+
+  it('excludes the sender by its announced ID during live delivery and replay', async () => {
+    const attempts: Attempt[] = []
+    const sender = client({ retryMs: 100 }, attempts)
+    const recipient = client()
+    const senderUpdates = vi.fn()
+    const recipientUpdates = vi.fn()
+    sender.channel('exclusion').listen('.updated', senderUpdates)
+    recipient.channel('exclusion').listen('.updated', recipientUpdates)
+    await vi.waitFor(() => {
+      expect(sender.socketId()).toMatch(/^[a-f0-9]{32}$/)
+      expect(recipient.socketId()).toMatch(/^[a-f0-9]{32}$/)
+    }, waitOptions)
+
+    const id = sender.socketId()
+    expect(id).not.toBe(recipient.socketId())
+    await publish(murmur.address, 'exclusion', 'updated', 'excluded live', id)
+    const firstId = await publish(murmur.address, 'exclusion', 'updated', 'first')
+    await vi.waitFor(() => expect(senderUpdates).toHaveBeenCalledExactlyOnceWith('first'), waitOptions)
+
+    attempts[0]?.interrupt()
+    await publish(murmur.address, 'exclusion', 'updated', 'excluded during outage', id)
+    await publish(murmur.address, 'exclusion', 'updated', 'second')
+    await vi.waitFor(() => {
+      expect(senderUpdates).toHaveBeenLastCalledWith('second')
+      expect(recipientUpdates).toHaveBeenLastCalledWith('second')
+    }, waitOptions)
+
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1]?.url.searchParams.get('connection')).toBe(id)
+    expect(attempts[1]?.url.searchParams.get('lastEventId')).toBe(firstId)
+    expect(senderUpdates.mock.calls).toEqual([['first'], ['second']])
+    expect(recipientUpdates.mock.calls).toEqual([
+      ['excluded live'], ['first'], ['excluded during outage'], ['second'],
+    ])
   })
 
   it('reports a gap when the stream cursor predates the log', async () => {

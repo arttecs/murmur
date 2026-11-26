@@ -122,6 +122,9 @@ export class MurmurStream {
 
   /** Resets the failure count and delivers control events or unwrapped data. */
   protected receive(event: string, data: string): void {
+    if (event === 'murmur.connected') {
+      return
+    }
     this.transport.resetFailures()
     if (event === 'murmur.end') {
       this.finish('end')

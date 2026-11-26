@@ -915,7 +915,7 @@ it('returns a fresh plain statistics snapshot with empty initial values', () => 
   const initial = {
     connected: false, connections: 0, disconnections: 0, events: 0, gaps: 0,
     tokenRequests: 0, tokenFailures: 0, channels: 0, streams: 0,
-    lastEventId: undefined, lastEventAt: undefined,
+    lastEventId: undefined, lastEventAt: undefined, connectionId: undefined,
   }
   const snapshot = m.stats()
 
@@ -1026,7 +1026,7 @@ it('counts active streams without including their traffic or failures in shared 
   expect(m.stats()).toStrictEqual({
     connected: false, connections: 0, disconnections: 0, events: 0, gaps: 0,
     tokenRequests: 0, tokenFailures: 0, channels: 0, streams: 0,
-    lastEventId: undefined, lastEventAt: undefined,
+    lastEventId: undefined, lastEventAt: undefined, connectionId: undefined,
   })
 })
 
@@ -1093,7 +1093,7 @@ it('keeps the final statistics after close while clearing live state', async () 
   expect(final).toStrictEqual({
     connected: false, connections: 1, disconnections: 0, events: 1, gaps: 0,
     tokenRequests: 1, tokenFailures: 0, channels: 0, streams: 0,
-    lastEventId: '1-0', lastEventAt,
+    lastEventId: '1-0', lastEventAt, connectionId: undefined,
   })
 
   rejectToken?.({ status: 403 })
@@ -1206,4 +1206,68 @@ it('drops every token used by a connection that fails before opening', async () 
   const retry = FakeEventSource.instances[1]
   assert.isDefined(retry)
   expect(new URL(retry.url).searchParams.get('token')).toBe('3,4')
+})
+
+it('stores the announced connection ID and reuses it for SSE and Laravel authorization', async () => {
+  const fetch = vi.fn(authFetch({ token: 'jwt', expires_at: nowSeconds() + 900 }))
+  const m = client({ fetch, url: 'https://app.test/sse?connection=unissued', retryMs: 10 })
+  const control = vi.fn()
+  const id = '0123456789abcdef0123456789abcdef'
+  expect(m.socketId()).toBeUndefined()
+  expect(m.stats().connectionId).toBeUndefined()
+
+  m.channel('news').listen('.murmur.connected', control).listen('.updated', () => {})
+  m.private('orders')
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  expect(new URL(first.url).searchParams.has('connection')).toBe(false)
+  expect(authFetch.calls).toEqual([{ body: { channel_name: 'private-orders' } }])
+
+  first.emit('updated', { topic: 'news', data: 1 }, '10-0')
+  first.emit('murmur.connected', { connection_id: id, protocol: 1, topic: 'news', data: 2 }, '20-0')
+  expect(m.socketId()).toBe(id)
+  expect(m.stats()).toMatchObject({ connectionId: id, lastEventId: '10-0', events: 1 })
+  expect(control).not.toHaveBeenCalled()
+
+  first.fail()
+  await wait(10)
+  const retry = FakeEventSource.instances[1]
+  assert.isDefined(retry)
+  expect(new URL(retry.url).searchParams.get('connection')).toBe(id)
+  expect(authFetch.calls[1]).toEqual({ body: { channel_name: 'private-orders', socket_id: id } })
+
+  m.stream('https://app.test/sse?topics=stream')
+  await flush()
+  const independent = FakeEventSource.instances[2]
+  assert.isDefined(independent)
+  expect(new URL(independent.url).searchParams.has('connection')).toBe(false)
+})
+
+it('reports a protocol mismatch once and continues delivering on repeated connections', async () => {
+  const m = client({ retryMs: 10 })
+  const error = vi.fn()
+  const updated = vi.fn()
+  const id = 'abcdef0123456789abcdef0123456789'
+  m.on('error', error)
+  m.channel('news').listen('.updated', updated)
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+
+  first.emit('murmur.connected', { connection_id: id, protocol: 2 }, '')
+  first.emit('updated', { topic: 'news', data: 1 }, '1-0')
+  expect(first.closed).toBe(false)
+  first.fail()
+  await wait(10)
+  const retry = FakeEventSource.instances[1]
+  assert.isDefined(retry)
+  retry.emit('murmur.connected', { connection_id: id, protocol: 2 }, '')
+  retry.emit('updated', { topic: 'news', data: 2 }, '2-0')
+
+  expect(error).toHaveBeenCalledExactlyOnceWith(expect.any(Error))
+  expect(error.mock.calls[0]?.[0]?.message).toMatch(/protocol 2.*expected 1/i)
+  expect(updated.mock.calls).toEqual([[1], [2]])
+  expect(retry.closed).toBe(false)
+  expect(m.socketId()).toBe(id)
 })

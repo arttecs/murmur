@@ -60,7 +60,7 @@ export class Transport {
   protected lastEventId?: string
 
   /** The wire events that the connection should listen for. */
-  protected events = new Set(['murmur.gap'])
+  protected events = new Set(['murmur.gap', 'murmur.connected'])
 
   /** Creates a transport that prepares a fresh URL for every attempt. */
   public constructor(
@@ -97,6 +97,7 @@ export class Transport {
   /** Updates named listeners on the active connection and future attempts. */
   public setEvents(events: Set<string>): void {
     events.add('murmur.gap')
+    events.add('murmur.connected')
     const connection = this.connection
     if (connection) {
       const { source, message } = connection
@@ -230,7 +231,7 @@ export class Transport {
 
   /** Captures the resume cursor and dispatches named stream data. */
   protected receive(event: string, data: string, lastEventId: unknown): void {
-    if (event !== 'murmur.gap' && typeof lastEventId === 'string' && lastEventId !== '') {
+    if (event !== 'murmur.gap' && event !== 'murmur.connected' && typeof lastEventId === 'string' && lastEventId !== '') {
       this.lastEventId = lastEventId
     }
     this.onMessage(event, data)

@@ -89,6 +89,9 @@ export interface MurmurStats {
   /** The current replay cursor of the shared connection. */
   lastEventId: string | undefined
 
+  /** The most recently announced ID of the shared SSE connection. */
+  connectionId: string | undefined
+
   /** The Unix time in milliseconds of the last data event passed to dispatch. */
   lastEventAt: number | undefined
 }
@@ -183,6 +186,12 @@ export class Murmur {
 
   /** The time the last valid shared data event was received. */
   protected lastEventAt?: number
+
+  /** The ID most recently announced by the shared connection. */
+  protected connectionId?: string
+
+  /** Whether a protocol mismatch has already been reported. */
+  protected protocolMismatchReported = false
 
   /** The client's retry settings, also used as the defaults for streams. */
   protected readonly retryOptions: RetryOptions
@@ -348,6 +357,11 @@ export class Murmur {
     }
   }
 
+  /** Returns the server-issued ID used for Laravel sender exclusion. */
+  public socketId(): string | undefined {
+    return this.connectionId
+  }
+
   /** Returns a fresh snapshot of shared connection activity and active subscriptions. */
   public stats(): MurmurStats {
     return {
@@ -356,6 +370,7 @@ export class Murmur {
       channels: this.channels.size,
       streams: this.streams.size,
       lastEventId: this.transport.replayCursor,
+      connectionId: this.connectionId,
       lastEventAt: this.lastEventAt,
     }
   }
@@ -453,6 +468,10 @@ export class Murmur {
     url.searchParams.delete('lastEventId')
     if (lastEventId !== undefined) {
       url.searchParams.set('lastEventId', lastEventId)
+    }
+    url.searchParams.delete('connection')
+    if (this.connectionId !== undefined) {
+      url.searchParams.set('connection', this.connectionId)
     }
     if (new TextEncoder().encode(url.pathname + url.search).length > requestTargetBudget) {
       this.emit('error', new Error(
@@ -568,7 +587,7 @@ export class Murmur {
       method: 'POST',
       credentials: auth?.credentials ?? 'include',
       headers: headers ?? defaults,
-      body: JSON.stringify({ channel_name: topic }),
+      body: JSON.stringify({ channel_name: topic, socket_id: this.connectionId }),
       signal,
     })
     if (!response.ok) {
@@ -580,6 +599,10 @@ export class Murmur {
 
   /** Dispatches a stream event to its channel or emits a gap notification. */
   protected receive(event: string, data: string): void {
+    if (event === 'murmur.connected') {
+      this.receiveConnection(data)
+      return
+    }
     if (event === 'murmur.gap') {
       this.counts.gaps++
       this.emit('gap')
@@ -602,6 +625,28 @@ export class Murmur {
       for (const callback of subscription?.listeners.get(event) ?? []) {
         invokeListener(callback, payload)
       }
+    }
+  }
+
+  /** Stores a valid server-issued connection ID and reports an unexpected protocol. */
+  protected receiveConnection(data: string): void {
+    let announcement: unknown
+    try {
+      announcement = JSON.parse(data)
+    } catch {
+      return
+    }
+    if (announcement === null || typeof announcement !== 'object') {
+      return
+    }
+
+    if ('connection_id' in announcement && typeof announcement.connection_id === 'string' &&
+      announcement.connection_id.length === 32 && !/[^a-f0-9]/.test(announcement.connection_id)) {
+      this.connectionId = announcement.connection_id
+    }
+    if ('protocol' in announcement && announcement.protocol !== 1 && !this.protocolMismatchReported) {
+      this.protocolMismatchReported = true
+      this.emit('error', new Error(`Murmur server announced protocol ${String(announcement.protocol)}; expected 1.`))
     }
   }
 
