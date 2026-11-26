@@ -17,6 +17,8 @@ use stdClass;
 
 /**
  * Accept signed publish requests and append their events to the in-memory log.
+ *
+ * @internal
  */
 class PublishHandler
 {

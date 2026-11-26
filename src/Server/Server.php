@@ -33,6 +33,11 @@ use function React\Promise\resolve;
 class Server
 {
     /**
+     * The version of the Murmur wire protocol.
+     */
+    public const PROTOCOL = 1;
+
+    /**
      * The loop used for HTTP and connection timers.
      */
     protected LoopInterface $loop;
@@ -321,6 +326,10 @@ class Server
             $this->metrics->increment('murmur_publish_requests_total', labels: ['status' => (string) $status]);
         } elseif ($route === 'GET /sse' && $status >= 400) {
             $this->metrics->increment('murmur_connections_rejected_total', labels: ['status' => (string) $status]);
+        }
+
+        if (in_array($route, ['GET /sse', 'GET /health', 'GET /ready'], true)) {
+            $response = $response->withHeader('X-Murmur-Protocol', (string) static::PROTOCOL);
         }
 
         return $this->withResponseHeaders($response);

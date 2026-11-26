@@ -12,6 +12,8 @@ use React\Stream\WritableStreamInterface;
 
 /**
  * Hold frames from the hub until replay has caught up.
+ *
+ * @internal
  */
 class HeldConnection extends Connection
 {

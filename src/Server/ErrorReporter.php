@@ -8,6 +8,8 @@ use Throwable;
 
 /**
  * Rate-limit reports of errors raised during event delivery.
+ *
+ * @internal
  */
 class ErrorReporter
 {

@@ -4,6 +4,8 @@ namespace Arttecs\Murmur\Server\Auth;
 
 /**
  * Hold the topics and expiration time of a verified subscription token.
+ *
+ * @internal
  */
 class Grant
 {

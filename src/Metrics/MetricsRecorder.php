@@ -15,6 +15,8 @@ use Throwable;
 
 /**
  * Send server snapshots to a single Artisan writer without waiting in the event loop.
+ *
+ * @internal
  */
 class MetricsRecorder
 {

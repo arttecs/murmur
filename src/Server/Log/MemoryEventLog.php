@@ -18,6 +18,8 @@ use function React\Promise\resolve;
 
 /**
  * Store a bounded history of events in memory.
+ *
+ * @internal
  */
 class MemoryEventLog implements EventLog
 {

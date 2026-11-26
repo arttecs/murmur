@@ -6,6 +6,8 @@ use Arttecs\Murmur\Server\Event;
 
 /**
  * Encode server-sent event frames.
+ *
+ * @internal
  */
 class Frame
 {

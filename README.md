@@ -347,6 +347,12 @@ Delivery errors go to PHP's error log by default and fall back to it if the conf
 - The `http` driver runs on a single Murmur node and keeps its bounded history in memory. Restarting that node clears its history. The `redis` driver supports multiple Murmur nodes with a shared history in Redis.
 - With the `http` driver and the default cursor margin, a stream created during the server's first second may receive a spurious `murmur.gap` event because its initial cursor predates the in-memory history.
 
+## Compatibility
+
+Semantic versioning covers the `Murmur` facade and the public methods of `MurmurManager`, the types in `Contracts\` and `Exceptions\`, configuration keys and environment variables, and public Artisan command names and options.
+
+It also covers `Server\Server`, `Server\ServerConfig`, `Server\Metrics` (`snapshot()`, `value()`, `toPrometheus()`, and `names()`), `Server\Event`, `Server\EventId`, `Server\Replay`, `Stream`, the classes in `Testing\`, and the [wire protocol](docs/protocol.md).
+
 ## License
 
 Murmur is released under the [MIT License](LICENSE).

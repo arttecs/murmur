@@ -7,6 +7,8 @@ use SensitiveParameter;
 
 /**
  * Sign and verify timestamped publish requests.
+ *
+ * @internal
  */
 class Signature
 {

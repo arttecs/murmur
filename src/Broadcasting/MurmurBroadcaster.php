@@ -17,6 +17,8 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
 /**
  * Publish Laravel broadcasts and authorize private subscriptions through Murmur.
+ *
+ * @internal
  */
 class MurmurBroadcaster extends Broadcaster
 {

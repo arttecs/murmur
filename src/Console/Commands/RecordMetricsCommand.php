@@ -14,6 +14,8 @@ use Throwable;
 
 /**
  * Read and store snapshots from the server until standard input closes.
+ *
+ * @internal
  */
 class RecordMetricsCommand extends Command
 {

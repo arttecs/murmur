@@ -8,6 +8,8 @@ use InvalidArgumentException;
 
 /**
  * Validate the settings shared by the metrics writer and readers.
+ *
+ * @internal
  */
 class MetricsConfig
 {

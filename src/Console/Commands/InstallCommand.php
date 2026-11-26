@@ -12,6 +12,8 @@ use SensitiveParameter;
 
 /**
  * Install the configuration for Laravel broadcasting through Murmur.
+ *
+ * @internal
  */
 class InstallCommand extends Command
 {

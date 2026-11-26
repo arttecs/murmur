@@ -8,6 +8,8 @@ use RuntimeException;
 
 /**
  * Store node snapshots as fields in a Redis hash.
+ *
+ * @internal
  */
 class RedisMetricsStore implements MetricsStore
 {

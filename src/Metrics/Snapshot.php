@@ -10,6 +10,8 @@ use stdClass;
  *
  * @phpstan-import-type Sample from \Arttecs\Murmur\Contracts\MetricsStore
  * @phpstan-import-type Snapshot from \Arttecs\Murmur\Contracts\MetricsStore as SnapshotData
+ *
+ * @internal
  */
 class Snapshot
 {

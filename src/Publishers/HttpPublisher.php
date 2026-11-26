@@ -14,6 +14,8 @@ use SensitiveParameter;
 
 /**
  * Publish signed events over HTTP.
+ *
+ * @internal
  */
 class HttpPublisher implements Publisher
 {

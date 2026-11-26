@@ -23,6 +23,8 @@ use function React\Promise\all;
 
 /**
  * Start the Murmur SSE server from a Laravel application.
+ *
+ * @internal
  */
 class ServeCommand extends Command
 {

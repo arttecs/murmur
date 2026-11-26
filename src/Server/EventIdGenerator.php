@@ -6,6 +6,8 @@ use Closure;
 
 /**
  * Generate strictly increasing event identifiers.
+ *
+ * @internal
  */
 class EventIdGenerator
 {

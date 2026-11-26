@@ -7,6 +7,8 @@ use React\Stream\WritableStreamInterface;
 
 /**
  * Manage an open server-sent event stream.
+ *
+ * @internal
  */
 class Connection
 {

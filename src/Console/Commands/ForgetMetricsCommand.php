@@ -11,6 +11,8 @@ use Throwable;
 
 /**
  * Remove a node or the stale snapshots in the configured store.
+ *
+ * @internal
  */
 class ForgetMetricsCommand extends Command
 {

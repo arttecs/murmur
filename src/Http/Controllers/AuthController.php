@@ -12,6 +12,8 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
 /**
  * Exchange authenticated channel access for a Murmur subscription token.
+ *
+ * @internal
  */
 class AuthController
 {

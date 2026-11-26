@@ -7,6 +7,8 @@ use Illuminate\Database\ConnectionInterface;
 
 /**
  * Store each node's latest snapshot in one database row.
+ *
+ * @internal
  */
 class DatabaseMetricsStore implements MetricsStore
 {

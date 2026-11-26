@@ -16,6 +16,8 @@ use Illuminate\Support\ServiceProvider;
 
 /**
  * Register the Laravel services and configuration for Murmur.
+ *
+ * @internal
  */
 class MurmurServiceProvider extends ServiceProvider
 {

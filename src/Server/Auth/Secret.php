@@ -7,6 +7,8 @@ use SensitiveParameter;
 
 /**
  * Validate the shared Murmur secret.
+ *
+ * @internal
  */
 class Secret
 {

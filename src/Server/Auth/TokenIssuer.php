@@ -9,6 +9,8 @@ use SensitiveParameter;
 
 /**
  * Issue signed tokens for topic subscriptions.
+ *
+ * @internal
  */
 class TokenIssuer
 {

@@ -10,6 +10,8 @@ use RuntimeException;
 
 /**
  * Store expiring snapshots and a node index in a Laravel cache store.
+ *
+ * @internal
  */
 class CacheMetricsStore implements MetricsStore
 {

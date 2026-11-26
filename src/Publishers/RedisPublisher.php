@@ -13,6 +13,8 @@ use Throwable;
 
 /**
  * Publish events to a Redis stream.
+ *
+ * @internal
  */
 class RedisPublisher implements Publisher
 {

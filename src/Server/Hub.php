@@ -8,6 +8,8 @@ use Throwable;
 
 /**
  * Distribute server-sent events to subscribed connections.
+ *
+ * @internal
  */
 class Hub
 {

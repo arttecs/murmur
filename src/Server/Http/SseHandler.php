@@ -22,6 +22,8 @@ use Throwable;
 
 /**
  * Authorize and stream an SSE subscription.
+ *
+ * @internal
  */
 class SseHandler
 {

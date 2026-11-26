@@ -12,6 +12,8 @@ use Throwable;
 
 /**
  * Verify subscription tokens and read their grants.
+ *
+ * @internal
  */
 class TokenVerifier
 {

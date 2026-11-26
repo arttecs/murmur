@@ -27,6 +27,8 @@ use function React\Promise\Timer\timeout;
 
 /**
  * Replay and subscribe to events stored in a Redis stream.
+ *
+ * @internal
  */
 class RedisEventLog implements EventLog
 {

@@ -12,6 +12,8 @@ use Throwable;
 
 /**
  * Display recent metrics snapshots and totals from the configured store.
+ *
+ * @internal
  */
 class StatusCommand extends Command
 {
