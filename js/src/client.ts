@@ -2,7 +2,7 @@ import { Channel, type ChannelListeners } from './channel.js'
 import { parseEnvelope } from './envelope.js'
 import { invokeListener } from './invoke-listener.js'
 import { MurmurStream, type StreamOptions } from './stream.js'
-import { Transport, validateRetryOptions, type RetryOptions } from './transport.js'
+import { RetryAfterError, Transport, validateRetryOptions, type RetryOptions } from './transport.js'
 
 /** Configures the built-in authorization request. */
 export interface AuthOptions {
@@ -152,10 +152,25 @@ function validateFailureLimit(value: number, option: 'streamMaxFailures' | 'maxF
 
 /** Carries the HTTP status of an unsuccessful built-in authorization response. */
 class AuthorizationResponseError extends Error {
-  /** Records the status of the response. */
-  public constructor(public readonly status: number) {
+  /** Records the status and retry header of the response. */
+  public constructor(public readonly status: number, public readonly retryAfter: string | null) {
     super('Murmur authorization failed')
   }
+}
+
+/** Converts Retry-After delay-seconds or an HTTP date to a delay in milliseconds. */
+function retryAfterDelay(header: string | null): number {
+  const value = header?.trim() ?? ''
+  if (/^\d+$/.test(value)) {
+    return Number(value) * 1000
+  }
+  if (/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:[a-z]+)?,? /i.test(value) && /\d:\d{2}:\d{2}/.test(value)) {
+    const time = Date.parse(value)
+    if (Number.isFinite(time)) {
+      return Math.max(0, time - Date.now())
+    }
+  }
+  return 0
 }
 
 /** Multiplexes channel subscriptions and opens independent streams. */
@@ -211,6 +226,12 @@ export class Murmur {
   /** The reusable tokens associated with each authorized private topic. */
   protected readonly cachedTokens = new Map<string, AuthorizationToken[]>()
 
+  /** Whether a token-bearing attempt has already failed without an HTTP status since the last open. */
+  protected sawOpaqueFailure = false
+
+  /** Whether a pre-open SSE failure has already caused a credential refresh since the last open. */
+  protected refreshedAfterUnopenedError = false
+
   /** The private topics waiting for explicit authorization or a new join. */
   protected readonly deniedTopics = new Set<string>()
 
@@ -250,20 +271,15 @@ export class Murmur {
       event => {
         if (event === 'connected') {
           this.counts.connections++
+          this.sawOpaqueFailure = false
+          this.refreshedAfterUnopenedError = false
         } else {
           this.attemptSubscriptions = []
           this.counts.disconnections++
         }
         this.emit(event)
       },
-      url => {
-        const sent = new Set(new URL(url).searchParams.get('token')?.split(','))
-        for (const [topic, tokens] of this.cachedTokens) {
-          if (tokens.some(({ token }) => sent.has(token))) {
-            this.cachedTokens.delete(topic)
-          }
-        }
-      },
+      (url, status) => this.refreshAfterUnopenedError(url, status),
     )
   }
 
@@ -550,8 +566,16 @@ export class Murmur {
       this.counts.tokenFailures++
       if ((!acceptsArray && !(error instanceof AuthorizationResponseError)) ||
         error === null || typeof error !== 'object' || !('status' in error) ||
-        typeof error.status !== 'number' || !(error.status >= 400 && error.status < 500)) {
+        typeof error.status !== 'number') {
         throw error
+      }
+
+      if (!(error.status >= 400 && error.status < 500) || [408, 425, 429].includes(error.status)) {
+        const header = error instanceof AuthorizationResponseError ? error.retryAfter
+          : error instanceof Response ? error.headers.get('Retry-After')
+            : null
+        const delay = retryAfterDelay(header)
+        throw delay > 0 ? new RetryAfterError(delay, error) : error
       }
 
       const minimumExpiry = Math.max(startedAt, Date.now() / 1000)
@@ -593,6 +617,29 @@ export class Murmur {
     }
   }
 
+  /** Refreshes credentials at most once per outage when a pre-open failure suggests rejection. */
+  protected refreshAfterUnopenedError(url: string, status: number | undefined): void {
+    const sent = new URL(url).searchParams.get('token')
+    if (this.refreshedAfterUnopenedError || sent === null) {
+      return
+    }
+    if (status === undefined && !this.sawOpaqueFailure) {
+      this.sawOpaqueFailure = true
+      return
+    }
+    if (status !== undefined && status !== 401 && status !== 403) {
+      return
+    }
+
+    this.refreshedAfterUnopenedError = true
+    const rejected = new Set(sent.split(','))
+    for (const [topic, tokens] of this.cachedTokens) {
+      if (tokens.some(({ token }) => rejected.has(token))) {
+        this.cachedTokens.delete(topic)
+      }
+    }
+  }
+
   /** Requests an authorization response from the built-in endpoint. */
   protected async requestToken(topic: string, signal: AbortSignal): Promise<unknown> {
     const { auth, authEndpoint } = this.options
@@ -628,7 +675,7 @@ export class Murmur {
       signal,
     })
     if (!response.ok) {
-      throw new AuthorizationResponseError(response.status)
+      throw new AuthorizationResponseError(response.status, response.headers.get('Retry-After'))
     }
 
     return response.json()

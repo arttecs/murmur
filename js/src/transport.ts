@@ -37,6 +37,14 @@ export function validateRetryOptions({ retryMs, maxRetryMs, retryJitter }: Retry
   }
 }
 
+/** Carries a minimum delay requested by the endpoint for a failed attempt. */
+export class RetryAfterError extends Error {
+  /** Records the retry delay and the original failure. */
+  public constructor(public readonly delayMs: number, cause: unknown) {
+    super('Murmur connection attempt must wait before retrying', { cause })
+  }
+}
+
 /** Checks whether an event carries a stream payload. */
 function isMessage(event: Event): event is Event & { data: string; lastEventId?: unknown } {
   return typeof event === 'object' && event !== null && 'data' in event && typeof event.data === 'string'
@@ -85,7 +93,7 @@ export class Transport {
     protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | undefined | Promise<string | undefined>,
     protected readonly onMessage: (event: string, data: string) => void,
     protected readonly onStatus: (event: 'connected' | 'disconnected', failures: number) => void,
-    protected readonly onUnopenedError?: (url: string) => void,
+    protected readonly onUnopenedError?: (url: string, status: number | undefined) => void,
   ) {}
 
   /** Reports whether the active source has opened. */
@@ -163,9 +171,8 @@ export class Transport {
   protected async open(): Promise<void> {
     const attempt = new AbortController()
     this.pending = attempt
-    let url: string | undefined
     try {
-      url = await this.connectionUrl(attempt.signal, this.lastEventId)
+      const url = await this.connectionUrl(attempt.signal, this.lastEventId)
       if (attempt.signal.aborted || url === undefined) {
         return
       }
@@ -173,12 +180,9 @@ export class Transport {
       const EventSource = this.eventSource ?? globalThis.EventSource
       const source = this.withCredentials ? new EventSource(url, { withCredentials: true }) : new EventSource(url)
       this.attach(source, url)
-    } catch {
+    } catch (error) {
       if (!attempt.signal.aborted) {
-        if (url !== undefined) {
-          this.onUnopenedError?.(url)
-        }
-        this.handleFailure()
+        this.handleFailure(error instanceof RetryAfterError ? error.delayMs : undefined)
       }
     } finally {
       if (this.pending === attempt) {
@@ -202,7 +206,10 @@ export class Transport {
       error: event => {
         if (this.connection === connection && !isMessage(event)) {
           if (!connection.opened) {
-            this.onUnopenedError?.(url)
+            const status = 'status' in event && typeof event.status === 'number' ? event.status
+              : 'code' in event && typeof event.code === 'number' ? event.code
+                : undefined
+            this.onUnopenedError?.(url, status)
           }
           this.handleFailure()
         }
@@ -222,7 +229,7 @@ export class Transport {
   }
 
   /** Schedules a replacement connection with capped exponential backoff and jitter. */
-  protected retry(): void {
+  protected retry(minimumDelay = 0): void {
     const { retryMs, maxRetryMs, retryJitter } = this.retryOptions
     let delay = retryMs
     if (this.failures > 1) {
@@ -234,14 +241,14 @@ export class Transport {
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined
       void this.open()
-    }, delay)
+    }, Math.max(delay, Math.min(minimumDelay, maxRetryMs)))
   }
 
   /** Closes the failed connection, schedules a retry, and reports the failure. */
-  protected handleFailure(): void {
+  protected handleFailure(minimumDelay?: number): void {
     this.close()
     this.failures++
-    this.retry()
+    this.retry(minimumDelay)
     this.onStatus('disconnected', this.failures)
   }
 

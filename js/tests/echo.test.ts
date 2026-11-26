@@ -464,6 +464,24 @@ it.each([
   expect(querySelector.mock.calls).toEqual(global || option ? [] : [['meta[name="csrf-token"]']])
 })
 
+it.each(['stale', undefined])('reads the refreshed Laravel CSRF token after a 419 with initial token %s', async initial => {
+  const Laravel = { csrfToken: initial }
+  vi.stubGlobal('window', { Laravel })
+  const fetch = vi.fn(authFetch({ token: 'authorized', expires_at: nowSeconds() + 900 }))
+    .mockResolvedValueOnce(new Response(null, { status: 419 }))
+  const instance = echo({ fetch })
+  const denied = vi.fn()
+  instance.private('orders').error(denied)
+  await flush()
+  expect(denied).toHaveBeenCalledExactlyOnceWith(419)
+
+  Laravel.csrfToken = 'refreshed'
+  connectorOf(instance).murmur.reauthorize('orders')
+  await connection()
+  expect(fetch.mock.calls.map(([, init]) => new Headers(init?.headers).get('X-CSRF-TOKEN')))
+    .toEqual([initial ?? null, 'refreshed'])
+})
+
 it('evaluates asynchronous headers at each token request when a bearer token is supplied', async () => {
   const fetch = vi.fn(authFetch({ token: 'dynamic', expires_at: nowSeconds() + 900 }))
   const headers = vi.fn()

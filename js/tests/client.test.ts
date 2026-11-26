@@ -98,7 +98,7 @@ it('reuses a token that is still valid', async () => {
   expect(fetch.calls).toHaveLength(1)
 })
 
-it('fetches a fresh token after a connection fails before opening', async () => {
+it.each([401, 403])('fetches a fresh token after a pre-open SSE rejection with status %s', async status => {
   const fetch = vi.fn<typeof globalThis.fetch>()
     .mockResolvedValueOnce(Response.json({ token: 'rejected', expires_at: nowSeconds() + 900 }))
     .mockResolvedValueOnce(Response.json({ token: 'fresh', expires_at: nowSeconds() + 900 }))
@@ -109,7 +109,7 @@ it('fetches a fresh token after a connection fails before opening', async () => 
   assert.isDefined(first)
   expect(new URL(first.url).searchParams.get('token')).toBe('rejected')
 
-  first.fail()
+  first.dispatchEvent(Object.assign(new Event('error'), { code: status }))
   await wait(10)
 
   expect(fetch).toHaveBeenCalledTimes(2)
@@ -123,6 +123,46 @@ it('keeps retrying when the authorization endpoint fails', async () => {
   const m = client({ fetch, retryMs: 10 })
   m.private('a')
   await wait(30)
+  expect(FakeEventSource.instances).toHaveLength(1)
+})
+
+it.each([408, 425, 429])('retries a built-in authorization response with status %s', async status => {
+  const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: nowSeconds() + 900 }))
+    .mockResolvedValueOnce(new Response(null, { status }))
+  const m = client({ fetch, retryMs: 10 })
+  const unauthorized = vi.fn()
+  m.on('unauthorized', unauthorized)
+  m.private('orders')
+  await flush()
+
+  expect(FakeEventSource.instances).toHaveLength(0)
+  expect(unauthorized).not.toHaveBeenCalled()
+  await wait(9)
+  expect(fetch).toHaveBeenCalledTimes(1)
+  await wait(1)
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(FakeEventSource.instances).toHaveLength(1)
+})
+
+it.each([
+  { header: '2', delay: 2000 },
+  { header: new Date(3000).toUTCString(), delay: 3000 },
+  { header: '30', delay: 5000 },
+  { header: 'invalid', delay: 10 },
+  { header: '1.5', delay: 10 },
+  { header: new Date(0).toUTCString(), delay: 10 },
+])('uses Retry-After $header to set a retry floor of $delay ms', async ({ header, delay }) => {
+  vi.setSystemTime(0)
+  const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: 900 }))
+    .mockResolvedValueOnce(new Response(null, { status: 429, headers: { 'Retry-After': header } }))
+  const m = client({ fetch, retryMs: 10, maxRetryMs: 5000 })
+  m.private('orders')
+  await flush()
+
+  await wait(delay - 1)
+  expect(fetch).toHaveBeenCalledTimes(1)
+  await wait(1)
+  expect(fetch).toHaveBeenCalledTimes(2)
   expect(FakeEventSource.instances).toHaveLength(1)
 })
 
@@ -175,7 +215,7 @@ it('resets channel retry backoff when the connection opens', async () => {
   expect(FakeEventSource.instances).toHaveLength(4)
 })
 
-it.each([401, 403, 419, 422])('isolates a %s denial to the affected channel until reauthorized', async status => {
+it.each([400, 401, 403, 404, 419, 422, 499])('isolates a %s denial to the affected channel until reauthorized', async status => {
   const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: nowSeconds() + 900 }))
     .mockResolvedValueOnce(new Response(null, { status }))
   const m = client({ fetch, retryMs: 10 })
@@ -826,6 +866,9 @@ it.each([null, { token: 123, expires_at: 1 }, { token: 'bad' }, { token: 'bad', 
 it.each([
   { error: { status: 400 }, statuses: [[400, 'orders'], [400, 'alerts']] },
   { error: { status: 499 }, statuses: [[499, 'orders'], [499, 'alerts']] },
+  { error: { status: 408 }, statuses: [] },
+  { error: { status: 425 }, statuses: [] },
+  { error: { status: 429 }, statuses: [] },
   { error: { status: 500 }, statuses: [] },
   { error: { status: '403' }, statuses: [] },
   { error: new Error('Authorization unavailable'), statuses: [] },
@@ -1288,28 +1331,55 @@ it('sends grouped token results together and replaces the group after a channel 
   expect(new URL(next.url).searchParams.get('token')).toBe('remaining')
 })
 
-it('drops every token used by a connection that fails before opening', async () => {
+it('refreshes an opaque pre-open failure at most once during an outage', async () => {
   let request = 0
   const fetch: typeof globalThis.fetch = async () =>
     Response.json({ token: String(++request), expires_at: nowSeconds() + 900 })
-  const m = client({ fetch, retryMs: 10 })
-  m.private('a')
-  m.private('b')
+  const m = client({ fetch, retryMs: 10, retryJitter: 0 })
+  for (const topic of ['a', 'b', 'c']) {
+    m.private(topic)
+  }
   await flush()
-  const first = FakeEventSource.instances[0]
-  assert.isDefined(first)
-  expect(new URL(first.url).searchParams.get('token')).toBe('1,2')
 
-  first.fail()
+  for (const [index, delay] of [10, 20, 40, 80].entries()) {
+    const source = FakeEventSource.instances[index]
+    assert.isDefined(source)
+    expect(new URL(source.url).searchParams.get('token')).toBe(index < 2 ? '1,2,3' : '4,5,6')
+    source.fail()
+    await wait(delay)
+  }
+  expect(request).toBe(6)
+
+  const recovered = FakeEventSource.instances[4]
+  assert.isDefined(recovered)
+  recovered.dispatchEvent(new Event('open'))
+  recovered.fail()
   await wait(10)
+  const rejected = FakeEventSource.instances[5]
+  assert.isDefined(rejected)
+  rejected.dispatchEvent(Object.assign(new Event('error'), { status: 401 }))
+  await wait(20)
+  expect(request).toBe(9)
+})
 
-  const retry = FakeEventSource.instances[1]
-  assert.isDefined(retry)
-  expect(new URL(retry.url).searchParams.get('token')).toBe('3,4')
+it('retains cached tokens across known non-credential SSE failures', async () => {
+  const fetch = vi.fn(async () => Response.json({ token: 'valid', expires_at: nowSeconds() + 900 }))
+  const m = client({ fetch, retryMs: 10, retryJitter: 0 })
+  m.private('a')
+  await flush()
+
+  for (const [index, status] of [503, 500, 431].entries()) {
+    const source = FakeEventSource.instances[index]
+    assert.isDefined(source)
+    source.dispatchEvent(Object.assign(new Event('error'), { code: status }))
+    await wait(10 * 2 ** index)
+  }
+  expect(FakeEventSource.instances).toHaveLength(4)
+  expect(fetch).toHaveBeenCalledTimes(1)
 })
 
 it('stores the announced connection ID and reuses it for SSE and Laravel authorization', async () => {
-  const fetch = vi.fn(authFetch({ token: 'jwt', expires_at: nowSeconds() + 900 }))
+  const fetch = vi.fn(authFetch({ token: 'jwt', expires_at: nowSeconds() + 10 }))
   const m = client({ fetch, url: 'https://app.test/sse?connection=unissued', retryMs: 10 })
   const control = vi.fn()
   const id = '0123456789abcdef0123456789abcdef'
@@ -1324,6 +1394,7 @@ it('stores the announced connection ID and reuses it for SSE and Laravel authori
   expect(new URL(first.url).searchParams.has('connection')).toBe(false)
   expect(authFetch.calls).toEqual([{ body: { channel_name: 'private-orders' } }])
 
+  first.dispatchEvent(new Event('open'))
   first.emit('updated', { topic: 'news', data: 1 }, '10-0')
   first.emit('murmur.connected', { connection_id: id, protocol: 1, topic: 'news', data: 2 }, '20-0')
   expect(m.socketId()).toBe(id)
@@ -1415,6 +1486,7 @@ it('closes a failed source and rebuilds fresh, token and cursor after replay or 
   assert.isDefined(joining)
   expect(new URL(joining.url).searchParams.get('fresh')).toBe('private-orders')
   expect(new URL(joining.url).searchParams.get('token')).toBe('token-1')
+  joining.dispatchEvent(new Event('open'))
   joining.emit('updated', { topic: 'news', data: 1 }, '15-0')
   joining.fail()
   expect(joining.closed).toBe(true)
@@ -1425,7 +1497,7 @@ it('closes a failed source and rebuilds fresh, token and cursor after replay or 
   assert.isDefined(retry)
   expect(new URL(retry.url).searchParams.get('fresh')).toBe('private-orders')
   expect(new URL(retry.url).searchParams.get('lastEventId')).toBe('15-0')
-  expect(new URL(retry.url).searchParams.get('token')).toBe('token-2')
+  expect(new URL(retry.url).searchParams.get('token')).toBe('token-1')
   retry.dispatchEvent(new Event('open'))
   retry.emit('murmur.attached', {}, '15-0')
   retry.emit('updated', { topic: 'news', data: 2 }, '16-0')
@@ -1437,7 +1509,7 @@ it('closes a failed source and rebuilds fresh, token and cursor after replay or 
   assert.isDefined(attached)
   expect(new URL(attached.url).searchParams.has('fresh')).toBe(false)
   expect(new URL(attached.url).searchParams.get('lastEventId')).toBe('16-0')
-  expect(new URL(attached.url).searchParams.get('token')).toBe('token-2')
+  expect(new URL(attached.url).searchParams.get('token')).toBe('token-1')
 })
 
 it('does not let an old attach marker acknowledge a replacement join', async () => {

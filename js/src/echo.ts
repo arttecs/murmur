@@ -46,18 +46,15 @@ function resolveCsrfToken(options: MurmurConnectorOptions): string | null | unde
 }
 
 /** Combines the caller's authorization headers with Echo's CSRF and bearer tokens. */
-function authorization(options: MurmurConnectorOptions): AuthOptions | undefined {
+function authorization(options: MurmurConnectorOptions): AuthOptions {
   const { auth, bearerToken } = options
-  const csrfToken = resolveCsrfToken(options)
-  if (!bearerToken && !csrfToken) {
-    return auth
-  }
 
   return {
     ...auth,
     headers: async () => {
       const supplied = typeof auth?.headers === 'function' ? await auth.headers() : auth?.headers
       const headers = new Headers(supplied)
+      const csrfToken = resolveCsrfToken(options)
       if (csrfToken) {
         headers.set('X-CSRF-TOKEN', csrfToken)
       }
