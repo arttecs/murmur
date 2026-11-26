@@ -74,6 +74,10 @@ class MurmurServiceProvider extends ServiceProvider
         ], 'murmur-config');
 
         if ($this->app->runningInConsole()) {
+            $this->publishesMigrations([
+                __DIR__.'/../database/migrations/2026_11_23_000000_create_murmur_metrics_table.php' => $this->app->databasePath('migrations/2026_11_23_000000_create_murmur_metrics_table.php'),
+            ], 'murmur-migrations');
+
             $this->commands([ServeCommand::class]);
         }
     }
