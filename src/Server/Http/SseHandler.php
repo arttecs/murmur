@@ -3,10 +3,11 @@
 namespace Arttecs\Murmur\Server\Http;
 
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Contracts\SubscriptionAuthorizer;
 use Arttecs\Murmur\Exceptions\InvalidToken;
 use Arttecs\Murmur\Server\Auth\Grant;
-use Arttecs\Murmur\Server\Auth\TokenVerifier;
 use Arttecs\Murmur\Server\ConnectionId;
+use Arttecs\Murmur\Server\ErrorReporter;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Hub;
@@ -15,15 +16,18 @@ use Arttecs\Murmur\Server\Replay;
 use Arttecs\Murmur\Server\ServerConfig;
 use Arttecs\Murmur\Server\Sse\Frame;
 use Arttecs\Murmur\Server\Topic;
+use Closure;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use React\EventLoop\LoopInterface;
 use React\Http\Message\Response;
+use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use React\Socket\ConnectionInterface;
 use React\Stream\ThroughStream;
 use Throwable;
 
+use function React\Promise\all;
 use function React\Promise\resolve;
 
 /**
@@ -34,27 +38,26 @@ use function React\Promise\resolve;
 class SseHandler
 {
     /**
-     * The verifier used to authorize subscription tokens.
-     */
-    protected TokenVerifier $tokens;
-
-    /**
      * Create an SSE handler that shares the server's hub, log, and loop.
+     *
+     * @param  Closure(): bool  $accepting
      */
     public function __construct(
         protected ServerConfig $config,
         protected EventLog $log,
         protected Hub $hub,
         protected LoopInterface $loop,
+        protected SubscriptionAuthorizer $authorizer,
+        protected Closure $accepting,
         protected ?Metrics $metrics = null,
-    ) {
-        $this->tokens = new TokenVerifier($config->secret);
-    }
+    ) {}
 
     /**
-     * Validate a subscription and schedule its initial frames once the body is piped.
+     * Validate a subscription and wait for the authorizer's decision.
+     *
+     * @return ResponseInterface|PromiseInterface<ResponseInterface>
      */
-    public function __invoke(ServerRequestInterface $request, ConnectionInterface $client): ResponseInterface
+    public function __invoke(ServerRequestInterface $request, ConnectionInterface $client): ResponseInterface|PromiseInterface
     {
         $headers = [];
         $origin = $request->getHeaderLine('Origin');
@@ -94,34 +97,72 @@ class SseHandler
             return new Response(400, $headers);
         }
 
-        $privateTopics = array_filter($topics, Topic::isPrivate(...));
-
-        if ($tokens === [] && $privateTopics !== []) {
-            return new Response(401, $headers);
-        }
-
-        try {
-            $grants = array_map($this->tokens->verify(...), $tokens);
-        } catch (InvalidToken) {
-            return new Response(401, $headers);
-        }
-
-        $expiresAt = $this->authorizationExpiry($privateTopics, $grants);
-
-        if ($expiresAt === false) {
-            return new Response(403, $headers);
-        }
-
-        if ($this->hub->connectionCount() >= $this->config->maxConnections) {
-            return new Response(503, $headers);
-        }
-
         $cursor = EventId::tryParse($request->getHeaderLine('Last-Event-ID'));
 
         if ($cursor === null && is_string($query['lastEventId'] ?? null)) {
             $cursor = EventId::tryParse($query['lastEventId']);
         }
 
+        $authorization = all(array_map(
+            fn (?string $token): PromiseInterface => resolve(null)->then(fn () => $this->authorizer->authorize($token, $topics)),
+            $tokens === [] ? [null] : $tokens,
+        ));
+
+        $decision = new Deferred(function (callable $resolve) use ($authorization): void {
+            $resolve(null);
+            $authorization->cancel();
+        });
+        $authorization->then($decision->resolve(...), $decision->reject(...));
+
+        return $decision->promise()->then(function (?array $grants) use ($client, $headers, $topics, $fresh, $id, $cursor): ResponseInterface {
+            if ($grants === null || ! ($this->accepting)()) {
+                return new Response(503, $headers);
+            }
+
+            $now = time();
+
+            if (array_filter($grants, fn (Grant $grant): bool => $grant->expiresAt <= $now) !== []) {
+                return new Response(401, $headers);
+            }
+
+            $expiresAt = $this->authorizationExpiry(array_filter($topics, Topic::isPrivate(...)), $grants);
+
+            if ($expiresAt === false) {
+                return new Response(403, $headers);
+            }
+
+            if ($this->hub->connectionCount() >= $this->config->maxConnections) {
+                return new Response(503, $headers);
+            }
+
+            return $this->subscribe($client, $headers, $topics, $fresh, $id, $cursor, $expiresAt);
+        })->catch(function (Throwable $error) use ($headers): ResponseInterface {
+            if ($error instanceof InvalidToken) {
+                return new Response(401, $headers);
+            }
+
+            ErrorReporter::report($error);
+
+            return new Response(500, $headers);
+        });
+    }
+
+    /**
+     * Attach the authorized connection and schedule initial frames after the body is piped.
+     *
+     * @param  array<string, string>  $headers
+     * @param  list<string>  $topics
+     * @param  list<string>  $fresh
+     */
+    protected function subscribe(
+        ConnectionInterface $client,
+        array $headers,
+        array $topics,
+        array $fresh,
+        ?string $id,
+        ?EventId $cursor,
+        ?int $expiresAt,
+    ): ResponseInterface {
         if ($cursor !== null) {
             $this->metrics?->increment('murmur_replays_total');
         }

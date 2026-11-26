@@ -98,7 +98,13 @@ class ServeCommand extends Command
                 return self::FAILURE;
             }
 
-            $server = new Server($config, $log, $loop, $channel === null ? null : Log::channel($channel));
+            $server = new Server(
+                $config,
+                $log,
+                $loop,
+                $channel === null ? null : Log::channel($channel),
+                $manager->subscriptionAuthorizer(),
+            );
             $manager->callServingCallbacks($server, $loop);
 
             $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];

@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static void publish(string $topic, string $event, mixed $data = null, ?string $except = null)
  * @method static \Arttecs\Murmur\Stream stream(string $topic)
  * @method static string token(array<string> $topics, ?int $ttl = null)
+ * @method static void authorizeSubscriptionsUsing(\Closure $factory)
  * @method static void serving(\Closure $callback)
  * @method static string publicUrl()
  *

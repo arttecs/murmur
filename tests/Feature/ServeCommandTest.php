@@ -1,19 +1,25 @@
 <?php
 
 use Arttecs\Murmur\Console\Commands\ServeCommand;
+use Arttecs\Murmur\Contracts\SubscriptionAuthorizer;
 use Arttecs\Murmur\Facades\Murmur;
+use Arttecs\Murmur\Server\Auth\Grant;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
 use Arttecs\Murmur\Server\Server;
+use Arttecs\Murmur\Tests\Support\CallbackSubscriptionAuthorizer;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
 use Clue\Redis\Protocol\Factory as ProtocolFactory;
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Support\ServiceProvider;
 use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;
 use React\EventLoop\StreamSelectLoop;
 use React\Promise\Deferred;
+use React\Promise\PromiseInterface;
 use React\Promise\Timer\TimeoutException;
 use React\Socket\ConnectionInterface;
 use React\Socket\SocketServer;
@@ -23,6 +29,7 @@ use Symfony\Component\Process\Process;
 use function React\Async\async;
 use function React\Async\await;
 use function React\Async\delay;
+use function React\Promise\resolve;
 use function React\Promise\Timer\timeout;
 
 it('maps laravel config and options onto the server config', function () {
@@ -305,3 +312,42 @@ it('rejects malformed configured origins at startup', function (mixed $origin) {
         Loop::set($previousLoop);
     }
 })->with(['https://app.test/', 'https://app.test?x', 'https://app.test#', 'https://user@app.test', 'app.test', 'https://[::invalid]', 'https://app.test:65536', 'https://*.test', "https://app.test\n", 1]);
+
+it('uses the subscription authorizer registered in a laravel provider boot method', function () {
+    $provider = new class($this->app) extends ServiceProvider
+    {
+        public array $resolved = [];
+
+        public function boot(): void
+        {
+            Murmur::authorizeSubscriptionsUsing(function (Application $app): SubscriptionAuthorizer {
+                $this->resolved[] = $app;
+
+                return new CallbackSubscriptionAuthorizer(fn (?string $token): PromiseInterface => resolve(
+                    new Grant($token === 'opaque' ? ['private-news'] : [], time() + 30),
+                ));
+            });
+        }
+    };
+    $this->app->register($provider);
+    expect($provider->resolved)->toBe([]);
+
+    $previousLoop = Loop::get();
+    $loop = new StreamSelectLoop;
+    Loop::set($loop);
+    $port = ServerHarness::availablePort();
+    $response = new Deferred;
+    $loop->futureTick(function () use ($port, $response, $loop): void {
+        timeout(async(fn () => SseReader::open("http://127.0.0.1:{$port}/sse?topics=private-news&token=opaque"))(), 1.0)
+            ->then($response->resolve(...), $response->reject(...))
+            ->finally($loop->stop(...));
+    });
+
+    try {
+        $this->artisan('murmur:serve', ['--port' => $port])->assertSuccessful();
+        expect(await($response->promise())->status())->toBe(200);
+        expect($provider->resolved)->toBe([$this->app]);
+    } finally {
+        Loop::set($previousLoop);
+    }
+});

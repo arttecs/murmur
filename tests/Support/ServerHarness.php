@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Tests\Support;
 
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Contracts\SubscriptionAuthorizer;
 use Arttecs\Murmur\Server\Auth\Signature;
 use Arttecs\Murmur\Server\Auth\TokenIssuer;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
@@ -46,7 +47,7 @@ class ServerHarness
      *
      * @param  array<string, mixed>  $overrides
      */
-    public static function start(array $overrides = [], ?EventLog $log = null): ServerHarness
+    public static function start(array $overrides = [], ?EventLog $log = null, ?SubscriptionAuthorizer $authorizer = null): ServerHarness
     {
         $config = new ServerConfig(...$overrides + [
             'secret' => 'test-secret-with-at-least-32-bytes',
@@ -55,7 +56,7 @@ class ServerHarness
         ]);
 
         $log ??= new MemoryEventLog;
-        $server = new Server($config, $log);
+        $server = new Server($config, $log, authorizer: $authorizer);
         await($server->listen());
 
         return self::$running[] = new self($server, $config, $log);

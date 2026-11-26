@@ -5,6 +5,7 @@ namespace Arttecs\Murmur;
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Contracts\MetricsStore;
 use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Contracts\SubscriptionAuthorizer;
 use Arttecs\Murmur\Exceptions\MetricsStoreNotConfigured;
 use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Metrics\CacheMetricsStore;
@@ -66,6 +67,13 @@ class MurmurManager
      * The resolved metrics store for this manager.
      */
     protected ?MetricsStore $metricsStore = null;
+
+    /**
+     * The factory used to build a custom authorizer for the server process.
+     *
+     * @var (Closure(Application): SubscriptionAuthorizer)|null
+     */
+    protected ?Closure $subscriptionAuthorizerFactory = null;
 
     /**
      * The callbacks to run when the Artisan command creates the server.
@@ -316,6 +324,26 @@ class MurmurManager
         $issuer = new TokenIssuer($secret, fn () => now()->timestamp);
 
         return $issuer->issue($topics, $ttl ?? $this->config->get('murmur.token_ttl'));
+    }
+
+    /**
+     * Register the factory that builds the server's non-blocking subscription authorizer.
+     *
+     * @param  Closure(Application): SubscriptionAuthorizer  $factory
+     */
+    public function authorizeSubscriptionsUsing(Closure $factory): void
+    {
+        $this->subscriptionAuthorizerFactory = $factory;
+    }
+
+    /**
+     * Build the subscription authorizer when the server starts.
+     */
+    public function subscriptionAuthorizer(): ?SubscriptionAuthorizer
+    {
+        return $this->subscriptionAuthorizerFactory === null
+            ? null
+            : ($this->subscriptionAuthorizerFactory)($this->app);
     }
 
     /**

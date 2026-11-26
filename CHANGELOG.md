@@ -10,6 +10,7 @@
 - Redis Streams driver for publishing from Laravel and sharing event history across Murmur nodes.
 - Environment variables for all package settings, including Redis timing, shutdown grace.
 - Custom publisher and event log factories registered through `Murmur::extend()`.
+- Non-blocking custom subscription authorizers registered through `Murmur::authorizeSubscriptionsUsing()`, with a PHPUnit conformance suite.
 - Per-process server metrics read through `Server::metrics()`, with `snapshot()`, `value()`, and `toPrometheus()`. No metrics route is served.
 - Opt-in persistence for per-node metrics snapshots in database, Redis, cache, or custom stores registered with `Murmur::extendMetrics()`.
 - One long-lived Artisan writer per metrics-enabled server, with configurable intervals, acknowledgement timeouts, node names, and metric filters.

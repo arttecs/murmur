@@ -49,7 +49,7 @@ Register Laravel's broadcasting routes with `php artisan install:broadcasting`, 
 
 Send an authenticated JSON request to `POST /broadcasting/auth` with `{"channel_name":"private-orders.42"}`. The app's middleware controls credentials. Laravel uses the channel's configured guard and returns `{"token":"<JWT>","expires_at":1710000900}` for an authorized channel or 403 for a denied, missing, invalid, public, or presence channel. Each token covers one channel. An optional `socket_id` is ignored because the token authorizes the channel and the connection ID grants no access.
 
-Request a token for each private topic and join the tokens with commas in the `token` query parameter on `/sse`. The number of tokens is limited by `server.max_topics_per_connection` and by the 8 KiB limit for the request line and headers. Refresh tokens before expiry. See [the wire protocol](docs/protocol.md#private-topics) for SSE status codes and expiry rules.
+Use `Murmur::token($topics, $ttl)` when your application needs to mint subscription tokens itself. To use the broadcasting endpoint, request a token for each private topic and join the tokens with commas in the `token` query parameter on `/sse`. The number of tokens is limited by `server.max_topics_per_connection` and by the 8 KiB limit for the request line and headers. Refresh tokens before expiry. See [the wire protocol](docs/protocol.md#private-topics) for SSE status codes and expiry rules.
 
 Use Laravel's `broadcast($event)->toOthers()` to skip the sending subscription. Send the ID from the `murmur.connected` event in the `X-Socket-ID` header on the Laravel request that triggers the broadcast. Pass the same ID as `connection` on reconnect to keep the exclusion in replay. For a direct publication, pass the ID as the fourth argument to `Murmur::publish()`.
 
@@ -177,15 +177,17 @@ A subscriber receives `murmur.gap` in place of a replay if the requested history
 
 ## Writing a driver
 
-Implement `Contracts\Publisher` and `Contracts\EventLog` for an event transport. Implement `Contracts\MetricsStore` to store per-node snapshots. Register the implementations in a Laravel service provider's `boot()` method.
+Implement `Contracts\Publisher` and `Contracts\EventLog` for an event transport. Implement `Contracts\MetricsStore` to store per-node snapshots, or `Contracts\SubscriptionAuthorizer` to verify application-issued subscription credentials. Register the implementations in a Laravel service provider's `boot()` method.
 
 ```php
 use App\Murmur\ExampleEventLog;
 use App\Murmur\ExampleMetricsStore;
 use App\Murmur\ExamplePublisher;
+use App\Murmur\ExampleSubscriptionAuthorizer;
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Contracts\MetricsStore;
 use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Contracts\SubscriptionAuthorizer;
 use Arttecs\Murmur\Facades\Murmur;
 use Illuminate\Contracts\Foundation\Application;
 
@@ -196,11 +198,17 @@ Murmur::extend(
 );
 
 Murmur::extendMetrics('reports', fn (Application $app): MetricsStore => $app->make(ExampleMetricsStore::class));
+
+Murmur::authorizeSubscriptionsUsing(
+    fn (Application $app): SubscriptionAuthorizer => $app->make(ExampleSubscriptionAuthorizer::class),
+);
 ```
 
 Set `MURMUR_DRIVER=example` and, independently, `MURMUR_METRICS_STORE=reports` to use those implementations. Names may contain lowercase ASCII letters, digits, underscores, and hyphens. The built-in event driver names are `http` and `redis`. The built-in metrics store names are `database`, `redis`, and `cache`.
 
 Laravel calls the `Publisher` to send events. `murmur:serve` uses the `EventLog` for live delivery and replay. Event log methods and callbacks run in the server's event loop and must never block. Return ReactPHP promises from `since()` and `ready()` and keep `healthy()` a cheap synchronous check. Metrics store writes run in the separate Artisan writer. A store's `put()` replaces one node's snapshot, `all()` returns snapshots keyed by node, and `forget()` removes a node.
+
+The subscription authorizer factory builds an object when `murmur:serve` creates the server. Its `authorize(?string $token, array $topics)` method runs in that server process's event loop and must be non-blocking. It receives the requested topics and one token at a time, or `null` when the request contains no token. Resolve a ReactPHP promise with an immutable `Server\Auth\Grant` containing the allowed topics and their Unix expiry. Reject with `Exceptions\InvalidToken` for invalid credentials. The server checks whether the grants cover each requested private topic. Use a token format without commas. With no custom factory, the server verifies Murmur's HS256 JWTs. Laravel's broadcasting endpoint, `Murmur::token()`, and private stream URLs still issue Murmur JWTs, so configure clients and the authorizer to use compatible credentials.
 
 Run the packaged PHPUnit suites against your implementations. Extend `Testing\EventLogConformanceTestCase` and provide a new empty log with the supplied loop and a writer that appends into that log's backend. The fixture must trim to the requested capacity and return the assigned `EventId` directly or through a promise.
 
@@ -222,7 +230,7 @@ class ExampleEventLogTest extends EventLogConformanceTestCase
 }
 ```
 
-For a metrics store, extend `Testing\MetricsStoreConformanceTestCase` and implement `createMetricsStore(): MetricsStore` to return an empty, isolated store for each test. Both suites use plain PHPUnit.
+For a metrics store, extend `Testing\MetricsStoreConformanceTestCase` and implement `createMetricsStore(): MetricsStore` to return an empty, isolated store for each test. For a token-based authorizer, extend `Testing\SubscriptionAuthorizerConformanceTestCase` and supply the authorizer and its valid, malformed, and expired token fixtures. All three suites use plain PHPUnit.
 
 ## Deployment
 
@@ -421,7 +429,7 @@ When the event loop timer runs late by more than `MURMUR_LOOP_LAG_THRESHOLD_MS`,
 
 Semantic versioning covers the `Murmur` facade and the public methods of `MurmurManager`, the `MurmurServiceProvider` class name, the types in `Contracts\` and `Exceptions\`, configuration keys and environment variables, and public Artisan command names and options.
 
-It also covers `Server\Server`, `Server\ServerConfig`, `Server\Metrics` (`snapshot()`, `value()`, `toPrometheus()`, and `names()`), `Server\Event`, `Server\EventId`, `Server\Replay`, `Stream`, the classes in `Testing\`, and the [wire protocol](docs/protocol.md).
+It also covers `Server\Server`, `Server\ServerConfig`, `Server\Auth\Grant`, `Server\Metrics` (`snapshot()`, `value()`, `toPrometheus()`, and `names()`), `Server\Event`, `Server\EventId`, `Server\Replay`, `Stream`, the classes in `Testing\`, and the [wire protocol](docs/protocol.md).
 
 ## License
 

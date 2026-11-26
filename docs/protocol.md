@@ -1,6 +1,6 @@
 # Murmur wire protocol 1
 
-Murmur serves HTTP and Server-Sent Events (SSE). Its SSE server handles the routes below. The authorization route runs in the Laravel application and can have a different base URL. The SSE server includes `X-Murmur-Protocol: 1` in the responses it generates for `GET /sse`, `GET /health`, and `GET /ready`, including route-level errors. The PHP constant is `Server::PROTOCOL`. The header is meant for non-browser clients and probes: the server does not list it in `Access-Control-Expose-Headers`, so a cross-origin page cannot read it. The request line and headers of any request must fit in 8 KiB, which bounds the combined length of the subscription query parameters; a larger request is answered with 431.
+Murmur serves HTTP and Server-Sent Events (SSE). The SSE server and Laravel application expose the routes below. The Laravel authorization endpoint can have a different base URL. The SSE server includes `X-Murmur-Protocol: 1` in the responses it generates for `GET /sse`, `GET /health`, and `GET /ready`, including route-level errors. The PHP constant is `Server::PROTOCOL`. The header is meant for non-browser clients and probes: the server does not list it in `Access-Control-Expose-Headers`, so a cross-origin page cannot read it. The request line and headers of any request must fit in 8 KiB, which bounds the combined length of the subscription query parameters; a larger request is answered with 431.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -19,7 +19,7 @@ Open a GET request to `/sse` with these URL query parameters.
 | Parameter | Required | Value |
 | --- | --- | --- |
 | `topics` | Yes | A comma-separated list of topic names, URL-encoded as a single query parameter. |
-| `token` | For private topics | A comma-separated list of signed tokens that together grant access to the requested private topics. |
+| `token` | Depends on the authorizer | A comma-separated list of tokens that together grant access to the requested private topics. The default verifier requires tokens for private topics. |
 | `fresh` | No | A comma-separated subset of `topics` that starts at the attach point, skipping earlier events. |
 | `connection` | No | A previously announced connection ID to reuse across reconnects. |
 | `lastEventId` | No | A fallback replay cursor when `Last-Event-ID` is absent or malformed. |
@@ -30,15 +30,16 @@ A topic is 1–200 bytes and cannot contain a comma or ASCII whitespace. Topic n
 | --- | --- |
 | 200 | The subscription succeeded. The response remains open for SSE frames. |
 | 400 | The topic list is missing, malformed, or over its entry limit, the connection ID is malformed, the token list is invalid, or `fresh` contains an invalid or unsubscribed topic. |
-| 401 | A private subscription omitted tokens, or a supplied token is malformed, expired, or has an invalid signature. |
-| 403 | The `Origin` header is disallowed, or the valid tokens together fail to cover at least one requested private topic. |
+| 401 | The authorizer rejected a credential, for example because a required token is missing or a supplied token is malformed, expired, or has an invalid signature. |
+| 403 | The `Origin` header is disallowed, or the granted topics fail to cover at least one requested private topic. |
+| 500 | The server could not complete the subscription, for example because the authorizer failed unexpectedly. |
 | 503 | The server has reached its SSE connection limit (900 by default) or is shutting down. |
 
-A successful response includes `Content-Type: text/event-stream`, `Cache-Control: no-cache`, and `X-Accel-Buffering: no`.
+If authorization has not settled by the request deadline, the server closes the socket without a response. A successful response includes `Content-Type: text/event-stream`, `Cache-Control: no-cache`, and `X-Accel-Buffering: no`.
 
 ### Frames
 
-Each frame uses LF line endings and ends in a blank line. An event has one `data:` field containing a JSON object with the wire `topic` and the original JSON value in `data`. An omitted publish payload becomes JSON `null`. The event name is 1–200 bytes without CR or LF. The built-in logs assign every stored event an ID.
+Each frame uses LF line endings and ends in a blank line. A published event has one `data:` field containing a JSON object with the wire `topic` and the original JSON value in `data`. An omitted publish payload becomes JSON `null`. The event name is 1–200 bytes without CR or LF. The built-in logs assign every stored event an ID.
 
 ```text
 id: 1710000000000-2
@@ -84,14 +85,16 @@ The `murmur.` event namespace is reserved. `murmur.end` is published by Laravel'
 
 ### Private topics
 
-Topic names beginning with `private-` require authorization. The server accepts an HS256 JWT signed with the same shared secret as the server, at least 32 bytes long. Each token has these claims.
+Topic names beginning with `private-` require authorization. The default authorizer accepts an HS256 JWT signed with the same shared secret as the server, at least 32 bytes long. Each token has these claims.
 
 | Claim | Value |
 | --- | --- |
 | `topics` | JSON array of strings containing full wire topic names, including `private-`. Each private topic must match an entry exactly. |
 | `exp` | Integer Unix expiration time in seconds. Laravel issues tokens for `token_ttl` seconds, 900 by default. |
 
-The server verifies the JWT signature and expiration with no clock leeway. It checks both claims' types. Laravel issues tokens with these two claims only. If another issuer adds `nbf` or `iat`, the server also rejects a token whose `nbf`, or whose `iat` when `nbf` is absent, is later than its own clock, again with no leeway; omit both claims or keep the clocks synchronized. A public-only request can omit `token`. When supplied, the comma-separated list must contain only nonempty items and at most `server.max_topics_per_connection` tokens. The server verifies every token, including those unused by the subscription. It checks the union of their grants against the requested private topics. When grants overlap, each private topic stays authorized through the latest expiry of a token that covers it. The server closes the stream at the first of those per-topic expiries. Public topics do not impose an expiry. Obtain fresh tokens before reconnecting to private topics.
+The server verifies the JWT signature and expiration with no clock leeway. It checks both claims' types. Laravel issues tokens with these two claims only. If another issuer adds `nbf` or `iat`, the server also rejects a token whose `nbf`, or whose `iat` when `nbf` is absent, is later than its own clock, again with no leeway; omit both claims or keep the clocks synchronized. With the default authorizer, a public-only request can omit `token`. When supplied, the comma-separated list must contain only nonempty items and at most `server.max_topics_per_connection` tokens. The server verifies every token, including those unused by the subscription. It checks the union of their grants against the requested private topics. When grants overlap, each private topic stays authorized through the latest expiry of a token that covers it. The server closes the stream at the first of those per-topic expiries. Public topics do not impose an expiry. Obtain fresh tokens before reconnecting to private topics.
+
+A deployment may replace token verification. In that case the token format and handling of an omitted token are deployment-defined. Tokens still cannot contain commas, which delimit list entries after URL decoding. The status codes and grant coverage and expiry rules are the same.
 
 ### Laravel authorization
 

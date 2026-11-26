@@ -3,6 +3,8 @@
 namespace Arttecs\Murmur\Server;
 
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Contracts\SubscriptionAuthorizer;
+use Arttecs\Murmur\Server\Auth\JwtSubscriptionAuthorizer;
 use Arttecs\Murmur\Server\Http\PublishHandler;
 use Arttecs\Murmur\Server\Http\SseHandler;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
@@ -56,6 +58,11 @@ class Server
      * The loop used for HTTP and connection timers.
      */
     protected LoopInterface $loop;
+
+    /**
+     * The subscription authorizer used by the SSE handler.
+     */
+    protected SubscriptionAuthorizer $authorizer;
 
     /**
      * The hub shared by subscriptions and the event log.
@@ -148,14 +155,16 @@ class Server
     protected bool $closed = false;
 
     /**
-     * Create a server using the given configuration, event log, loop, and logger.
+     * Create a server with an event log and optional loop, logger, and subscription authorizer.
      */
     public function __construct(
         protected ServerConfig $config,
         protected EventLog $log,
         ?LoopInterface $loop = null,
         protected ?LoggerInterface $logger = null,
+        ?SubscriptionAuthorizer $authorizer = null,
     ) {
+        $this->authorizer = $authorizer ?? new JwtSubscriptionAuthorizer($config->secret);
         $this->loop = $loop ?? Loop::get();
         $this->metrics = new Metrics;
         $this->hub = new Hub($this->metrics);
@@ -208,7 +217,15 @@ class Server
      */
     protected function bind(): void
     {
-        $sse = new SseHandler($this->config, $this->log, $this->hub, $this->loop, $this->metrics);
+        $sse = new SseHandler(
+            $this->config,
+            $this->log,
+            $this->hub,
+            $this->loop,
+            $this->authorizer,
+            fn (): bool => $this->shutdown === null,
+            $this->metrics,
+        );
         $publish = $this->config->publishEnabled && $this->log instanceof MemoryEventLog
             ? new PublishHandler($this->config, $this->log)
             : null;
@@ -342,6 +359,11 @@ class Server
     protected function finishResponse(ResponseInterface $response, string $route, ConnectionInterface $client): ResponseInterface
     {
         $this->cancelRequestDeadline($client);
+
+        if (! $client->isWritable()) {
+            return $response;
+        }
+
         $status = $response->getStatusCode();
 
         if ($route === 'POST /publish') {
