@@ -58,7 +58,7 @@ it('tracks events, connections, output bytes and gauges for a listening server',
     expect($open)->toMatchArray([
         'murmur_connections_opened_total' => 1,
         'murmur_connections_closed_total' => 0,
-        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n".$connected),
+        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n{$connected}event: murmur.attached\ndata: {}\n\n"),
         'murmur_connections' => 1,
         'murmur_sockets' => 1,
         'murmur_topics' => 2,
@@ -80,7 +80,7 @@ it('tracks events, connections, output bytes and gauges for a listening server',
         'murmur_events_received_total' => 2,
         'murmur_events_sent_total' => 1,
         'murmur_replayed_events_total' => 0,
-        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n{$connected}id: {$event->id}\nevent: updated\ndata: {\"topic\":\"news\",\"data\":null}\n\n"),
+        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n{$connected}event: murmur.attached\ndata: {}\n\nid: {$event->id}\nevent: updated\ndata: {\"topic\":\"news\",\"data\":null}\n\n"),
     ]);
 
     $reader->close();
@@ -124,7 +124,7 @@ it('counts the bytes in a heartbeat without treating it as an event', function (
     expect($reader->next()['comment'])->toBe('ping');
 
     expect(serverMetricValues($h))->toMatchArray([
-        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n{$connected}: ping\n\n"),
+        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n{$connected}event: murmur.attached\ndata: {}\n\n: ping\n\n"),
         'murmur_events_sent_total' => 0,
         'murmur_gaps_total' => 0,
     ]);
@@ -138,16 +138,17 @@ it('counts replayed events and gap frames at the time they are written', functio
     $connected = "event: murmur.connected\ndata: {\"connection_id\":\"{$id}\",\"protocol\":1}\n\n";
     $reader = SseReader::open($h->url('/sse?topics=news&connection='.$id), ['Last-Event-ID' => '1-0']);
 
-    expect($reader->start()['retry'])->toBe('3000');
+    expect($reader->start(replaying: true)['retry'])->toBe('3000');
     expect($reader->next()['event'])->toBe('murmur.gap');
     expect($reader->next()['event'])->toBe('retained');
+    expect($reader->attached()['id'])->toBe((string) $event->id);
     expect(serverMetricValues($h))->toMatchArray([
         'murmur_replays_total' => 1,
         'murmur_events_received_total' => 1,
         'murmur_events_sent_total' => 1,
         'murmur_replayed_events_total' => 1,
         'murmur_gaps_total' => 1,
-        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n{$connected}event: murmur.gap\ndata: {}\n\nid: {$event->id}\nevent: retained\ndata: {\"topic\":\"news\",\"data\":null}\n\n"),
+        'murmur_bytes_sent_total' => strlen("retry: 3000\n\n{$connected}event: murmur.gap\ndata: {}\n\nid: {$event->id}\nevent: retained\ndata: {\"topic\":\"news\",\"data\":null}\n\nid: {$event->id}\nevent: murmur.attached\ndata: {}\n\n"),
     ]);
 });
 

@@ -41,8 +41,9 @@ it('replays missed events after reconnecting', function () {
     $h->log->append(new Event('other', 'skip'));
     $h->log->append(new Event('news', 'b'));
     $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => (string) $first->id]);
-    $r->start();
+    $r->start(replaying: true);
     expect($r->next()['event'])->toBe('b');
+    $r->attached();
 });
 
 it('skips the event at the reconnect cursor when there is nothing to replay', function () {
@@ -62,8 +63,9 @@ it('accepts the cursor in the query string', function () {
     $first = $h->log->append(new Event('news', 'a'));
     $h->log->append(new Event('news', 'b'));
     $r = SseReader::open($h->url("/sse?topics=news&lastEventId={$first->id}"));
-    $r->start();
+    $r->start(replaying: true);
     expect($r->next()['event'])->toBe('b');
+    $r->attached();
 });
 
 it('falls back to the query cursor when the header is invalid', function (string $header) {
@@ -71,15 +73,17 @@ it('falls back to the query cursor when the header is invalid', function (string
     $first = $h->log->append(new Event('news', 'a'));
     $h->log->append(new Event('news', 'b'));
     $r = SseReader::open($h->url("/sse?topics=news&lastEventId={$first->id}"), ['Last-Event-ID' => $header]);
-    expect($r->start()['retry'])->toBe('3000');
+    expect($r->start(replaying: true)['retry'])->toBe('3000');
     expect($r->next()['event'])->toBe('b');
+    $r->attached();
 })->with(['', 'nonsense']);
 
 it('signals a gap when the cursor predates the log', function () {
     $h = ServerHarness::start();
     $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => '1-0']);
-    $r->start();
+    $r->start(replaying: true);
     expect($r->next()['event'])->toBe('murmur.gap');
+    $r->attached();
 });
 
 it('treats a malformed cursor as no cursor', function () {
@@ -99,8 +103,10 @@ it('delivers an event published during replay exactly once and in order', functi
     $log->append(new Event('news', 'b'));
     $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => (string) $first->id]);
     $log->append(new Event('news', 'c'));
-    $r->start();
-    expect([$r->next()['event'], $r->next()['event']])->toBe(['b', 'c']);
+    $r->start(replaying: true);
+    expect($r->next()['event'])->toBe('b');
+    $r->attached();
+    expect($r->next()['event'])->toBe('c');
     expect(fn () => $r->next(0.2))->toThrow(RuntimeException::class, 'Timed out');
 });
 
@@ -191,12 +197,13 @@ it('signals a gap for a replay above the byte budget and continues live', functi
     $first = $h->log->append(new Event('news', 'first'));
 
     for ($i = 0; $i < 900; $i++) {
-        $h->log->append(new Event('news', 'history', str_repeat('x', 1200)));
+        $tail = $h->log->append(new Event('news', 'history', str_repeat('x', 1200)));
     }
 
     $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => (string) $first->id]);
-    expect($r->start()['retry'])->toBe('3000');
+    expect($r->start(replaying: true)['retry'])->toBe('3000');
     expect($r->next()['event'])->toBe('murmur.gap');
+    expect($r->attached()['id'])->toBe((string) $tail->id);
     $h->publish('news', 'live');
     expect($r->next()['event'])->toBe('live');
 });
@@ -264,9 +271,8 @@ it('announces the connection after retry and before delivering events', function
     $h = ServerHarness::start(log: $log);
     $first = $log->append(new Event('news', 'cursor'));
     $query = $replaying ? '&lastEventId='.$first->id : '';
-    $expected = $replaying ? ['history', 'live'] : ['live'];
 
-    $log->append(new Event('news', 'history'));
+    $history = $log->append(new Event('news', 'history'));
     $r = SseReader::open($h->url('/sse?topics=news'.$query));
     $log->append(new Event('news', 'live'));
 
@@ -278,13 +284,17 @@ it('announces the connection after retry and before delivering events', function
     expect($data['protocol'])->toBe(1);
     expect($data['connection_id'])->toMatch('/\A[0-9a-f]{32}\z/');
 
-    foreach ($expected as $event) {
-        expect($r->next()['event'])->toBe($event);
+    if ($replaying) {
+        expect($r->next()['event'])->toBe('history');
     }
+
+    expect($r->attached()['id'])->toBe((string) $history->id);
+    expect($r->next()['event'])->toBe('live');
 
     $reopened = SseReader::open($h->url('/sse?topics=news&connection='.$data['connection_id']));
     expect($reopened->next()['retry'])->toBe('3000');
     expect($reopened->next())->toBe($frame);
+    $reopened->attached();
 })->with([false, true]);
 
 it('rejects malformed connection identifiers', function (string $query) {
@@ -333,6 +343,7 @@ it('counts only deliverable events against the replay limit', function () {
     $visible = $h->log->append(new Event('news', 'visible'));
 
     $r = SseReader::open($h->url("/sse?topics=news&connection={$id}&lastEventId={$cursor->id}"));
-    $r->start();
+    $r->start(replaying: true);
     expect($r->next()['id'])->toBe((string) $visible->id);
+    $r->attached();
 });

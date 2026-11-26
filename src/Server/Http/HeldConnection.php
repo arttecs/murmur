@@ -30,19 +30,12 @@ class HeldConnection extends Connection
     protected int $heldBytes = 0;
 
     /**
-     * The last event ID written to the subscriber.
+     * The latest replay cursor established for the subscriber.
      */
     protected ?EventId $lastWrittenId = null;
 
     /**
-     * The attach point before which fresh topics are withheld.
-     */
-    protected ?EventId $attachTail = null;
-
-    /**
      * Create a held connection with the subscriber's requested replay cursor.
-     *
-     * @param  list<string>  $freshTopics
      */
     public function __construct(
         WritableStreamInterface $stream,
@@ -50,7 +43,6 @@ class HeldConnection extends Connection
         protected ?EventId $cursor = null,
         ?Metrics $metrics = null,
         ?string $id = null,
-        protected array $freshTopics = [],
     ) {
         parent::__construct($stream, $maxBufferBytes, $metrics, $id);
     }
@@ -99,7 +91,7 @@ class HeldConnection extends Connection
     }
 
     /**
-     * Write replayed events, drain held events and frames, and switch to live delivery.
+     * Write replayed events and acknowledge attachment before releasing held frames.
      *
      * @throws \JsonException
      */
@@ -109,7 +101,7 @@ class HeldConnection extends Connection
             return;
         }
 
-        $tail = $this->attachTail = $replay?->tail;
+        $tail = $replay?->tail;
 
         if ($this->cursor !== null && $tail !== null) {
             $this->lastWrittenId = $this->cursor->compare($tail) <= 0 ? $this->cursor : $tail;
@@ -145,6 +137,9 @@ class HeldConnection extends Connection
             $this->writeEvent($event, $frame, replayed: true);
         }
 
+        $this->lastWrittenId = $tail ?? $this->lastWrittenId;
+        $this->sendImmediately(Frame::attached($tail));
+
         for ($index = 0; isset($this->held[$index]); $index++) {
             $item = $this->held[$index];
 
@@ -175,9 +170,7 @@ class HeldConnection extends Connection
      */
     protected function writeEvent(Event $event, ?string $frame = null, bool $replayed = false): void
     {
-        if ($this->closed || $this->hasWritten($event)
-            || ($this->attachTail !== null && $event->id !== null
-                && in_array($event->topic, $this->freshTopics, true) && $event->id->compare($this->attachTail) <= 0)) {
+        if ($this->closed || $this->hasWritten($event)) {
             return;
         }
 

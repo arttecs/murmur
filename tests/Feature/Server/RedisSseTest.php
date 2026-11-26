@@ -17,8 +17,9 @@ it('serves sse subscribers from redis, including replay', function () {
     $first = xadd($key, 'news', 'a');
     xadd($key, 'news', 'b');
     $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => $first]);
-    $r->start();
+    $r->start(replaying: true);
     expect($r->next()['event'])->toBe('b');
+    $r->attached();
     xadd($key, 'news', 'c');
     expect($r->next()['event'])->toBe('c');
 });
@@ -77,9 +78,10 @@ it('does not repeat an event that the replay already delivered', function () {
         $replayed = xadd($key, 'news', 'b');
         $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => $first]);
 
-        expect($r->start()['retry'])->toBe('3000');
+        expect($r->start(replaying: true)['retry'])->toBe('3000');
         $frame = $r->next();
         expect($frame['event'])->toBe('b')->and($frame['id'])->toBe($replayed);
+        expect($r->attached()['id'])->toBe($replayed);
 
         $live = xadd($key, 'news', 'c');
         $frame = $r->next(3.0);
@@ -103,8 +105,8 @@ it('binds only after redis is ready and delivers an immediate publish to a new s
         await(React\Promise\Timer\timeout($listening, 2.0));
 
         $r = SseReader::open($server->address().'/sse?topics=news');
-        $id = xadd($key, 'news', 'immediate');
         expect($r->start()['retry'])->toBe('3000');
+        $id = xadd($key, 'news', 'immediate');
         expect($r->next()['id'])->toBe($id);
     } finally {
         $server->close();
@@ -126,15 +128,16 @@ it('suppresses retained fresh events even when the redis live reader sees them a
         expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
         waitForRedisRetry($log);
         $history = xadd($key, 'old', 'retained-old');
-        xadd($key, 'new', 'retained-fresh');
+        $tail = xadd($key, 'new', 'retained-fresh');
         $query = $withCursor ? "topics=old,new&lastEventId={$cursor}" : 'topics=new';
         $r = SseReader::open($h->url('/sse?'.$query.'&fresh=new'));
-        $r->start();
+        $r->start(replaying: true);
 
         if ($withCursor) {
             expect($r->next()['id'])->toBe($history);
         }
 
+        expect($r->attached()['id'])->toBe($tail);
         expect(fn () => $r->next(1.2))->toThrow(RuntimeException::class, 'Timed out');
         $fresh = xadd($key, 'new', 'live-fresh');
         expect($r->next()['id'])->toBe($fresh);

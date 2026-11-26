@@ -72,16 +72,20 @@ it('only delivers post-attach events for fresh topics and preserves order across
     $h = ServerHarness::start(log: $log);
     $first = $log->append(new Event('old', 'cursor'));
     $old = $log->append(new Event('old', 'retained'));
-    $log->append(new Event('new', 'before-joining'));
+    $tail = $log->append(new Event('new', 'before-joining'));
 
     $r = SseReader::open($h->url('/sse?topics=old,new&fresh=new'.($cursor ? '&lastEventId='.$first->id : '')));
-    $r->start();
+    $r->start(replaying: true);
+
+    if ($cursor) {
+        expect($r->next()['id'])->toBe((string) $old->id);
+    }
+
+    expect($r->attached()['id'])->toBe((string) $tail->id);
     $fresh = $log->append(new Event('new', 'live-fresh'));
     $late = $log->append(new Event('old', 'live-old'));
 
-    $expected = $cursor ? [$old, $fresh, $late] : [$fresh, $late];
-
-    foreach ($expected as $event) {
+    foreach ([$fresh, $late] as $event) {
         expect($r->next()['id'])->toBe((string) $event->id);
     }
 
@@ -96,7 +100,8 @@ it('preserves the trim gap when the missing history may belong to fresh topics',
     $retained = $h->log->append(new Event('old', 'retained-old'));
 
     $r = SseReader::open($h->url("/sse?topics=old,new&fresh=new&lastEventId={$cursor->id}"));
-    $r->start();
+    $r->start(replaying: true);
     expect($r->next()['event'])->toBe('murmur.gap');
     expect($r->next()['id'])->toBe((string) $retained->id);
+    expect($r->attached()['id'])->toBe((string) $retained->id);
 });

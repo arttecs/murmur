@@ -64,9 +64,24 @@ IDs use `<milliseconds>-<sequence>`. A received cursor must contain 1–18 decim
 
 ### Replay
 
-For a reconnect, send the latest ID received as the `Last-Event-ID` HTTP header or the `lastEventId` query parameter. When both are valid, the header wins. Invalid cursors are ignored. Without a valid cursor, the connection starts with live delivery.
+For a reconnect, send the latest ID received as the `Last-Event-ID` HTTP header or the `lastEventId` query parameter. When both are valid, the header wins. Invalid cursors are ignored. Without a valid cursor, delivery starts after the sampled log tail.
 
-Replay sends retained matching events with IDs strictly greater than the cursor, in log order. When `fresh` is present, every entry must also appear in `topics`. The server samples the log tail when attaching, including when there is no cursor. Fresh topics deliver only events after that tail, including when a delayed Redis reader receives older entries after the stream opens. The other topics still replay from the requested cursor. Live events arriving during replay are held until replay finishes. The server drops duplicate or older IDs once it has written an event with a newer ID. When a cursor is ahead of the sampled log tail, the server uses that tail as the starting point for deduplicating live events. The connection closes if the replay query fails or the held live data exceeds `server.max_buffer_bytes`. The server also closes a stream whose output exceeds that limit under backpressure. The default byte limit is 1,048,576.
+Replay sends retained matching events with IDs strictly greater than the cursor and at or before the sampled tail, in log order. When `fresh` is present, every entry must also appear in `topics`. Fresh topics deliver only events after the sampled tail. The other topics still replay from the requested cursor. Every connection samples the tail, including one without a cursor or with only fresh topics. Redis uses one tail read within the existing query deadline, with no history lookup when there are no topics to replay. A failed tail sample closes the stream through the same path as a failed replay. The initial `murmur.connected` may arrive while the sample is pending.
+
+The stream starts with `retry:`, then `murmur.connected`, an optional `murmur.gap`, any replayed events, and exactly one attach marker before held and live delivery.
+
+```text
+id: 1710000000000-2
+event: murmur.attached
+data: {}
+
+```
+
+The marker's ID is the sampled tail, including after a gap and when the requested cursor was ahead of the tail. The marker omits `id:` when there is no known tail, for example on an empty log. Treat it as a control frame. A numbered marker replaces the stored cursor even if it is lower than the one sent. The server withholds subsequent numbered events at or before the tail, including entries arriving late from the Redis reader.
+
+Include a newly added topic in `fresh` on the attempt that adds it. Once `murmur.attached` or any later numbered event arrives on that connection, omit that topic from `fresh` on reconnect and send the latest cursor. Ordinary replay then starts at the acknowledged join or later. If the stream drops before the marker arrives, send `fresh` again for the unacknowledged topic. Numbered replay events received before the marker do not acknowledge the join. The server evaluates `fresh` per request, so clients that use it must build a new URL per attempt instead of letting native `EventSource` retry the same URL.
+
+Live events arriving during replay are held until the server writes the marker. The server drops duplicate or older IDs once it has written a frame with a newer ID. The connection closes if the replay query fails or the held live data exceeds `server.max_buffer_bytes`. The server also closes a stream whose output exceeds that limit under backpressure. The default byte limit is 1,048,576.
 
 The server can send an unnumbered gap frame before resuming delivery.
 
@@ -77,8 +92,8 @@ data: {}
 ```
 
 - With an in-memory log, a cursor older than log creation or the last evicted event signals a gap. With Redis, a cursor older than the first retained entry signals a gap if Redis reports trimmed history. An unparseable first retained Redis ID also signals a gap.
-- A trim gap may be followed by matching retained events. A gap indicates that the log cannot guarantee complete history. The log may report a trim gap even if the trimmed entries belonged only to fresh topics. Clients that need a complete view should refresh it from the application.
-- If replay would exceed `server.max_replay_events` events eligible for delivery (1000 by default) or the encoded replay frames for this recipient would exceed half of `server.max_buffer_bytes`, the server sends the gap and discards the replay batch. It continues with held and live events.
+- A trim gap may be followed by matching retained events. A tail-only sample does not check for trimmed history. A gap indicates that the log cannot guarantee complete history. The log may report a trim gap even if the trimmed entries belonged only to fresh topics. Clients that need a complete view should refresh it from the application.
+- If replay would exceed `server.max_replay_events` events eligible for delivery (1000 by default) or the encoded replay frames for this recipient would exceed half of `server.max_buffer_bytes`, the server sends the gap and discards the replay batch. It sends the attach marker before continuing with held and live events.
 - If the Redis reader loses its connection and discovers history was trimmed past its cursor, the server sends a gap to existing subscribers before resuming live delivery.
 
 The `murmur.` event namespace is reserved. `murmur.end` is published by Laravel's `Stream::close()` with a regular event ID and an envelope containing the stream topic and `"data":null`. A stream client can stop consuming that stream upon receiving the marker. The SSE server delivers the marker as an event and leaves the HTTP connection open. The Laravel broadcast and direct publish APIs reject application event names starting with `murmur.`. The server enforces the reservation on both publishing paths: `POST /publish` answers 422 for any `murmur.` name other than `murmur.end`, and the Redis reader skips such stream entries, in live delivery and in replay.

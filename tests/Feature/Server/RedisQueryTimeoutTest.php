@@ -11,13 +11,14 @@ use React\Socket\SocketServer;
 use function React\Async\await;
 use function React\Promise\Timer\timeout;
 
-it('times out unanswered replay queries and opens a fresh redis connection', function (string $stalledCommand) {
+it('times out unanswered replay queries and opens a fresh redis connection', function (string $stalledCommand, array $topics) {
     $socket = new SocketServer('127.0.0.1:0');
     $log = new RedisEventLog(str_replace('tcp://', 'redis://', $socket->getAddress()), 'test', queryTimeoutSeconds: 0.05);
     $clients = [];
+    $commands = [];
     $firstClosed = new Deferred;
 
-    $socket->on('connection', function (ConnectionInterface $client) use (&$clients, $firstClosed, $stalledCommand): void {
+    $socket->on('connection', function (ConnectionInterface $client) use (&$clients, &$commands, $firstClosed, $stalledCommand): void {
         $clients[] = $client;
         $first = count($clients) === 1;
         $parser = (new ProtocolFactory)->createRequestParser();
@@ -26,9 +27,11 @@ it('times out unanswered replay queries and opens a fresh redis connection', fun
             $client->once('close', fn () => $firstClosed->resolve(null));
         }
 
-        $client->on('data', function (string $data) use ($parser, $client, $first, $stalledCommand): void {
+        $client->on('data', function (string $data) use ($parser, $client, $first, &$commands, $stalledCommand): void {
             foreach ($parser->pushIncoming($data) as $message) {
                 $command = strtoupper($message->getValueNative()[0]);
+
+                $commands[] = $command;
 
                 if ($first && $command === $stalledCommand) {
                     continue;
@@ -45,15 +48,18 @@ it('times out unanswered replay queries and opens a fresh redis connection', fun
 
     try {
         $cursor = new EventId(0, 0);
-        expect(fn () => await(timeout($log->since($cursor, ['news'], 10), 1.0)))
+        expect(fn () => await(timeout($log->since($cursor, $topics, 10), 1.0)))
             ->toThrow(TimeoutException::class, 'Timed out after 0.05 seconds');
         await(timeout($firstClosed->promise(), 1.0));
 
-        $replay = await(timeout($log->since($cursor, ['news'], 10), 1.0));
+        $commands = [];
+        $replay = await(timeout($log->since($cursor, $topics, 10), 1.0));
 
         expect($clients)->toHaveCount(2);
         expect($replay->events)->toBe([]);
         expect($replay->gap)->toBeFalse();
+        expect((string) $replay->tail)->toBe('1-0');
+        expect($commands)->toBe($topics === [] ? ['XREVRANGE'] : ['XREVRANGE', 'XRANGE', 'XINFO']);
     } finally {
         $log->close();
         $socket->close();
@@ -62,7 +68,12 @@ it('times out unanswered replay queries and opens a fresh redis connection', fun
             $client->close();
         }
     }
-})->with(['XREVRANGE', 'XRANGE', 'XINFO']);
+})->with([
+    'tail' => ['XREVRANGE', ['news']],
+    'range' => ['XRANGE', ['news']],
+    'stream info' => ['XINFO', ['news']],
+    'tail only' => ['XREVRANGE', []],
+]);
 
 it('retries an unanswered initial cursor query on a fresh redis connection', function () {
     $errorLog = tempnam(sys_get_temp_dir(), 'murmur');

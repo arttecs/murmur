@@ -147,7 +147,7 @@ class RedisEventLog implements EventLog
             $tail = $last === null ? null : EventId::tryParse($last);
 
             if ($last === null || $topics === []) {
-                return $this->hasGap($after, $this->replay)->then(fn (bool $gap): Replay => new Replay($gap, [], $tail));
+                return resolve(new Replay(false, [], $tail));
             }
 
             return $this->readReplayPage((string) $after, $last, $topics, $limit, $filter)->then(function (?array $events) use ($after, $tail): PromiseInterface|Replay {

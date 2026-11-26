@@ -94,11 +94,13 @@ class SseReader
     }
 
     /**
-     * Read the initial retry and connection announcement.
+     * Read the initial retry and announcement, then the attach marker unless the caller expects replay or a gap.
+     *
+     * When replay is expected, read its exact frames with next() before calling attached().
      *
      * @return array{id: ?string, event: ?string, data: ?string, retry: ?string, comment: ?string}
      */
-    public function start(): array
+    public function start(bool $replaying = false): array
     {
         $retry = $this->next();
         $connected = $this->next();
@@ -107,7 +109,27 @@ class SseReader
             throw new RuntimeException('Expected murmur.connected after retry.');
         }
 
+        if (! $replaying) {
+            $this->attached();
+        }
+
         return $retry;
+    }
+
+    /**
+     * Consume the attach marker after asserting any gap and replay frames.
+     *
+     * @return array{id: ?string, event: ?string, data: ?string, retry: ?string, comment: ?string}
+     */
+    public function attached(): array
+    {
+        $frame = $this->next();
+
+        if ($frame['event'] !== 'murmur.attached' || $frame['data'] !== '{}') {
+            throw new RuntimeException('Expected murmur.attached, received '.json_encode($frame, JSON_THROW_ON_ERROR));
+        }
+
+        return $frame;
     }
 
     /**
@@ -118,6 +140,27 @@ class SseReader
      * @throws RuntimeException
      */
     public function next(float $timeout = 1.0): array
+    {
+        $frame = ['id' => null, 'event' => null, 'data' => null, 'retry' => null, 'comment' => null];
+
+        foreach (explode("\n", $this->nextRaw($timeout)) as $line) {
+            [$field, $value] = explode(':', $line, 2) + ['', ''];
+            $field = $field === '' ? 'comment' : $field;
+
+            if (array_key_exists($field, $frame)) {
+                $frame[$field] = str_starts_with($value, ' ') ? substr($value, 1) : $value;
+            }
+        }
+
+        return $frame;
+    }
+
+    /**
+     * Read the literal frame without its terminating blank line.
+     *
+     * @throws RuntimeException
+     */
+    public function nextRaw(float $timeout = 1.0): string
     {
         if ($this->frames === []) {
             if (! $this->response->getBody()->isReadable()) {
@@ -135,18 +178,7 @@ class SseReader
             }
         }
 
-        $frame = ['id' => null, 'event' => null, 'data' => null, 'retry' => null, 'comment' => null];
-
-        foreach (explode("\n", array_shift($this->frames)) as $line) {
-            [$field, $value] = explode(':', $line, 2) + ['', ''];
-            $field = $field === '' ? 'comment' : $field;
-
-            if (array_key_exists($field, $frame)) {
-                $frame[$field] = str_starts_with($value, ' ') ? substr($value, 1) : $value;
-            }
-        }
-
-        return $frame;
+        return array_shift($this->frames);
     }
 
     /**

@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Server\Sse;
 
 use Arttecs\Murmur\Server\Event;
+use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Server;
 
 /**
@@ -55,6 +56,16 @@ class Frame
         $protocol = Server::PROTOCOL;
 
         return "event: murmur.connected\ndata: {\"connection_id\":\"{$id}\",\"protocol\":{$protocol}}\n\n";
+    }
+
+    /**
+     * Acknowledge attachment and advance the cursor to the sampled log tail.
+     */
+    public static function attached(?EventId $tail): string
+    {
+        $id = $tail === null ? '' : "id: {$tail}\n";
+
+        return "{$id}event: murmur.attached\ndata: {}\n\n";
     }
 
     /**

@@ -164,6 +164,7 @@ it('excludes a sender on another redis-backed node and skips invalid stored iden
     expect($sender->next()['event'])->toBe('visible');
 
     $reopened = SseReader::open($secondNode->url('/sse?topics=news&connection='.$id.'&lastEventId='.$cursor));
-    $reopened->start();
+    $reopened->start(replaying: true);
     expect($reopened->next()['event'])->toBe('visible');
+    $reopened->attached();
 });

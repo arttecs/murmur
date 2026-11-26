@@ -36,7 +36,7 @@ it('dispatches events through the connection so it can drop ids it already sent'
     $hub->dispatch($event);
     $hub->dispatch($event);
 
-    expect($output())->toBe(Frame::event($event));
+    expect($output())->toBe(Frame::attached(null).Frame::event($event));
 });
 
 it('forgets a connection when its stream closes', function () {
@@ -167,6 +167,6 @@ it('encodes a dispatched event once across held and live connections', function 
     $held->release();
 
     expect($liveOutput())->toContain('event: updated');
-    expect($heldOutput())->toBe($liveOutput());
+    expect($heldOutput())->toBe(Frame::attached(null).$liveOutput());
     expect($payload->encodes)->toBe(1);
 });

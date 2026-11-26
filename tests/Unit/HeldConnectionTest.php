@@ -36,10 +36,10 @@ it('writes replay before held events and sends subsequent events immediately', f
     expect($this->frames)->toBe([$retry, $gap]);
 
     $connection->release(new Replay(false, [$replayed], $replayed->id));
-    expect($this->frames)->toBe([$retry, $gap, Frame::event($replayed), Frame::event($queued), $heartbeat]);
+    expect($this->frames)->toBe([$retry, $gap, Frame::event($replayed), Frame::attached($replayed->id), Frame::event($queued), $heartbeat]);
 
     $connection->sendEvent($live);
-    expect($this->frames)->toBe([$retry, $gap, Frame::event($replayed), Frame::event($queued), $heartbeat, Frame::event($live)]);
+    expect($this->frames)->toBe([$retry, $gap, Frame::event($replayed), Frame::attached($replayed->id), Frame::event($queued), $heartbeat, Frame::event($live)]);
 });
 
 it('drops held events when the connection closes before release', function () {
@@ -82,7 +82,7 @@ it('drops events at or behind the last written id after going live', function ()
     $connection->sendEvent($live);
     $connection->sendEvent($held);
 
-    expect($this->frames)->toBe([Frame::event($replayed), Frame::event($held), Frame::event($live)]);
+    expect($this->frames)->toBe([Frame::event($replayed), Frame::attached($replayed->id), Frame::event($held), Frame::event($live)]);
 });
 
 it('always writes events without an id without resetting its last written id', function () {
@@ -97,7 +97,7 @@ it('always writes events without an id without resetting its last written id', f
     $connection->sendEvent($unidentified);
     $connection->sendEvent($alreadySeen);
 
-    expect($this->frames)->toBe(array_fill(0, 3, Frame::event($unidentified)));
+    expect($this->frames)->toBe([Frame::event($unidentified), Frame::attached($cursor), Frame::event($unidentified), Frame::event($unidentified)]);
 });
 
 it('delivers the next memory event even when the cursor is ahead of the log', function (bool $empty) {
@@ -112,7 +112,7 @@ it('delivers the next memory event even when the cursor is ahead of the log', fu
     $connection->release($replay);
     $live = $log->append(new Event('news', 'live'));
 
-    expect($this->frames)->toBe([Frame::event($live)]);
+    expect($this->frames)->toBe([Frame::attached($tail), Frame::event($live)]);
 })->with(['empty log' => [true], 'nonempty log' => [false]]);
 
 it('reports a gap once when a gap frame arrives while a replay that has a gap is pending', function () {
@@ -139,4 +139,26 @@ it('keeps a gap frame that arrives while a replay without a gap is pending', fun
     $connection->release(new Replay(false, [], null));
 
     expect(substr_count($output, 'event: murmur.gap'))->toBe(1);
+});
+
+it('steps over undispatched history and releases newer held events exactly once', function () {
+    $cursor = new EventId(10, 1);
+    $connection = new HeldConnection($this->stream, cursor: $cursor);
+    $replayed = new Event('news', 'replayed', id: new EventId(10, 2));
+    $old = new Event('news', 'lagging', id: new EventId(10, 3));
+    $live = new Event('news', 'held', id: new EventId(10, 5));
+    $connection->sendEvent($old);
+    $connection->sendEvent($live);
+
+    $connection->release(new Replay(true, [$replayed], new EventId(10, 4)));
+    $connection->sendEvent($old);
+    $connection->sendEvent($live);
+    $connection->release();
+
+    expect($this->frames)->toBe([
+        "event: murmur.gap\ndata: {}\n\n",
+        Frame::event($replayed),
+        "id: 10-4\nevent: murmur.attached\ndata: {}\n\n",
+        Frame::event($live),
+    ]);
 });

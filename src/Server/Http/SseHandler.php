@@ -169,7 +169,7 @@ class SseHandler
 
         $stream = new ThroughStream;
 
-        $connection = new HeldConnection($stream, $this->config->maxBufferBytes, $cursor, $this->metrics, $id, $fresh);
+        $connection = new HeldConnection($stream, $this->config->maxBufferBytes, $cursor, $this->metrics, $id);
 
         $this->hub->attach($connection, $topics);
         $connection->onClose(function () use ($client): void {
@@ -186,9 +186,9 @@ class SseHandler
         }
 
         $replayTopics = $cursor === null ? [] : array_values(array_diff($topics, $fresh));
-        $snapshot = $fresh === [] ? null : $this->replay($connection, $cursor, $replayTopics);
+        $snapshot = $this->replay($connection, $cursor, $replayTopics);
 
-        $this->loop->futureTick(function () use ($connection, $cursor, $replayTopics, $snapshot, $endStream): void {
+        $this->loop->futureTick(function () use ($connection, $snapshot, $endStream): void {
             if ($connection->isClosed()) {
                 return;
             }
@@ -205,13 +205,7 @@ class SseHandler
                 return;
             }
 
-            if ($cursor === null && $snapshot === null) {
-                $connection->release();
-
-                return;
-            }
-
-            ($snapshot ?? $this->replay($connection, $cursor, $replayTopics))->then(function (?Replay $replay) use ($connection, $endStream): void {
+            $snapshot->then(function (?Replay $replay) use ($connection, $endStream): void {
                 if ($replay === null) {
                     $endStream();
 
