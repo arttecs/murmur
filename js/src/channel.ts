@@ -1,8 +1,13 @@
+import { invokeListener } from './invoke-listener.js'
+
 /** The callbacks registered under each wire event name. */
 export type ChannelListeners = Map<string, Set<(data: unknown) => void>>
 
 /** A subscription to one Murmur topic. */
 export class Channel {
+  /** Callbacks registered for this channel's authorization failures. */
+  protected readonly errors = new Set<(status: number) => void>()
+
   /** The subscribed topic, including its prefix for private channels. */
   public readonly name: string
 
@@ -39,6 +44,23 @@ export class Channel {
       this.listenersChanged()
     }
     return this
+  }
+
+  /** Registers a callback for a denied authorization request on this channel. */
+  public error(callback: (status: number) => void): this {
+    this.errors.add(callback)
+    return this
+  }
+
+  /**
+   * Delivers a denied authorization status to this channel's listeners.
+   *
+   * @internal
+   */
+  public authorizationDenied(status: number): void {
+    for (const callback of this.errors) {
+      invokeListener(callback, status)
+    }
   }
 
   /** Resolves an event to the name used in the stream. */

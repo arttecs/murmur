@@ -50,21 +50,6 @@ function authorization(options: MurmurConnectorOptions): AuthOptions | undefined
   }
 }
 
-/** Adds exact channel removal without changing the standalone client's leave behavior. */
-class EchoMurmur extends Murmur {
-  /** Leaves a subscription by name and kind and refreshes the shared connection. */
-  public leaveSubscription(name: string, isPrivate: boolean): void {
-    const key = (isPrivate ? 'private:' : 'public:') + name
-    const subscription = this.channels.get(key)
-    if (subscription) {
-      subscription.listeners.clear()
-      this.channels.delete(key)
-      this.updateEvents()
-      this.scheduleConnection()
-    }
-  }
-}
-
 /** Adapts a Murmur subscription to the Echo channel API. */
 class MurmurEchoChannel {
   /** The literal Laravel notification event. */
@@ -228,7 +213,7 @@ export class MurmurConnector {
   protected readonly formatter: EventFormatter
 
   /** The client backing the current connector lifecycle. */
-  protected client!: EchoMurmur
+  protected client!: Murmur
 
   /** Whether the connector has an active client. */
   protected active = false
@@ -263,7 +248,7 @@ export class MurmurConnector {
       return
     }
 
-    this.client = new EchoMurmur({
+    this.client = new Murmur({
       ...this.options,
       namespace: this.options.namespace === false ? '' : this.options.namespace,
       auth: authorization(this.options),

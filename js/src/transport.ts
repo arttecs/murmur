@@ -67,7 +67,7 @@ export class Transport {
     protected readonly eventSource: typeof EventSource | undefined,
     protected readonly withCredentials: boolean,
     protected readonly retryOptions: RetryOptions,
-    protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | Promise<string>,
+    protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | undefined | Promise<string | undefined>,
     protected readonly onMessage: (event: string, data: string) => void,
     protected readonly onStatus: (event: 'connected' | 'disconnected', failures: number) => void,
     protected readonly onUnopenedError?: (url: string) => void,
@@ -146,9 +146,10 @@ export class Transport {
   protected async open(): Promise<void> {
     const attempt = new AbortController()
     this.pending = attempt
+    let url: string | undefined
     try {
-      const url = await this.connectionUrl(attempt.signal, this.lastEventId)
-      if (attempt.signal.aborted) {
+      url = await this.connectionUrl(attempt.signal, this.lastEventId)
+      if (attempt.signal.aborted || url === undefined) {
         return
       }
 
@@ -157,6 +158,9 @@ export class Transport {
       this.attach(source, url)
     } catch {
       if (!attempt.signal.aborted) {
+        if (url !== undefined) {
+          this.onUnopenedError?.(url)
+        }
         this.handleFailure()
       }
     } finally {

@@ -13,13 +13,16 @@ export interface AuthOptions {
   credentials?: RequestCredentials
 }
 
-/** Issues a token for private topics in place of the built-in request. */
-export type Authorizer = (channels: string[], signal: AbortSignal) => Promise<{
+/** A subscription token and its expiration. */
+export interface AuthorizationToken {
   /** The token used to authorize the SSE connection. */
   token: string
   /** The token expiration in Unix seconds. */
   expires_at: number
-}>
+}
+
+/** Issues one token or a group of tokens covering all requested private topics. */
+export type Authorizer = (channels: string[], signal: AbortSignal) => Promise<AuthorizationToken | AuthorizationToken[]>
 
 /** Configures the Murmur client. */
 export interface MurmurOptions extends Partial<RetryOptions> {
@@ -98,8 +101,10 @@ type ClientEventArgs = {
   connected: []
   /** Reports a failed or dropped shared connection. */
   disconnected: []
-  /** Reports the status of a denied authorization attempt. */
-  unauthorized: [status: number]
+  /** Reports a channel denied authorization by the application. */
+  unauthorized: [status: number, channelName: string]
+  /** Reports a client protocol or configuration error. */
+  error: [error: Error]
 }
 
 /** The names of events emitted by the client. */
@@ -113,18 +118,21 @@ type Subscription = {
   listeners: ChannelListeners
 }
 
-/** A reusable authorization token for a specific list of private topics. */
-type CachedToken = {
-  /** The sorted topics serialized as a cache key. */
-  topics: string
-  /** The token used to authorize a connection. */
-  token: string
-  /** The token expiration in Unix seconds. */
-  expiresAt: number
-}
-
 /** The prefix that identifies a private topic on the server. */
 const privatePrefix = 'private-'
+
+/** The maximum number of simultaneous built-in authorization requests per attempt. */
+const authorizationConcurrency = 4
+
+/** The request target byte budget, reserving 2 KiB of the server limit for headers and the request line. */
+const requestTargetBudget = 6 * 1024
+
+/** Validates a token response before using it in a comma-delimited list. */
+function isAuthorizationToken(value: unknown): value is AuthorizationToken {
+  return value !== null && typeof value === 'object' &&
+    'token' in value && typeof value.token === 'string' && value.token !== '' && !value.token.includes(',') &&
+    'expires_at' in value && typeof value.expires_at === 'number' && Number.isFinite(value.expires_at)
+}
 
 /** Rejects a failure limit that is not a positive integer. */
 function validateFailureLimit(value: number, option: 'streamMaxFailures' | 'maxFailures'): void {
@@ -154,6 +162,7 @@ export class Murmur {
     connected: new Set(),
     disconnected: new Set(),
     unauthorized: new Set(),
+    error: new Set(),
   }
 
   /** The transport for the shared event stream. */
@@ -184,8 +193,11 @@ export class Murmur {
   /** The default consecutive failure limit for independent streams. */
   protected readonly streamMaxFailures: number
 
-  /** The most recent token and the private topics it authorizes. */
-  protected cachedToken?: CachedToken
+  /** The reusable tokens associated with each authorized private topic. */
+  protected readonly cachedTokens = new Map<string, AuthorizationToken[]>()
+
+  /** The private topics waiting for explicit authorization or a new join. */
+  protected readonly deniedTopics = new Set<string>()
 
   /** Whether a channel change has queued a connection update. */
   protected connectionQueued = false
@@ -226,8 +238,11 @@ export class Murmur {
         this.emit(event)
       },
       url => {
-        if (this.cachedToken && new URL(url).searchParams.get('token') === this.cachedToken.token) {
-          this.cachedToken = undefined
+        const sent = new Set(new URL(url).searchParams.get('token')?.split(','))
+        for (const [topic, tokens] of this.cachedTokens) {
+          if (tokens.some(({ token }) => sent.has(token))) {
+            this.cachedTokens.delete(topic)
+          }
         }
       },
     )
@@ -273,12 +288,53 @@ export class Murmur {
 
   /** Leaves the subscriptions joined with the given name. */
   public leave(name: string): void {
-    const leftPublic = this.channels.delete('public:' + name)
-    const leftPrivate = this.channels.delete('private:' + name)
-    if (leftPublic || leftPrivate) {
-      this.updateEvents()
-      this.scheduleConnection()
+    this.leaveSubscription(name, false)
+    this.leaveSubscription(name, true)
+  }
+
+  /**
+   * Leaves exactly one subscription by its name and kind.
+   *
+   * @internal
+   */
+  public leaveSubscription(name: string, isPrivate: boolean): void {
+    const key = (isPrivate ? 'private:' : 'public:') + name
+    const subscription = this.channels.get(key)
+    if (!subscription) {
+      return
     }
+
+    subscription.listeners.clear()
+    this.channels.delete(key)
+    const topic = subscription.channel.name
+    if (![...this.channels.values()].some(({ channel }) => channel.name === topic)) {
+      this.deniedTopics.delete(topic)
+      const group = this.cachedTokens.get(topic)
+      this.cachedTokens.delete(topic)
+      if (group && group.length > 1) {
+        for (const [other, tokens] of this.cachedTokens) {
+          if (tokens === group) {
+            this.cachedTokens.delete(other)
+          }
+        }
+      }
+    }
+    this.updateEvents()
+    this.scheduleConnection()
+  }
+
+  /** Retries authorization for one denied private channel or all denied private channels. */
+  public reauthorize(name?: string): void {
+    if (name !== undefined) {
+      if (!this.deniedTopics.delete(privatePrefix + name)) {
+        return
+      }
+    } else if (this.deniedTopics.size > 0) {
+      this.deniedTopics.clear()
+    } else {
+      return
+    }
+    this.scheduleConnection()
   }
 
   /** Registers a client event listener and returns a function that removes it. */
@@ -318,7 +374,8 @@ export class Murmur {
     for (const listeners of Object.values(this.listeners)) {
       listeners.clear()
     }
-    this.cachedToken = undefined
+    this.cachedTokens.clear()
+    this.deniedTopics.clear()
     this.updateEvents()
   }
 
@@ -370,63 +427,118 @@ export class Murmur {
   }
 
   /** Builds the stream URL for the current subscriptions. */
-  protected async connectionUrl(signal: AbortSignal, lastEventId: string | undefined): Promise<string> {
-    const topics = [...new Set(Array.from(this.channels.values(), ({ channel }) => channel.name))]
-    const privateTopics = topics.filter(topic => topic.startsWith(privatePrefix))
+  protected async connectionUrl(signal: AbortSignal, lastEventId: string | undefined): Promise<string | undefined> {
+    const requested = [...new Set(Array.from(this.channels.values(), ({ channel }) => channel.name))]
+    const privateTopics = requested.filter(topic => topic.startsWith(privatePrefix))
+    await this.authorize(privateTopics.filter(topic => !this.deniedTopics.has(topic)), signal)
+    signal.throwIfAborted()
+
+    const topics = requested.filter(topic => !this.deniedTopics.has(topic))
+    if (topics.length === 0) {
+      return
+    }
+
     const url = new URL(this.options.url, globalThis.location?.href)
     url.searchParams.set('topics', topics.join(','))
     url.searchParams.delete('token')
-    if (privateTopics.length > 0) {
-      url.searchParams.set('token', await this.tokenFor(privateTopics, signal))
+    const tokens = new Set<string>()
+    for (const topic of topics) {
+      for (const { token } of this.cachedTokens.get(topic) ?? []) {
+        tokens.add(token)
+      }
+    }
+    if (tokens.size > 0) {
+      url.searchParams.set('token', [...tokens].join(','))
     }
     url.searchParams.delete('lastEventId')
     if (lastEventId !== undefined) {
       url.searchParams.set('lastEventId', lastEventId)
     }
+    if (new TextEncoder().encode(url.pathname + url.search).length > requestTargetBudget) {
+      this.emit('error', new Error(
+        `Murmur subscription URL exceeds the request budget with ${privateTopics.length} private channels requested. Use a multi-topic token for large private subscriptions or reduce the topic list.`,
+      ))
+      return
+    }
     return url.href
   }
 
-  /** Reuses a token for the same private topics or requests a fresh one. */
-  protected async tokenFor(channels: string[], signal: AbortSignal): Promise<string> {
-    const topics = JSON.stringify([...channels].sort())
-    const cached = this.cachedToken
-    if (cached?.topics === topics && cached.expiresAt - Date.now() / 1000 > this.tokenRefreshMarginSeconds) {
-      return cached.token
+  /** Reuses valid credentials and authorizes missing private topics. */
+  protected async authorize(topics: string[], signal: AbortSignal): Promise<void> {
+    const minimumExpiry = Date.now() / 1000 + this.tokenRefreshMarginSeconds
+    const missing = topics.filter(topic => {
+      const tokens = this.cachedTokens.get(topic)
+      if (tokens?.every(({ expires_at }) => expires_at > minimumExpiry)) {
+        return false
+      }
+      this.cachedTokens.delete(topic)
+      return true
+    })
+    if (missing.length === 0) {
+      return
     }
 
     const { authorizer } = this.options
+    if (authorizer) {
+      await this.authorizeTopics(topics, signal, () => authorizer([...topics], signal), true)
+      return
+    }
+
+    const remaining = missing.values()
+    await Promise.all(Array.from({ length: Math.min(authorizationConcurrency, missing.length) }, async () => {
+      for (const topic of remaining) {
+        signal.throwIfAborted()
+        await this.authorizeTopics([topic], signal, () => this.requestToken(topic, signal), false)
+      }
+    }))
+  }
+
+  /** Records valid tokens or marks only the requested private topics denied. */
+  protected async authorizeTopics(
+    topics: string[],
+    signal: AbortSignal,
+    request: () => Promise<unknown>,
+    acceptsArray: boolean,
+  ): Promise<void> {
     this.counts.tokenRequests++
     try {
-      const body: unknown = authorizer
-        ? await authorizer(channels, signal)
-        : await this.requestToken(channels, signal)
-      if (
-        body === null || typeof body !== 'object' ||
-        !('token' in body) || typeof body.token !== 'string' ||
-        !('expires_at' in body) || typeof body.expires_at !== 'number' || !Number.isFinite(body.expires_at)
-      ) {
+      const body = await request()
+      signal.throwIfAborted()
+      const tokens: unknown[] = acceptsArray && Array.isArray(body) ? body : [body]
+      if (tokens.length === 0 || !tokens.every(isAuthorizationToken)) {
         throw new Error('Invalid Murmur authorization response')
       }
 
-      if (!signal.aborted) {
-        this.cachedToken = { topics, token: body.token, expiresAt: body.expires_at }
+      for (const topic of topics) {
+        this.cachedTokens.set(topic, tokens)
       }
-      return body.token
     } catch (error) {
-      if (!signal.aborted) {
-        this.counts.tokenFailures++
-        if ((authorizer || error instanceof AuthorizationResponseError) &&
-          error !== null && typeof error === 'object' && 'status' in error &&
-          typeof error.status === 'number' && error.status >= 400 && error.status < 500) {
-          this.emit('unauthorized', error.status)
-        }
+      signal.throwIfAborted()
+      this.counts.tokenFailures++
+      if ((!acceptsArray && !(error instanceof AuthorizationResponseError)) ||
+        error === null || typeof error !== 'object' || !('status' in error) ||
+        typeof error.status !== 'number' || !(error.status >= 400 && error.status < 500)) {
+        throw error
       }
-      throw error
+
+      const status = error.status
+      const denied = new Set(topics)
+      for (const topic of denied) {
+        this.deniedTopics.add(topic)
+        this.cachedTokens.delete(topic)
+      }
+      const subscriptions = [...this.channels.values()].filter(({ channel }) => denied.has(channel.name))
+      for (const { channel } of subscriptions) {
+        channel.authorizationDenied(status)
+      }
+      for (const topic of topics) {
+        this.emit('unauthorized', status, topic.slice(privatePrefix.length))
+      }
     }
   }
 
   /** Requests an authorization response from the built-in endpoint. */
-  protected async requestToken(channels: string[], signal: AbortSignal): Promise<unknown> {
+  protected async requestToken(topic: string, signal: AbortSignal): Promise<unknown> {
     const { auth, authEndpoint } = this.options
     const supplied = typeof auth?.headers === 'function' ? await auth.headers() : auth?.headers
     signal.throwIfAborted()
@@ -452,11 +564,11 @@ export class Murmur {
     }
 
     const fetch = this.options.fetch ?? globalThis.fetch.bind(globalThis)
-    const response = await fetch(authEndpoint ?? '/murmur/auth', {
+    const response = await fetch(authEndpoint ?? '/broadcasting/auth', {
       method: 'POST',
       credentials: auth?.credentials ?? 'include',
       headers: headers ?? defaults,
-      body: JSON.stringify({ channels }),
+      body: JSON.stringify({ channel_name: topic }),
       signal,
     })
     if (!response.ok) {

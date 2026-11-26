@@ -31,11 +31,11 @@ const streamRetryMs = 25
 
 /** Starts a local authorization endpoint and records the client's JSON requests. */
 async function startAuth(
-  authorize: (channels: string[], attempt: number) => ReturnType<typeof tokenFor> | Promise<ReturnType<typeof tokenFor>>,
+  authorize: (channel: string, attempt: number) => ReturnType<typeof tokenFor> | 403 | Promise<ReturnType<typeof tokenFor> | 403>,
 ): Promise<{ endpoint: string; requests: unknown[] }> {
   const requests: unknown[] = []
   authServer = createServer(async (request, response) => {
-    if (request.method !== 'POST' || request.url !== '/murmur/auth') {
+    if (request.method !== 'POST' || request.url !== '/broadcasting/auth') {
       response.writeHead(404).end()
       return
     }
@@ -47,19 +47,23 @@ async function startAuth(
       }
       const body: unknown = JSON.parse(raw)
       requests.push(body)
-      if (body === null || typeof body !== 'object' || !('channels' in body) ||
-        !Array.isArray(body.channels) || !body.channels.every((channel: unknown) => typeof channel === 'string')) {
+      if (body === null || typeof body !== 'object' || !('channel_name' in body) ||
+        typeof body.channel_name !== 'string') {
         response.writeHead(400).end()
         return
       }
-      const grant = await authorize(body.channels, requests.length)
+      const grant = await authorize(body.channel_name, requests.length)
+      if (grant === 403) {
+        response.writeHead(403).end()
+        return
+      }
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(grant))
     } catch {
       response.writeHead(500).end()
     }
   })
   const port = await listen(authServer)
-  return { endpoint: `http://127.0.0.1:${port}/murmur/auth`, requests }
+  return { endpoint: `http://127.0.0.1:${port}/broadcasting/auth`, requests }
 }
 
 /** Creates a client whose EventSource uses real HTTP and records the responses. */
@@ -159,10 +163,45 @@ describe('Murmur client and PHP server', () => {
     await vi.waitFor(() => expect(disconnected).toHaveBeenCalledExactlyOnceWith(), waitOptions)
 
     await publish(murmur.address, 'private-orders.43', 'shipped', { order: 43 })
-    expect(requests).toEqual([{ channels: [allowed] }, { channels: ['private-orders.43'] }])
+    expect(requests).toEqual([{ channel_name: allowed }, { channel_name: 'private-orders.43' }])
     expect(attempts.map(attempt => attempt.status)).toEqual([403])
     expect(opened).not.toHaveBeenCalled()
     expect(received).not.toHaveBeenCalled()
+  })
+
+  it('delivers on multiple private channels with separate tokens when one channel is denied', async () => {
+    const { endpoint, requests } = await startAuth(channel =>
+      channel === 'private-denied' ? 403 : tokenFor([channel], 60),
+    )
+    const attempts: Attempt[] = []
+    const m = client({ authEndpoint: endpoint }, attempts)
+    const connected = vi.fn()
+    const unauthorized = vi.fn()
+    const denied = vi.fn()
+    const first = vi.fn()
+    const second = vi.fn()
+    m.on('connected', connected)
+    m.on('unauthorized', unauthorized)
+    m.private('first').listen('.updated', first)
+    m.private('denied').listen('.updated', denied)
+    m.private('second').listen('.updated', second)
+    await vi.waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith(), waitOptions)
+
+    await publish(murmur.address, 'private-denied', 'updated', { value: 0 })
+    await publish(murmur.address, 'private-first', 'updated', { value: 1 })
+    await publish(murmur.address, 'private-second', 'updated', { value: 2 })
+    await vi.waitFor(() => expect(second).toHaveBeenCalledExactlyOnceWith({ value: 2 }), waitOptions)
+
+    expect(first).toHaveBeenCalledExactlyOnceWith({ value: 1 })
+    expect(denied).not.toHaveBeenCalled()
+    expect(unauthorized).toHaveBeenCalledExactlyOnceWith(403, 'denied')
+    expect(requests).toHaveLength(3)
+    expect(requests).toEqual(expect.arrayContaining([
+      { channel_name: 'private-first' }, { channel_name: 'private-denied' }, { channel_name: 'private-second' },
+    ]))
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.url.searchParams.get('topics')).toBe('private-first,private-second')
+    expect(attempts[0]?.url.searchParams.get('token')?.split(',')).toHaveLength(2)
   })
 
   it('resolves namespaced and literal channel listeners from real event names', async () => {
@@ -184,12 +223,12 @@ describe('Murmur client and PHP server', () => {
     const topic = 'private-renewal'
     let resume: (() => void) | undefined
     const missedPublished = new Promise<void>(resolve => { resume = resolve })
-    const { endpoint, requests } = await startAuth(async (channels, attempt) => {
+    const { endpoint, requests } = await startAuth(async (channel, attempt) => {
       if (attempt === 1) {
-        return tokenFor(channels, 2)
+        return tokenFor([channel], 2)
       }
       await missedPublished
-      return tokenFor(channels, 60)
+      return tokenFor([channel], 60)
     })
     const attempts: Attempt[] = []
     const connected = vi.fn()
@@ -220,7 +259,7 @@ describe('Murmur client and PHP server', () => {
 
     expect(received.mock.calls).toEqual([[{ phase: 'initial' }], [{ phase: 'missed' }], [{ phase: 'live again' }]])
     expect(disconnected).toHaveBeenCalledExactlyOnceWith()
-    expect(requests).toEqual([{ channels: [topic] }, { channels: [topic] }])
+    expect(requests).toEqual([{ channel_name: topic }, { channel_name: topic }])
     expect(attempts.map(attempt => attempt.status)).toEqual([200, 200])
     expect(attempts[1]?.url.searchParams.get('token')).not.toBe(attempts[0]?.url.searchParams.get('token'))
     expect(attempts[1]?.url.searchParams.get('lastEventId')).toBe(firstId)
@@ -229,7 +268,7 @@ describe('Murmur client and PHP server', () => {
 
   it('delivers private broadcasts through Echo after the SSE request is interrupted', async () => {
     const topic = 'private-echo-orders.42'
-    const { endpoint, requests } = await startAuth(channels => tokenFor(channels, 60))
+    const { endpoint, requests } = await startAuth(channel => tokenFor([channel], 60))
     const connections: AbortController[] = []
 
     /** Uses real HTTP with a signal that can interrupt the current response. */
@@ -275,7 +314,7 @@ describe('Murmur client and PHP server', () => {
       ]), waitOptions)
 
       expect(connections).toHaveLength(2)
-      expect(requests).toEqual([{ channels: [topic] }])
+      expect(requests).toEqual([{ channel_name: topic }])
     } finally {
       echo.disconnect()
     }

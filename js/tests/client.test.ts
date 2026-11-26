@@ -29,7 +29,7 @@ it('prefixes private channels and fetches a token first', async () => {
   m.private('orders.1')
   await flush()
   assert.isDefined(authFetch.calls[0])
-  expect(authFetch.calls[0].body).toEqual({ channels: ['private-orders.1'] })
+  expect(authFetch.calls[0].body).toEqual({ channel_name: 'private-orders.1' })
   assert.isDefined(FakeEventSource.instances[0])
   const url = new URL(FakeEventSource.instances[0].url)
   expect(url.searchParams.get('topics')).toBe('private-orders.1')
@@ -118,7 +118,7 @@ it('fetches a fresh token after a connection fails before opening', async () => 
   expect(new URL(retry.url).searchParams.get('token')).toBe('fresh')
 })
 
-it('keeps retrying when authorization fails', async () => {
+it('keeps retrying when the authorization endpoint fails', async () => {
   const fetch = failingThenOk()
   const m = client({ fetch, retryMs: 10 })
   m.private('a')
@@ -132,7 +132,7 @@ it('backs off consecutive authorization failures with jitter and caps the base d
   const m = client({
     fetch: async () => {
       attempts++
-      return new Response(null, { status: 403 })
+      return new Response(null, { status: 500 })
     },
   })
   m.private('orders')
@@ -175,18 +175,91 @@ it('resets channel retry backoff when the connection opens', async () => {
   expect(FakeEventSource.instances).toHaveLength(4)
 })
 
-it('emits unauthorized with each 4xx authorization status and skips server errors', async () => {
-  vi.spyOn(Math, 'random').mockReturnValue(0)
-  const responses = [401, 403, 419, 422, 500]
-  const fetch: typeof globalThis.fetch = async () => new Response(null, { status: responses.shift() ?? 500 })
-  const statuses: number[] = []
+it.each([401, 403, 419, 422])('isolates a %s denial to the affected channel until reauthorized', async status => {
+  const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: nowSeconds() + 900 }))
+    .mockResolvedValueOnce(new Response(null, { status }))
   const m = client({ fetch, retryMs: 10 })
-  m.on('unauthorized', status => statuses.push(status))
-  m.private('orders')
+  const unauthorized = vi.fn()
+  const denied = vi.fn()
+  const allowed = vi.fn()
+  m.on('unauthorized', unauthorized)
+  m.private('orders').error(denied)
+  m.private('alerts').error(allowed)
+  m.channel('news')
+  await wait(100)
 
+  expect(unauthorized).toHaveBeenCalledExactlyOnceWith(status, 'orders')
+  expect(denied).toHaveBeenCalledExactlyOnceWith(status)
+  expect(allowed).not.toHaveBeenCalled()
+  expect(fetch).toHaveBeenCalledTimes(2)
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  expect(topicsOf(first)).toEqual(['private-alerts', 'news'])
+
+  m.reauthorize('missing')
   await flush()
-  await wait(150)
-  expect(statuses).toEqual([401, 403, 419, 422])
+  expect(FakeEventSource.instances).toHaveLength(1)
+  m.reauthorize('orders')
+  await flush()
+  const next = FakeEventSource.instances[1]
+  assert.isDefined(next)
+  expect(topicsOf(next)).toEqual(['private-orders', 'private-alerts', 'news'])
+  expect(fetch).toHaveBeenCalledTimes(3)
+})
+
+it('reauthorizes a denied channel when it is left and rejoined', async () => {
+  const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: nowSeconds() + 900 }))
+    .mockResolvedValueOnce(new Response(null, { status: 403 }))
+  const m = client({ fetch })
+  m.private('orders')
+  await flush()
+  expect(FakeEventSource.instances).toHaveLength(0)
+
+  m.leave('orders')
+  m.private('orders')
+  await flush()
+
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(FakeEventSource.instances).toHaveLength(1)
+})
+
+it('reauthorizes all denied channels when no name is supplied', async () => {
+  const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: nowSeconds() + 900 }))
+    .mockResolvedValueOnce(new Response(null, { status: 403 }))
+    .mockResolvedValueOnce(new Response(null, { status: 403 }))
+  const m = client({ fetch })
+  m.private('orders')
+  m.private('alerts')
+  await flush()
+  expect(FakeEventSource.instances).toHaveLength(0)
+
+  m.reauthorize()
+  await flush()
+
+  const source = FakeEventSource.instances[0]
+  assert.isDefined(source)
+  expect(topicsOf(source)).toEqual(['private-orders', 'private-alerts'])
+  expect(fetch).toHaveBeenCalledTimes(4)
+})
+
+it('reports an oversized private subscription and waits for the channel set to change', async () => {
+  const fetch = vi.fn(authFetch({ token: 'small', expires_at: nowSeconds() + 900 }))
+    .mockResolvedValueOnce(Response.json({ token: 'x'.repeat(7000), expires_at: nowSeconds() + 900 }))
+  const m = client({ fetch, retryMs: 10 })
+  const error = vi.fn()
+  m.on('error', error)
+  m.private('big')
+  m.private('small')
+  await wait(100)
+
+  expect(error).toHaveBeenCalledExactlyOnceWith(expect.any(Error))
+  expect(error.mock.calls[0]?.[0]?.message).toMatch(/2 private channels.*multi-topic token/i)
+  expect(FakeEventSource.instances).toHaveLength(0)
+  expect(vi.getTimerCount()).toBe(0)
+
+  m.leave('big')
+  await flush()
+  expect(FakeEventSource.instances).toHaveLength(1)
 })
 
 it('emits gap', async () => {
@@ -318,31 +391,40 @@ it('receives polyfill messages and distinguishes data events from native open an
   expect(disconnected).toHaveBeenCalledTimes(1)
 })
 
-it('discards an authorization response after the channel set changes', async () => {
+it('bounds concurrent requests and aborts every outstanding request on supersede', async () => {
   const { fetch, requests } = pendingAuthFetch()
   const m = client({ fetch })
-  m.private('a')
+  for (const name of ['a', 'b', 'c', 'd', 'e', 'f']) {
+    m.private(name)
+  }
   await flush()
-  const first = requests[0]
-  assert.isDefined(first)
+  expect(requests).toHaveLength(4)
 
-  m.private('b')
+  requests[0]?.resolve(Response.json({ token: 'a', expires_at: nowSeconds() + 900 }))
   await flush()
-  const second = requests[1]
-  assert.isDefined(second)
-  expect(requests).toHaveLength(2)
-  expect(first.signal?.aborted).toBe(true)
-  first.resolve(Response.json({ token: 'obsolete', expires_at: nowSeconds() + 900 }))
+  expect(requests).toHaveLength(5)
+
+  m.leave('a')
   await flush()
+  expect(requests).toHaveLength(9)
+  expect(requests.slice(1, 5).every(request => request.signal?.aborted)).toBe(true)
+  for (const request of requests.slice(1, 5)) {
+    request.resolve(Response.json({ token: 'obsolete', expires_at: nowSeconds() + 900 }))
+  }
+  await flush()
+  expect(requests).toHaveLength(9)
   expect(FakeEventSource.instances).toHaveLength(0)
 
-  second.resolve(Response.json({ token: 'current', expires_at: nowSeconds() + 900 }))
+  for (const [index, request] of requests.slice(5).entries()) {
+    request.resolve(Response.json({ token: 'current-' + index, expires_at: nowSeconds() + 900 }))
+  }
   await flush()
-  expect(FakeEventSource.instances).toHaveLength(1)
+  requests[9]?.resolve(Response.json({ token: 'current-4', expires_at: nowSeconds() + 900 }))
+  await flush()
   const source = FakeEventSource.instances[0]
   assert.isDefined(source)
-  expect(topicsOf(source)).toEqual(['private-a', 'private-b'])
-  expect(new URL(source.url).searchParams.get('token')).toBe('current')
+  expect(topicsOf(source)).toEqual(['private-b', 'private-c', 'private-d', 'private-e', 'private-f'])
+  expect(new URL(source.url).searchParams.get('token')).toBe('current-0,current-1,current-2,current-3,current-4')
 })
 
 it('replaces the pending retry when a channel is joined', async () => {
@@ -432,10 +514,11 @@ it('reports connected and disconnected and supports unsubscribing', async () => 
   expect(disconnected).toHaveBeenCalledTimes(1)
 })
 
-it('fetches a new token when another private channel is joined', async () => {
+it('fetches only the new channel and removes its cached token on leave', async () => {
   const fetch = vi.fn<typeof globalThis.fetch>()
     .mockResolvedValueOnce(Response.json({ token: 'first', expires_at: nowSeconds() + 900 }))
     .mockResolvedValueOnce(Response.json({ token: 'second', expires_at: nowSeconds() + 900 }))
+    .mockResolvedValueOnce(Response.json({ token: 'third', expires_at: nowSeconds() + 900 }))
   const m = client({ fetch })
   m.private('a')
   await flush()
@@ -444,10 +527,23 @@ it('fetches a new token when another private channel is joined', async () => {
   await flush()
 
   expect(fetch).toHaveBeenCalledTimes(2)
-  expect(fetch.mock.calls[1]?.[1]?.body).toBe('{"channels":["private-a","private-b"]}')
+  expect(fetch.mock.calls[1]?.[1]?.body).toBe('{"channel_name":"private-b"}')
   const source = FakeEventSource.instances[1]
   assert.isDefined(source)
-  expect(new URL(source.url).searchParams.get('token')).toBe('second')
+  expect(new URL(source.url).searchParams.get('token')).toBe('first,second')
+
+  m.leave('b')
+  await flush()
+  const remaining = FakeEventSource.instances[2]
+  assert.isDefined(remaining)
+  expect(new URL(remaining.url).searchParams.get('token')).toBe('first')
+
+  m.private('b')
+  await flush()
+  const rejoined = FakeEventSource.instances[3]
+  assert.isDefined(rejoined)
+  expect(new URL(rejoined.url).searchParams.get('token')).toBe('first,third')
+  expect(fetch).toHaveBeenCalledTimes(3)
 })
 
 it('sends credentials, JSON acceptance, and the decoded XSRF token for authorization', async () => {
@@ -456,7 +552,7 @@ it('sends credentials, JSON acceptance, and the decoded XSRF token for authoriza
   client({ fetch }).private('a')
   await flush()
 
-  expect(fetch).toHaveBeenCalledWith('/murmur/auth', expect.objectContaining({
+  expect(fetch).toHaveBeenCalledWith('/broadcasting/auth', expect.objectContaining({
     credentials: 'include',
     headers: expect.objectContaining({
       Accept: 'application/json',
@@ -625,7 +721,7 @@ it('merges static auth headers case-insensitively and sends the configured crede
   expect(fetch).toHaveBeenCalledExactlyOnceWith('/api/tokens', expect.objectContaining({
     credentials: 'omit',
     method: 'POST',
-    body: '{"channels":["private-orders"]}',
+    body: '{"channel_name":"private-orders"}',
   }))
   const headers = new Headers(fetch.mock.calls[0]?.[1]?.headers)
   expect(headers.get('Authorization')).toBe('Bearer abc')
@@ -728,13 +824,13 @@ it.each([null, { token: 123, expires_at: 1 }, { token: 'bad' }, { token: 'bad', 
 )
 
 it.each([
-  { error: { status: 400 }, statuses: [400] },
-  { error: { status: 499 }, statuses: [499] },
+  { error: { status: 400 }, statuses: [[400, 'orders'], [400, 'alerts']] },
+  { error: { status: 499 }, statuses: [[499, 'orders'], [499, 'alerts']] },
   { error: { status: 500 }, statuses: [] },
   { error: { status: '403' }, statuses: [] },
   { error: new Error('Authorization unavailable'), statuses: [] },
   { error: null, statuses: [] },
-])('retries a rejected authorizer and emits unauthorized only for numeric 4xx statuses ($error)', async ({
+])('pauses denied batch authorizations and retries other rejected authorizations ($error)', async ({
   error, statuses,
 }) => {
   const authorizer = vi.fn()
@@ -744,13 +840,19 @@ it.each([
   const m = client({ authorizer, retryMs: 10 })
   m.on('unauthorized', unauthorized)
   m.private('orders')
+  m.private('alerts')
   await flush()
 
-  expect(unauthorized.mock.calls.flat()).toEqual(statuses)
+  expect(unauthorized.mock.calls).toEqual(statuses)
   expect(FakeEventSource.instances).toHaveLength(0)
   await wait(9)
   expect(authorizer).toHaveBeenCalledTimes(1)
   await wait(1)
+  if (statuses.length > 0) {
+    expect(authorizer).toHaveBeenCalledTimes(1)
+    m.reauthorize()
+    await flush()
+  }
   expect(authorizer).toHaveBeenCalledTimes(2)
   expect(FakeEventSource.instances).toHaveLength(1)
 })
@@ -939,17 +1041,18 @@ it('counts built-in token failures and successful attempts while skipping cache 
   await flush()
 
   expect(unauthorized.mock.results[0]?.value).toMatchObject({ tokenRequests: 1, tokenFailures: 1 })
-  expect(m.stats()).toMatchObject({ tokenRequests: 1, tokenFailures: 1, disconnections: 1 })
-  await wait(10)
+  expect(m.stats()).toMatchObject({ tokenRequests: 1, tokenFailures: 1, disconnections: 0 })
+  m.reauthorize()
+  await flush()
   const source = FakeEventSource.instances[0]
   assert.isDefined(source)
   source.dispatchEvent(new Event('open'))
-  expect(m.stats()).toMatchObject({ tokenRequests: 2, tokenFailures: 1, disconnections: 1 })
+  expect(m.stats()).toMatchObject({ tokenRequests: 2, tokenFailures: 1, disconnections: 0 })
 
   m.channel('news')
   await flush()
   expect(FakeEventSource.instances).toHaveLength(2)
-  expect(m.stats()).toMatchObject({ tokenRequests: 2, tokenFailures: 1, disconnections: 1 })
+  expect(m.stats()).toMatchObject({ tokenRequests: 2, tokenFailures: 1, disconnections: 0 })
 })
 
 it('counts rejected and invalid authorizer results before a successful retry', async () => {
@@ -1036,4 +1139,71 @@ it('does not read the XSRF cookie when credentials are omitted', async () => {
   const headers = new Headers(fetch.mock.calls[0]?.[1]?.headers)
   expect(headers.get('Authorization')).toBe('Bearer abc')
   expect(headers.has('X-XSRF-TOKEN')).toBe(false)
+})
+
+it('uses a batch token for every private channel and consolidates later joins', async () => {
+  const authorizer = vi.fn<Authorizer>()
+    .mockResolvedValueOnce({ token: 'pair', expires_at: nowSeconds() + 900 })
+    .mockResolvedValueOnce({ token: 'trio', expires_at: nowSeconds() + 900 })
+  const m = client({ authorizer })
+  m.private('a')
+  m.private('b')
+  await flush()
+  expect(authorizer).toHaveBeenCalledExactlyOnceWith(['private-a', 'private-b'], expect.any(AbortSignal))
+
+  m.private('c')
+  await flush()
+  expect(authorizer).toHaveBeenLastCalledWith(['private-a', 'private-b', 'private-c'], expect.any(AbortSignal))
+  m.leave('a')
+  await flush()
+
+  const source = FakeEventSource.instances[2]
+  assert.isDefined(source)
+  expect(topicsOf(source)).toEqual(['private-b', 'private-c'])
+  expect(new URL(source.url).searchParams.get('token')).toBe('trio')
+  expect(authorizer).toHaveBeenCalledTimes(2)
+})
+
+it('sends grouped token results together and replaces the group after a channel leaves', async () => {
+  const authorizer = vi.fn<Authorizer>()
+    .mockResolvedValueOnce([
+      { token: 'group', expires_at: nowSeconds() + 900 },
+      { token: 'individual', expires_at: nowSeconds() + 900 },
+    ])
+    .mockResolvedValueOnce({ token: 'remaining', expires_at: nowSeconds() + 900 })
+  const m = client({ authorizer })
+  m.private('a')
+  m.private('b')
+  m.private('c')
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  expect(new URL(first.url).searchParams.get('token')).toBe('group,individual')
+
+  m.leave('c')
+  await flush()
+  const next = FakeEventSource.instances[1]
+  assert.isDefined(next)
+  expect(authorizer).toHaveBeenLastCalledWith(['private-a', 'private-b'], expect.any(AbortSignal))
+  expect(new URL(next.url).searchParams.get('token')).toBe('remaining')
+})
+
+it('drops every token used by a connection that fails before opening', async () => {
+  let request = 0
+  const fetch: typeof globalThis.fetch = async () =>
+    Response.json({ token: String(++request), expires_at: nowSeconds() + 900 })
+  const m = client({ fetch, retryMs: 10 })
+  m.private('a')
+  m.private('b')
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  expect(new URL(first.url).searchParams.get('token')).toBe('1,2')
+
+  first.fail()
+  await wait(10)
+
+  const retry = FakeEventSource.instances[1]
+  assert.isDefined(retry)
+  expect(new URL(retry.url).searchParams.get('token')).toBe('3,4')
 })

@@ -64,7 +64,7 @@ it('delivers public and authorized private events through Echo', async () => {
 
   expect(topicsOf(source)).toEqual(['orders', 'private-orders'])
   expect(new URL(source.url).searchParams.get('token')).toBe('jwt-echo')
-  expect(authFetch.calls).toEqual([{ body: { channels: ['private-orders'] } }])
+  expect(authFetch.calls).toEqual([{ body: { channel_name: 'private-orders' } }])
   expect(publicly).toHaveBeenCalledExactlyOnceWith(1)
   expect(privately).toHaveBeenCalledExactlyOnceWith(2)
 })
@@ -263,7 +263,7 @@ it('reports a denied token request to every private channel and to no public cha
 
   expect(privateError).toHaveBeenCalledExactlyOnceWith(403)
   expect(publicError).not.toHaveBeenCalled()
-  expect(FakeEventSource.instances).toHaveLength(0)
+  expect(FakeEventSource.instances).toHaveLength(1)
 })
 
 it('leaves the socket ID undefined and closes the client and pending retries on disconnect', async () => {

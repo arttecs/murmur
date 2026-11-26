@@ -62,8 +62,8 @@ export const authFetch = Object.assign(
   { calls },
 )
 
-/** Returns a denied authorization once, followed by a valid token. */
+/** Returns a failed authorization once, followed by a valid token. */
 export function failingThenOk(): typeof fetch {
   const authorized = authFetch({ token: 'jwt-1', expires_at: nowSeconds() + 900 })
-  return vi.fn(authorized).mockResolvedValueOnce(new Response(null, { status: 403 }))
+  return vi.fn(authorized).mockResolvedValueOnce(new Response(null, { status: 500 }))
 }
