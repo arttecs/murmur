@@ -6,6 +6,7 @@ use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Contracts\SubscriptionAuthorizer;
 use Arttecs\Murmur\Exceptions\InvalidToken;
 use Arttecs\Murmur\Server\Auth\Grant;
+use Arttecs\Murmur\Server\Connection;
 use Arttecs\Murmur\Server\ConnectionId;
 use Arttecs\Murmur\Server\ErrorReporter;
 use Arttecs\Murmur\Server\Event;
@@ -120,7 +121,7 @@ class SseHandler
         $authorization->then($decision->resolve(...), $decision->reject(...));
 
         return $decision->promise()->then(function (?array $grants) use ($client, $headers, $topics, $fresh, $id, $cursor): ResponseInterface {
-            if ($grants === null || ! ($this->accepting)()) {
+            if ($grants === null || ! $client->isWritable() || ! ($this->accepting)()) {
                 return new Response(503, $headers);
             }
 
@@ -183,12 +184,12 @@ class SseHandler
             }
         });
 
-        $endStream = fn () => $this->endStream($stream, $client);
+        $endStream = fn (string $reason) => $this->endStream($connection, $client, $reason);
 
         $delay = $expiresAt === null ? null : $expiresAt - microtime(true);
 
         if ($delay !== null && $delay <= self::MAX_EXPIRY_DELAY_SECONDS && $delay < intdiv(PHP_INT_MAX, 1000)) {
-            $timer = $this->loop->addTimer(max(0.0, $delay), $endStream);
+            $timer = $this->loop->addTimer(max(0.0, $delay), fn () => $endStream('expired'));
             $connection->onClose(fn () => $this->loop->cancelTimer($timer));
         }
 
@@ -214,7 +215,7 @@ class SseHandler
 
             $snapshot->then(function (?Replay $replay) use ($connection, $endStream, $fresh): void {
                 if ($replay === null) {
-                    $endStream();
+                    $endStream('error');
 
                     return;
                 }
@@ -222,7 +223,7 @@ class SseHandler
                 $connection->release($replay, $fresh);
             })->catch(function (Throwable $error) use ($endStream): void {
                 $this->reportReplayFailure($error);
-                $endStream();
+                $endStream('error');
             });
         });
 
@@ -301,14 +302,14 @@ class SseHandler
     /**
      * End the response and give the socket one second to flush before closing it.
      */
-    protected function endStream(ThroughStream $stream, ConnectionInterface $client): void
+    protected function endStream(Connection $connection, ConnectionInterface $client, string $reason): void
     {
-        if (! $stream->isWritable()) {
+        if ($connection->isClosed()) {
             return;
         }
 
         $timer = $this->loop->addTimer(1.0, $client->close(...));
         $client->once('close', fn () => $this->loop->cancelTimer($timer));
-        $stream->end();
+        $connection->end(reason: $reason);
     }
 }

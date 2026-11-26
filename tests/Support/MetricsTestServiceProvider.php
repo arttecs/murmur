@@ -3,6 +3,8 @@
 namespace Arttecs\Murmur\Tests\Support;
 
 use Arttecs\Murmur\Contracts\MetricsStore;
+use Arttecs\Murmur\Events\ConnectionClosed;
+use Arttecs\Murmur\Events\ConnectionOpened;
 use Arttecs\Murmur\Facades\Murmur;
 use Arttecs\Murmur\Server\Server;
 use Illuminate\Contracts\Debug\ExceptionHandler;
@@ -19,6 +21,10 @@ class MetricsTestServiceProvider extends ServiceProvider
 {
     public function boot(): void
     {
+        if ($lifecycleFile = getenv('MURMUR_TEST_LIFECYCLE_FILE')) {
+            $this->traceLifecycle($lifecycleFile, getenv('MURMUR_TEST_LIFECYCLE_MODE') ?: '');
+        }
+
         Murmur::extendMetrics('fake', function (): MetricsStore {
             $mode = getenv('MURMUR_TEST_METRICS_MODE') ?: '';
 
@@ -74,6 +80,36 @@ class MetricsTestServiceProvider extends ServiceProvider
                     $loop->stop();
                 });
             });
+        }
+    }
+
+    protected function traceLifecycle(string $file, string $mode): void
+    {
+        $record = static function (array $fields) use ($file): void {
+            file_put_contents($file, json_encode(['pid' => getmypid(), ...$fields], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION)."\n", FILE_APPEND | LOCK_EX);
+        };
+
+        $this->app['events']->listen([ConnectionOpened::class, ConnectionClosed::class], function (ConnectionOpened|ConnectionClosed $event) use ($record, $mode): void {
+            $fields = (array) $event;
+            $fields['topics'] = array_map(base64_encode(...), $event->topics);
+            $record(['phase' => $event instanceof ConnectionOpened ? 'opened' : 'closed', ...$fields]);
+
+            if ($mode === 'fail-first' && $event instanceof ConnectionOpened) {
+                throw new RuntimeException('The lifecycle listener failed.');
+            }
+        });
+
+        if ($mode === 'fail-first') {
+            $this->app->make(ExceptionHandler::class)->reportable(function (RuntimeException $error) use ($record): void {
+                $record(['phase' => 'reported', 'message' => $error->getMessage()]);
+
+                throw new RuntimeException('The test exception handler failed.');
+            });
+        }
+
+        if (in_array($mode, ['error', 'slow_consumer'], true)) {
+            Murmur::extend('lifecycle-test', fn () => new FakePublisher, fn () => new LifecycleReplayLog($mode));
+            config(['murmur.driver' => 'lifecycle-test']);
         }
     }
 }

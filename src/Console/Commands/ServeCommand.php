@@ -4,9 +4,11 @@ namespace Arttecs\Murmur\Console\Commands;
 
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\MurmurManager;
+use Arttecs\Murmur\Server\LifecycleRecorder;
 use Arttecs\Murmur\Server\LoopBackend;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
+use Arttecs\Murmur\Worker\LifecycleConfig;
 use Arttecs\Murmur\Worker\Worker;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -14,6 +16,7 @@ use Illuminate\Support\ProcessUtils;
 use InvalidArgumentException;
 use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;
+use React\Promise\Deferred;
 use RuntimeException;
 use Symfony\Component\Console\Input\ArgvInput;
 use Throwable;
@@ -51,12 +54,15 @@ class ServeCommand extends Command
             $config = $this->makeConfig();
             $backend->validate($config->maxSockets);
             $metrics = $manager->metricsConfiguration();
-            $host = gethostname();
-            $worker = $metrics === null ? null : new Worker(
+            $lifecycle = LifecycleConfig::from(config());
+            $recorder = $lifecycle === null ? null : new LifecycleRecorder($lifecycle->buffer);
+            $worker = $metrics === null && $lifecycle === null ? null : new Worker(
                 $loop,
                 $metrics,
-                $metrics->node ?? ($host === false ? '' : $host.':'.$config->port),
+                $this->workerNode($config->port),
                 $this->workerCommand(),
+                $lifecycle,
+                $recorder,
             );
         } catch (InvalidArgumentException $exception) {
             $this->error($exception->getMessage());
@@ -104,20 +110,28 @@ class ServeCommand extends Command
                 $loop,
                 $channel === null ? null : Log::channel($channel),
                 $manager->subscriptionAuthorizer(),
+                $recorder,
             );
             $manager->callServingCallbacks($server, $loop);
 
             $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];
             $shutdown = function () use ($server, $worker, $loop, &$shuttingDown): void {
-                $shuttingDown = true;
+                if ($shuttingDown) {
+                    return;
+                }
 
+                $shuttingDown = true;
                 if ($worker === null) {
                     $server->shutdown()->then($loop->stop(...));
 
                     return;
                 }
 
-                all([$worker->stop(), $server->shutdown()])->then($loop->stop(...));
+                $drained = new Deferred;
+                $stopped = $worker->stop($drained->promise());
+                $server->shutdown()->then($drained->resolve(...));
+
+                all([$stopped, $drained->promise()])->then($loop->stop(...));
             };
 
             foreach ($signals as $signal) {
@@ -156,6 +170,22 @@ class ServeCommand extends Command
     }
 
     /**
+     * Resolve the same node name for metrics and lifecycle records.
+     */
+    protected function workerNode(int $port): string
+    {
+        $node = config('murmur.metrics.node');
+
+        if ($node !== null && (! is_string($node) || trim($node) !== '')) {
+            return is_string($node) ? $node : '';
+        }
+
+        $host = gethostname();
+
+        return $host === false ? '' : $host.':'.$port;
+    }
+
+    /**
      * Build the worker command using the running PHP and Artisan entry point.
      *
      * @throws InvalidArgumentException
@@ -173,7 +203,7 @@ class ServeCommand extends Command
         $path = realpath($artisan);
 
         if ($path === false || ! is_file($path)) {
-            throw new InvalidArgumentException('Murmur metrics recording could not locate the Artisan entry point.');
+            throw new InvalidArgumentException('Murmur could not locate the Artisan entry point for its worker.');
         }
 
         return ProcessUtils::escapeArgument(PHP_BINARY).' '.ProcessUtils::escapeArgument($path).' murmur:worker';

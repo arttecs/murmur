@@ -3,11 +3,17 @@
 namespace Arttecs\Murmur\Console\Commands;
 
 use Arttecs\Murmur\Contracts\MetricsStore;
+use Arttecs\Murmur\Events\ConnectionClosed;
+use Arttecs\Murmur\Events\ConnectionOpened;
 use Arttecs\Murmur\Metrics\Snapshot;
 use Arttecs\Murmur\MurmurManager;
+use Arttecs\Murmur\Server\ConnectionId;
 use Arttecs\Murmur\Server\Metrics;
+use Arttecs\Murmur\Server\Topic;
+use Arttecs\Murmur\Worker\LifecycleConfig;
 use Arttecs\Murmur\Worker\Worker;
 use Illuminate\Console\Command;
+use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use stdClass;
@@ -38,12 +44,17 @@ class WorkerCommand extends Command
     /**
      * Resolve the store once and acknowledge each input line.
      */
-    public function handle(MurmurManager $manager): int
+    public function handle(MurmurManager $manager, Dispatcher $events): int
     {
         $this->watchParent();
         ob_start(static fn (): string => '', 8192);
 
         try {
+            try {
+                $lifecycle = LifecycleConfig::from(config());
+            } catch (InvalidArgumentException $error) {
+                return $this->failure($error->getMessage());
+            }
 
             try {
                 $store = $manager->metricsStore();
@@ -53,7 +64,7 @@ class WorkerCommand extends Command
                 return $this->failure('Murmur could not initialize the metrics store.');
             }
 
-            if ($store === null) {
+            if ($store === null && $lifecycle === null) {
                 return $this->failure('No Murmur metrics store is configured.');
             }
 
@@ -61,7 +72,7 @@ class WorkerCommand extends Command
 
             while (($line = @fgets(STDIN, Worker::MAX_LINE_BYTES + 2)) !== false) {
                 if (str_ends_with($line, "\n")) {
-                    $saved = $this->processMessage($store, json_decode($line));
+                    $saved = $this->processMessage($store, $lifecycle, $events, json_decode($line));
                 } else {
                     unset($line);
                     $this->discardLine();
@@ -95,12 +106,28 @@ class WorkerCommand extends Command
     /**
      * Route an input object by message type.
      */
-    protected function processMessage(MetricsStore $store, mixed $data): bool
+    protected function processMessage(?MetricsStore $store, ?LifecycleConfig $lifecycle, Dispatcher $events, mixed $data): bool
     {
-        return $data instanceof stdClass && match ($data->type ?? null) {
-            'metrics' => $this->writeSnapshot($store, $data),
-            default => false,
-        };
+        if (! $data instanceof stdClass) {
+            return false;
+        }
+
+        try {
+            return match ($data->type ?? null) {
+                'metrics' => $store !== null && $this->writeSnapshot($store, $data),
+                'lifecycle' => $lifecycle !== null && $this->dispatchBatch($events, $data, $lifecycle->batch),
+                default => false,
+            };
+        } catch (Throwable $error) {
+            try {
+                report($error);
+            } catch (Throwable) {
+            }
+
+            return false;
+        } finally {
+            $this->clearQueryLogs();
+        }
     }
 
     /**
@@ -118,20 +145,83 @@ class WorkerCommand extends Command
             return false;
         }
 
-        try {
-            $store->put($data->node, $snapshot['recorded_at'], $snapshot['samples']);
-        } catch (Throwable $error) {
-            try {
-                report($error);
-            } catch (Throwable) {
+        $store->put($data->node, $snapshot['recorded_at'], $snapshot['samples']);
+
+        return true;
+    }
+
+    /**
+     * Validate the entire batch before dispatching events in record order.
+     */
+    protected function dispatchBatch(Dispatcher $events, stdClass $data, int $batchLimit): bool
+    {
+        $records = $data->records ?? null;
+
+        if (count((array) $data) !== 3 || ! Snapshot::validNode($data->node ?? null) ||
+            ! is_array($records) || $records === [] || count($records) > $batchLimit) {
+            return false;
+        }
+
+        $topicLimit = (int) config('murmur.server.max_topics_per_connection');
+        $batch = [];
+
+        foreach ($records as $record) {
+            if (! $record instanceof stdClass || ($event = $this->lifecycleEvent($data->node, $record, $topicLimit)) === null) {
+                return false;
             }
 
-            return false;
-        } finally {
-            $this->clearQueryLogs();
+            $batch[] = $event;
+        }
+
+        foreach ($batch as $event) {
+            $events->dispatch($event);
         }
 
         return true;
+    }
+
+    /**
+     * Validate the fields and convert one record to a Laravel event.
+     */
+    protected function lifecycleEvent(string $node, stdClass $record, int $topicLimit): ConnectionOpened|ConnectionClosed|null
+    {
+        $id = $record->connectionId ?? null;
+        $occurredAt = $record->occurredAt ?? null;
+        $topics = $record->topics ?? null;
+
+        if (! is_string($id) || ! ConnectionId::isValid($id) ||
+            ! is_int($occurredAt) || $occurredAt < 1 ||
+            ! is_array($topics) || $topics === [] || count($topics) > $topicLimit) {
+            return null;
+        }
+
+        $decoded = [];
+
+        foreach ($topics as $encoded) {
+            if (! is_string($encoded) || ($topic = base64_decode($encoded, true)) === false ||
+                base64_encode($topic) !== $encoded || ! Topic::isValid($topic) || isset($decoded[$encoded])) {
+                return null;
+            }
+
+            $decoded[$encoded] = $topic;
+        }
+
+        $topics = array_values($decoded);
+        $size = count((array) $record);
+
+        if ($size === 3) {
+            return new ConnectionOpened($id, $node, $topics, $occurredAt);
+        }
+
+        $duration = $record->durationSeconds ?? null;
+        $reason = $record->reason ?? null;
+
+        if ($size !== 5 || (! is_int($duration) && ! is_float($duration)) || ! is_finite($duration) || $duration < 0 ||
+            ! in_array($reason, ['client', 'expired', 'slow_consumer', 'shutdown', 'error'], true)) {
+            return null;
+        }
+
+        return new ConnectionClosed($id, $node, $topics, $occurredAt, (float) $duration, $reason);
     }
 
     /**
@@ -150,7 +240,7 @@ class WorkerCommand extends Command
     }
 
     /**
-     * Let the server handle Ctrl-C and detect parent death during a store call.
+     * Let the server handle Ctrl-C and detect parent death while processing a message.
      */
     protected function watchParent(): void
     {

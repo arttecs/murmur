@@ -1,5 +1,7 @@
 <?php
 
+use Arttecs\Murmur\Events\ConnectionClosed;
+use Arttecs\Murmur\Events\ConnectionOpened;
 use Arttecs\Murmur\Facades\Murmur;
 use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\MurmurServiceProvider;
@@ -14,6 +16,8 @@ use Arttecs\Murmur\Stream;
 
 it('marks every type outside the public API as internal', function () {
     $public = [
+        ConnectionOpened::class,
+        ConnectionClosed::class,
         Murmur::class,
         MurmurManager::class,
         MurmurServiceProvider::class,

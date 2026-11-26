@@ -23,7 +23,7 @@ class Hub
     /**
      * The topics subscribed to by each connection.
      *
-     * @var SplObjectStorage<Connection, array<array-key, string>>
+     * @var SplObjectStorage<Connection, array{topics: list<string>, startedAt: int|float|null}>
      */
     protected SplObjectStorage $connections;
 
@@ -35,8 +35,10 @@ class Hub
     /**
      * Create a hub with no connections.
      */
-    public function __construct(protected ?Metrics $metrics = null)
-    {
+    public function __construct(
+        protected ?Metrics $metrics = null,
+        protected ?LifecycleRecorder $lifecycle = null,
+    ) {
         $this->connections = new SplObjectStorage;
     }
 
@@ -51,20 +53,65 @@ class Hub
             return;
         }
 
+        $startedAt = null;
+        $topics = array_values(array_unique($topics));
+
         if (isset($this->connections[$connection])) {
+            $startedAt = $this->connections[$connection]['startedAt'];
             $this->detach($connection);
         } else {
-            $connection->onClose(function () use ($connection): void {
+            $connection->onClose(function (string $reason) use ($connection): void {
+                $this->recordClose($connection, $reason);
                 $this->detach($connection);
             });
+
+            if ($this->lifecycle !== null) {
+                $startedAt = hrtime(true);
+                $this->recordLifecycle($connection, $topics);
+            }
         }
 
-        $topics = array_unique($topics);
-        $this->connections[$connection] = $topics;
+        $this->connections[$connection] = compact('topics', 'startedAt');
 
         foreach ($topics as $topic) {
             $this->topics[$topic] ??= new SplObjectStorage;
             $this->topics[$topic][$connection] = null;
+        }
+    }
+
+    /**
+     * Record the close of an attached connection.
+     */
+    protected function recordClose(Connection $connection, string $reason): void
+    {
+        $attachment = $this->connections[$connection] ?? null;
+        $startedAt = $attachment['startedAt'] ?? null;
+
+        if ($startedAt !== null) {
+            $this->recordLifecycle($connection, $attachment['topics'], [
+                'durationSeconds' => (hrtime(true) - $startedAt) / 1_000_000_000.0,
+                'reason' => $reason,
+            ]);
+        }
+    }
+
+    /**
+     * Enqueue a lifecycle record and count a drop if the queue cannot retain it.
+     *
+     * @param  list<string>  $topics
+     * @param  array{durationSeconds?: float, reason?: string}  $closed
+     */
+    protected function recordLifecycle(Connection $connection, array $topics, array $closed = []): void
+    {
+        $dropped = $this->lifecycle->enqueue([
+            'connectionId' => $connection->id,
+            'topics' => $topics,
+            'occurredAt' => time(),
+            ...$closed,
+        ]);
+
+        if ($dropped > 0) {
+            $this->metrics?->increment('murmur_lifecycle_dropped_total', $dropped);
         }
     }
 
@@ -77,7 +124,7 @@ class Hub
             return;
         }
 
-        foreach ($this->connections[$connection] as $topic) {
+        foreach ($this->connections[$connection]['topics'] as $topic) {
             unset($this->topics[$topic][$connection]);
 
             if (count($this->topics[$topic]) === 0) {
@@ -132,7 +179,7 @@ class Hub
                 ErrorReporter::report($error);
 
                 try {
-                    $connection->close();
+                    $connection->close('error');
                 } catch (Throwable $closeError) {
                     ErrorReporter::report($closeError);
                 }
@@ -190,7 +237,7 @@ class Hub
     public function closeAll(): void
     {
         foreach (iterator_to_array($this->connections, false) as $connection) {
-            $connection->close();
+            $connection->close('shutdown');
         }
     }
 }

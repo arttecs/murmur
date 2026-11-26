@@ -23,9 +23,14 @@ class Connection
     protected bool $closed = false;
 
     /**
+     * The first known reason for ending the connection.
+     */
+    protected ?string $closeReason = null;
+
+    /**
      * The listeners to notify when the connection closes.
      *
-     * @var list<callable(): void>
+     * @var list<callable(string): void>
      */
     protected array $closeListeners = [];
 
@@ -51,6 +56,7 @@ class Connection
             $this->bufferedBytes = 0;
         });
 
+        $this->stream->on('error', fn () => $this->close('error'));
         $this->stream->on('close', $this->close(...));
     }
 
@@ -90,7 +96,7 @@ class Connection
 
             if ($this->bufferedBytes > $this->maxBufferBytes) {
                 $this->metrics?->increment('murmur_slow_consumers_total');
-                $this->close();
+                $this->close('slow_consumer');
             }
         }
 
@@ -134,8 +140,10 @@ class Connection
     /**
      * End the stream, optionally writing a final frame before flushing.
      */
-    public function end(?string $frame = null): void
+    public function end(?string $frame = null, string $reason = 'shutdown'): void
     {
+        $this->closeReason ??= $reason;
+
         if ($frame !== null) {
             $this->writeFrame($frame);
         }
@@ -146,13 +154,14 @@ class Connection
     /**
      * Close the stream and notify the connection's listeners.
      */
-    public function close(): void
+    public function close(string $reason = 'client'): void
     {
         if ($this->closed) {
             return;
         }
 
         $this->closed = true;
+        $this->closeReason ??= $reason;
         $this->metrics?->increment('murmur_connections_closed_total');
 
         try {
@@ -162,7 +171,7 @@ class Connection
             $this->closeListeners = [];
 
             foreach ($listeners as $listener) {
-                $listener();
+                $listener($this->closeReason);
             }
         }
     }
@@ -170,12 +179,12 @@ class Connection
     /**
      * Register a listener for the connection's close event, or call it now if already closed.
      *
-     * @param  callable(): void  $listener
+     * @param  callable(string): void  $listener
      */
     public function onClose(callable $listener): void
     {
         if ($this->closed) {
-            $listener();
+            $listener($this->closeReason);
 
             return;
         }

@@ -22,10 +22,12 @@ it('declares zero value counters in order and reads gauges on each snapshot', fu
         'murmur_replayed_events_total',
         'murmur_gaps_total',
         'murmur_event_loop_lag_exceeded_total',
+        'murmur_lifecycle_dropped_total',
+        'murmur_lifecycle_sent_total',
         'murmur_errors_total',
         'murmur_connections',
     ]);
-    expect(array_column($snapshot, 'value'))->toBe([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    expect(array_column($snapshot, 'value'))->toBe([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     expect($snapshot[0])->toBe([
         'name' => 'murmur_connections_opened_total',
         'type' => 'counter',

@@ -224,7 +224,7 @@ class HeldConnection extends Connection
 
         if ($this->heldBytes > $this->maxBufferBytes) {
             $this->metrics?->increment('murmur_slow_consumers_total');
-            $this->close();
+            $this->close('slow_consumer');
 
             return;
         }
@@ -235,11 +235,11 @@ class HeldConnection extends Connection
     /**
      * Discard the held events and frames and close the stream.
      */
-    public function close(): void
+    public function close(string $reason = 'client'): void
     {
         $this->held = null;
         $this->heldBytes = 0;
 
-        parent::close();
+        parent::close($reason);
     }
 }

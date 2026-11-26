@@ -252,6 +252,24 @@ function runPublishProcess(array $arguments): Process
 }
 
 /**
+ * Create a real serving process using the metrics and lifecycle test provider.
+ */
+function workerServingProcess(int $port, array $env): Process
+{
+    return new Process([PHP_BINARY, '-d', 'error_log=', __DIR__.'/Support/metrics-artisan.php', 'murmur:serve', "--port={$port}"], env: $env + [
+        'MURMUR_DRIVER' => 'http',
+        'MURMUR_HOST' => '127.0.0.1',
+        'MURMUR_SECRET' => config('murmur.secret'),
+        'MURMUR_METRICS_STORE' => 'fake',
+        'MURMUR_METRICS_INTERVAL' => '0.06',
+        'MURMUR_METRICS_TIMEOUT' => '2',
+        'MURMUR_METRICS_TTL' => '60',
+        'MURMUR_NODE' => '',
+        'MURMUR_METRICS_ONLY' => '',
+    ], timeout: 5);
+}
+
+/**
  * Wait for a metrics write or subprocess state without blocking the test loop.
  */
 function waitForMetricsCondition(Closure $condition, ?Process $process = null): void

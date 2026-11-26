@@ -130,6 +130,20 @@ return [
     ],
 
     /**
+     * Dispatch connection lifecycle events in the worker process when enabled.
+     */
+    'lifecycle' => [
+        /** Whether to notify Laravel listeners of open and closed SSE connections. */
+        'enabled' => env('MURMUR_LIFECYCLE_EVENTS', false),
+        /** Maximum number of records waiting to be sent to the worker. */
+        'buffer' => env('MURMUR_LIFECYCLE_BUFFER', 1000),
+        /** Maximum number of records sent in one worker message. */
+        'batch' => env('MURMUR_LIFECYCLE_BATCH', 100),
+        /** Seconds between attempts to send a lifecycle batch. */
+        'interval' => env('MURMUR_LIFECYCLE_INTERVAL', 1.0),
+    ],
+
+    /**
      * Store each server's most recent metrics snapshot. The recorder is
      * disabled until a store is selected.
      */

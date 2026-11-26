@@ -52,6 +52,7 @@ class ConfigTest extends TestCase
         (new MurmurServiceProvider($this->app))->register();
 
         $this->assertSame([], config('murmur.server.allowed_origins'));
+        $this->assertSame(['enabled' => false, 'buffer' => 1000, 'batch' => 100, 'interval' => 1.0], config('murmur.lifecycle'));
         $this->assertSame('app-events', config('murmur.redis.stream'));
         $this->assertSame(5.0, config('murmur.server.shutdown_grace'));
         $this->assertSame(2.0, config('murmur.server.shutdown_spread'));
@@ -70,6 +71,10 @@ class ConfigTest extends TestCase
     public static function settings(): array
     {
         return [
+            ['MURMUR_LIFECYCLE_EVENTS', 'true', 'lifecycle.enabled', true],
+            ['MURMUR_LIFECYCLE_BUFFER', '10', 'lifecycle.buffer', '10'],
+            ['MURMUR_LIFECYCLE_BATCH', '2', 'lifecycle.batch', '2'],
+            ['MURMUR_LIFECYCLE_INTERVAL', '0.25', 'lifecycle.interval', '0.25'],
             ['MURMUR_DRIVER', 'custom', 'driver', 'custom'],
             ['MURMUR_SECRET', 'different-secret-with-at-least-32-bytes', 'secret', 'different-secret-with-at-least-32-bytes'],
             ['MURMUR_HOST', '0.0.0.0', 'server.host', '0.0.0.0'],

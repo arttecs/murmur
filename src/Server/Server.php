@@ -155,7 +155,7 @@ class Server
     protected bool $closed = false;
 
     /**
-     * Create a server with an event log and optional loop, logger, and subscription authorizer.
+     * Create a server with an event log and optional loop, logger, subscription authorizer, and lifecycle recorder.
      */
     public function __construct(
         protected ServerConfig $config,
@@ -163,11 +163,12 @@ class Server
         ?LoopInterface $loop = null,
         protected ?LoggerInterface $logger = null,
         ?SubscriptionAuthorizer $authorizer = null,
+        ?LifecycleRecorder $lifecycle = null,
     ) {
         $this->authorizer = $authorizer ?? new JwtSubscriptionAuthorizer($config->secret);
         $this->loop = $loop ?? Loop::get();
         $this->metrics = new Metrics;
-        $this->hub = new Hub($this->metrics);
+        $this->hub = new Hub($this->metrics, $lifecycle);
 
         $this->metrics->gauge('murmur_connections', 'Open SSE connections.', $this->hub->connectionCount(...));
         $this->metrics->gauge('murmur_sockets', 'Accepted TCP sockets currently open.', fn (): int => count($this->clients));

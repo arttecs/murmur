@@ -160,6 +160,7 @@ it('opens a private subscription without a timer for an expiry beyond the horizo
         fn () => true,
     );
     $client = $this->createStub(ConnectionInterface::class);
+    $client->method('isWritable')->willReturn(true);
     $request = new ServerRequest('GET', '/sse', [], '');
     $response = await($handler($request->withQueryParams(['topics' => 'private-a']), $client));
 

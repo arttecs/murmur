@@ -20,7 +20,7 @@ fail() {
 }
 
 recorded_at() {
-    docker exec "$container" php vendor/bin/testbench murmur:status --json 2> /dev/null \
+    docker exec "$container" php tests/Support/metrics-artisan.php murmur:status --json 2> /dev/null \
         | sed -n 's/.*"recorded_at":\([0-9]*\).*/\1/p' | head -n 1
 }
 
@@ -38,7 +38,9 @@ container=$(docker run --detach \
     --env MURMUR_METRICS_CACHE_STORE=file \
     --env MURMUR_METRICS_INTERVAL=1 \
     --env MURMUR_METRICS_TTL=30 \
-    "$image")
+    --env MURMUR_LIFECYCLE_EVENTS=true \
+    --env MURMUR_TEST_LIFECYCLE_FILE=/tmp/murmur-lifecycle.jsonl \
+    "$image" php tests/Support/metrics-artisan.php murmur:serve)
 
 docker exec "$container" sh -c "tr '\\0' ' ' < /proc/1/cmdline" | grep -q 'murmur:serve' \
     || fail 'the server is not the init process of the container'
@@ -54,6 +56,25 @@ while [ -z "$first" ]; do
     first=$(recorded_at)
 done
 pid=$(writer_pid)
+
+docker exec "$container" php -r '
+    $stream = fopen("http://127.0.0.1:8080/sse?topics=smoke", "r", false, stream_context_create(["http" => ["timeout" => 5]]));
+    if ($stream === false) {
+        exit(1);
+    }
+    while (($line = fgets($stream)) !== false && trim($line) !== "event: murmur.attached") {
+    }
+    fclose($stream);
+    exit($line === false ? 1 : 0);
+' || fail 'the SSE subscription did not attach'
+
+attempts=0
+until docker exec "$container" grep -q '"phase":"opened"' /tmp/murmur-lifecycle.jsonl 2> /dev/null &&
+    docker exec "$container" grep -q '"phase":"closed"' /tmp/murmur-lifecycle.jsonl 2> /dev/null; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -le 30 ] || fail 'lifecycle events did not reach the listener'
+    sleep 1
+done
 
 later=$first
 attempts=0

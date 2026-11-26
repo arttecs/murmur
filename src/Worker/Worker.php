@@ -5,6 +5,7 @@ namespace Arttecs\Murmur\Worker;
 use Arttecs\Murmur\Metrics\MetricsConfig;
 use Arttecs\Murmur\Metrics\Snapshot;
 use Arttecs\Murmur\Server\ErrorReporter;
+use Arttecs\Murmur\Server\LifecycleRecorder;
 use Arttecs\Murmur\Server\Metrics;
 use InvalidArgumentException;
 use React\ChildProcess\Process;
@@ -41,6 +42,36 @@ class Worker
      * The timer that takes periodic snapshots.
      */
     protected ?TimerInterface $interval = null;
+
+    /**
+     * The timer that marks lifecycle batches due.
+     */
+    protected ?TimerInterface $lifecycleInterval = null;
+
+    /**
+     * The metrics registry used to collect snapshots and count lifecycle records.
+     */
+    protected ?Metrics $metrics = null;
+
+    /**
+     * Whether a metrics tick has made a snapshot due.
+     */
+    protected bool $metricsDue = false;
+
+    /**
+     * Whether a lifecycle tick has made a batch due.
+     */
+    protected bool $lifecycleDue = false;
+
+    /**
+     * The kind of message last handed to the worker.
+     */
+    protected ?string $lastSent = null;
+
+    /**
+     * Whether the worker's input has been closed for shutdown.
+     */
+    protected bool $inputClosing = false;
 
     /**
      * The timer that reports a late acknowledgement.
@@ -80,26 +111,28 @@ class Worker
     protected ?Deferred $stopping = null;
 
     /**
-     * Prepare the recorder and verify that this host can launch and signal the worker.
+     * Prepare the worker and verify that this host can launch and signal the worker.
      *
      * @throws InvalidArgumentException
      */
     public function __construct(
         protected LoopInterface $loop,
-        protected MetricsConfig $config,
+        protected ?MetricsConfig $config,
         protected string $node,
         protected string $command,
+        protected ?LifecycleConfig $lifecycle = null,
+        protected ?LifecycleRecorder $recorder = null,
     ) {
         if (! Snapshot::validNode($node)) {
-            throw new InvalidArgumentException('Murmur could not derive a valid metrics node name. Set MURMUR_NODE explicitly.');
+            throw new InvalidArgumentException('Murmur could not derive a valid worker node name. Set MURMUR_NODE explicitly.');
         }
 
         if (PHP_OS_FAMILY === 'Windows' || ! function_exists('proc_open')) {
-            throw new InvalidArgumentException('Murmur metrics recording requires proc_open() on Linux or macOS.');
+            throw new InvalidArgumentException('Murmur worker requires proc_open() on Linux or macOS.');
         }
 
         if (Process::isSigchildEnabled()) {
-            throw new InvalidArgumentException('Murmur metrics recording requires PHP built without --enable-sigchild.');
+            throw new InvalidArgumentException('Murmur worker requires PHP built without --enable-sigchild.');
         }
     }
 
@@ -117,7 +150,7 @@ class Worker
         try {
             $process->start($this->loop, 0.01);
         } catch (RuntimeException $error) {
-            throw new RuntimeException('Murmur could not start the metrics recorder.', previous: $error);
+            throw new RuntimeException('Murmur could not start the worker.', previous: $error);
         }
 
         $this->process = $process;
@@ -137,38 +170,132 @@ class Worker
     }
 
     /**
-     * Record the first snapshot as soon as the server is listening.
+     * Start timers for enabled features and send the initial metrics snapshot.
      */
     public function start(Metrics $metrics): void
     {
-        if (! $this->running() || $this->interval !== null || $this->stopping !== null) {
+        if (! $this->running() || $this->metrics !== null || $this->stopping !== null) {
             return;
         }
 
-        $this->interval = $this->loop->addPeriodicTimer($this->config->interval, fn () => $this->record($metrics));
-        $this->record($metrics);
+        $this->metrics = $metrics;
+
+        if ($this->lifecycle !== null) {
+            $this->lifecycleInterval = $this->loop->addPeriodicTimer($this->lifecycle->interval, function (): void {
+                $this->lifecycleDue = $this->recorder->pending();
+                $this->flush();
+            });
+        }
+
+        if ($this->config !== null) {
+            $this->interval = $this->loop->addPeriodicTimer($this->config->interval, $this->scheduleMetrics(...));
+            $this->scheduleMetrics();
+        }
     }
 
     /**
-     * Stop scheduling snapshots, signal EOF, and let the loop reap the worker.
+     * Mark one metrics snapshot due, skipping busy ticks when only metrics are enabled.
+     */
+    protected function scheduleMetrics(): void
+    {
+        if ($this->available() || $this->lifecycle !== null) {
+            $this->metricsDue = true;
+            $this->flush();
+        }
+    }
+
+    /**
+     * Take turns sending due messages when both features need the free slot.
+     */
+    protected function flush(): void
+    {
+        if ($this->inputClosing || ! $this->available()) {
+            return;
+        }
+
+        if ($this->lifecycleDue && (! $this->metricsDue || $this->lastSent === 'metrics')) {
+            $this->lifecycleDue = false;
+            $this->sendLifecycle();
+
+            return;
+        }
+
+        if ($this->metricsDue) {
+            $this->metricsDue = false;
+            $this->record($this->metrics);
+        }
+    }
+
+    /**
+     * Hand one bounded batch to the worker and count its records.
      *
+     * @throws \JsonException
+     */
+    protected function sendLifecycle(): void
+    {
+        [$payload, $sent, $dropped] = $this->recorder->batch($this->node, $this->lifecycle->batch, static::MAX_LINE_BYTES);
+
+        $this->metrics?->increment('murmur_lifecycle_dropped_total', $dropped);
+
+        if ($sent > 0) {
+            $this->send('lifecycle', $payload, $this->config?->timeout ?? 10.0);
+            $this->metrics?->increment('murmur_lifecycle_sent_total', $sent);
+        }
+    }
+
+    /**
+     * Stop metrics writes and reap the worker within the existing shutdown budget.
+     *
+     * @param  PromiseInterface<null>|null  $drained
      * @return PromiseInterface<null>
      */
-    public function stop(): PromiseInterface
+    public function stop(?PromiseInterface $drained = null): PromiseInterface
     {
         if ($this->stopping === null) {
             $this->stopping = new Deferred;
-            $this->cancelWrites();
+            $draining = $this->recorder !== null && $drained !== null;
+            $this->cancelWrites($draining);
+            $this->metricsDue = false;
 
             if ($this->process === null) {
                 $this->stopping->resolve(null);
             } else {
                 $this->shutdownTimer = $this->loop->addTimer(1.0, $this->terminate(...));
-                $this->process->stdin->end();
+                if ($draining) {
+                    $drained->then(fn () => $this->loop->futureTick($this->finishInput(...)));
+                } else {
+                    $this->finishInput();
+                }
             }
         }
 
         return $this->stopping->promise();
+    }
+
+    /**
+     * Send one final batch if the slot is free, then signal EOF.
+     */
+    protected function finishInput(): void
+    {
+        if ($this->recorder !== null && $this->available() && $this->recorder->pending()) {
+            $this->sendLifecycle();
+        }
+
+        $this->cancelWrites();
+        $this->discardLifecycle();
+        $this->inputClosing = true;
+        $this->process?->stdin->end();
+    }
+
+    /**
+     * Discard pending lifecycle records and count those losses.
+     */
+    protected function discardLifecycle(): void
+    {
+        if ($this->recorder !== null) {
+            $dropped = $this->recorder->stop();
+            $this->metrics?->increment('murmur_lifecycle_dropped_total', $dropped);
+        }
     }
 
     /**
@@ -213,7 +340,8 @@ class Worker
      */
     protected function available(): bool
     {
-        return $this->process !== null && $this->pending === null && ! $this->backpressured;
+        return $this->process !== null && $this->pending === null && ! $this->backpressured
+            && $this->process->stdin->isWritable();
     }
 
     /**
@@ -221,11 +349,14 @@ class Worker
      */
     protected function send(string $type, string $payload, float $timeout): void
     {
-        $this->pending = $type;
-        $this->deadline = $this->loop->addTimer($timeout, function () use ($type): void {
-            $this->deadline = null;
-            ErrorReporter::report(new RuntimeException("Murmur {$type} recorder timed out."));
-        });
+        $this->pending = $this->lastSent = $type;
+
+        if ($this->stopping === null) {
+            $this->deadline = $this->loop->addTimer($timeout, function () use ($type): void {
+                $this->deadline = null;
+                ErrorReporter::report(new RuntimeException("Murmur {$type} recorder timed out."));
+            });
+        }
         $this->backpressured = ! $this->process->stdin->write($payload."\n");
     }
 
@@ -234,7 +365,7 @@ class Worker
      */
     protected function receive(string $chunk): void
     {
-        if ($this->stopping !== null) {
+        if ($this->inputClosing) {
             return;
         }
 
@@ -261,6 +392,8 @@ class Worker
             $this->reply = '';
             $offset = $newline + 1;
         }
+
+        $this->flush();
     }
 
     /**
@@ -302,6 +435,7 @@ class Worker
     {
         $this->process = null;
         $this->cancelWrites();
+        $this->discardLifecycle();
 
         if ($this->shutdownTimer !== null) {
             $this->loop->cancelTimer($this->shutdownTimer);
@@ -319,13 +453,18 @@ class Worker
     }
 
     /**
-     * Cancel scheduled writes and the current acknowledgement deadline.
+     * Cancel scheduled writes and deadlines, keeping lifecycle ticks while streams drain.
      */
-    protected function cancelWrites(): void
+    protected function cancelWrites(bool $draining = false): void
     {
         if ($this->interval !== null) {
             $this->loop->cancelTimer($this->interval);
             $this->interval = null;
+        }
+
+        if (! $draining && $this->lifecycleInterval !== null) {
+            $this->loop->cancelTimer($this->lifecycleInterval);
+            $this->lifecycleInterval = null;
         }
 
         $this->cancelDeadline();

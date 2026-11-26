@@ -15,25 +15,10 @@ use Symfony\Component\Process\Process;
 use function React\Async\await;
 use function React\Async\delay;
 
-function metricsServingProcess(int $port, array $env): Process
-{
-    return new Process([PHP_BINARY, '-d', 'error_log=', dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:serve', "--port={$port}"], env: $env + [
-        'MURMUR_DRIVER' => 'http',
-        'MURMUR_HOST' => '127.0.0.1',
-        'MURMUR_SECRET' => config('murmur.secret'),
-        'MURMUR_METRICS_STORE' => 'fake',
-        'MURMUR_METRICS_INTERVAL' => '0.06',
-        'MURMUR_METRICS_TIMEOUT' => '2',
-        'MURMUR_METRICS_TTL' => '60',
-        'MURMUR_NODE' => '',
-        'MURMUR_METRICS_ONLY' => '',
-    ], timeout: 5);
-}
-
 it('records the first snapshot as soon as the server listens', function () {
     $port = ServerHarness::availablePort();
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $process = metricsServingProcess($port, [
+    $process = workerServingProcess($port, [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_METRICS_INTERVAL' => '30',
     ]);
@@ -54,7 +39,7 @@ it('records the first snapshot as soon as the server listens', function () {
 it('records filtered snapshots on the interval with the same writer', function () {
     $port = ServerHarness::availablePort();
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $process = metricsServingProcess($port, [
+    $process = workerServingProcess($port, [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_METRICS_INTERVAL' => '1.25',
         'MURMUR_METRICS_ONLY' => 'murmur_connections_opened_total',
@@ -88,7 +73,7 @@ it('records filtered snapshots on the interval with the same writer', function (
 it('keeps HTTP responsive while a write is pending and resumes without queued ticks after a single timeout', function () {
     $port = ServerHarness::availablePort();
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $process = metricsServingProcess($port, [
+    $process = workerServingProcess($port, [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => 'gate',
         'MURMUR_METRICS_TIMEOUT' => '0.2',
@@ -130,7 +115,7 @@ it('keeps HTTP responsive while a write is pending and resumes without queued ti
 it('reports failed acknowledgements and keeps recording with the same writer', function () {
     $port = ServerHarness::availablePort();
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $process = metricsServingProcess($port, [
+    $process = workerServingProcess($port, [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => 'fail-first',
         'MURMUR_METRICS_ONLY' => 'murmur_errors_total',
@@ -155,7 +140,7 @@ it('reports failed acknowledgements and keeps recording with the same writer', f
 
 it('discards writer output, passes its diagnostics through, and accepts the next acknowledgement', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $process = metricsServingProcess(ServerHarness::availablePort(), [
+    $process = workerServingProcess(ServerHarness::availablePort(), [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => 'noisy',
         'MURMUR_METRICS_ONLY' => 'murmur_errors_total',
@@ -178,7 +163,7 @@ it('discards writer output, passes its diagnostics through, and accepts the next
 
 it('keeps recording after output without a line break is mixed into an acknowledgement', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $process = metricsServingProcess(ServerHarness::availablePort(), [
+    $process = workerServingProcess(ServerHarness::availablePort(), [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => 'stray',
         'MURMUR_METRICS_ONLY' => 'murmur_errors_total',
@@ -234,7 +219,7 @@ it('does not queue more snapshots while the writer input pipe is blocked', funct
 
 it('exits after its parent is killed while a store write is pending', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $process = metricsServingProcess(ServerHarness::availablePort(), [
+    $process = workerServingProcess(ServerHarness::availablePort(), [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => 'gate',
         'MURMUR_METRICS_TIMEOUT' => '10',
@@ -262,7 +247,7 @@ it('exits after its parent is killed while a store write is pending', function (
 it('reports writer death once and keeps accepting SSE connections without respawning', function () {
     $port = ServerHarness::availablePort();
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $process = metricsServingProcess($port, [
+    $process = workerServingProcess($port, [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => 'gate',
         'MURMUR_METRICS_TIMEOUT' => '0.2',
@@ -297,7 +282,7 @@ it('reaps the writer on signal-driven shutdown', function (string $mode, string 
     }
 
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $process = metricsServingProcess(ServerHarness::availablePort(), [
+    $process = workerServingProcess(ServerHarness::availablePort(), [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => $mode,
         'MURMUR_TEST_METRICS_SESSION' => $group ? '1' : '',
@@ -338,8 +323,8 @@ it('reaps the writer on signal-driven shutdown', function (string $mode, string 
     'ignores SIGTERM in the store' => ['hang', 'waiting', ['start', 'waiting'], false],
 ])->skip(! extension_loaded('pcntl'), 'Signal handling requires ext-pcntl.');
 
-it('does not load the process dependency when metrics are disabled', function () {
-    $process = metricsServingProcess(ServerHarness::availablePort(), [
+it('does not load the process dependency when metrics and lifecycle delivery are disabled', function () {
+    $process = workerServingProcess(ServerHarness::availablePort(), [
         'MURMUR_METRICS_STORE' => '',
         'MURMUR_TEST_METRICS_DISABLED' => '1',
     ]);
@@ -351,7 +336,7 @@ it('does not load the process dependency when metrics are disabled', function ()
 it('releases listening and accepted sockets while the writer is running', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
     $port = ServerHarness::availablePort();
-    $process = metricsServingProcess($port, [
+    $process = workerServingProcess($port, [
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => 'hang',
         'MURMUR_TEST_METRICS_SOCKET_TEST' => $file,
@@ -412,11 +397,11 @@ it('refuses to serve when the host cannot launch the metrics recorder', function
 
     expect($process->getExitCode())->toBe(1);
     expect($process->getOutput())->not->toContain('Murmur is listening');
-    expect($process->getOutput().$process->getErrorOutput())->toContain('Murmur metrics recording requires proc_open() on Linux or macOS.');
+    expect($process->getOutput().$process->getErrorOutput())->toContain('Murmur worker requires proc_open() on Linux or macOS.');
 });
 
 it('refuses to serve when the Artisan entry point cannot be resolved', function () {
-    $process = metricsServingProcess(ServerHarness::availablePort(), [
+    $process = workerServingProcess(ServerHarness::availablePort(), [
         'MURMUR_TEST_ARTISAN_BINARY' => '/nonexistent/murmur-artisan',
         'MURMUR_TEST_METRICS_DISABLED' => '1',
     ]);

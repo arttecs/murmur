@@ -51,7 +51,7 @@ class MurmurServiceProvider extends ServiceProvider
         $overrides = (array) $config->get('murmur', []);
         $merged = array_replace($defaults, $overrides);
 
-        foreach (['server', 'http', 'redis', 'metrics'] as $group) {
+        foreach (['server', 'http', 'redis', 'metrics', 'lifecycle'] as $group) {
             $merged[$group] = array_replace($defaults[$group], (array) ($overrides[$group] ?? []));
         }
 
