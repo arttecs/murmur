@@ -1609,10 +1609,10 @@ it('sends grouped token results together and replaces the group after a channel 
 })
 
 it.each([
-  { kind: 'opaque pre-open', open: false, status: undefined, refreshAfter: [2, 4, 8, 16] },
-  { kind: 'opaque early end', open: true, status: undefined, refreshAfter: [2, 4, 8, 16] },
-  { kind: 'known rejection', open: false, status: 401, refreshAfter: [1, 4, 8, 16] },
-])('spaces credential refreshes over ten minutes of $kind failures', async ({ open, status, refreshAfter }) => {
+  { kind: 'opaque pre-open', open: false, status: undefined, refreshAfter: [2, 4, 8, 16], total: 15 },
+  { kind: 'opaque early end after open', open: true, status: undefined, refreshAfter: [], total: 3 },
+  { kind: 'known rejection', open: false, status: 401, refreshAfter: [1, 4, 8, 16], total: 15 },
+])('spaces credential refreshes over ten minutes of $kind failures', async ({ open, status, refreshAfter, total }) => {
   vi.spyOn(Math, 'random').mockReturnValue(0.5)
   vi.setSystemTime(0)
   let request = 0
@@ -1645,7 +1645,24 @@ it.each([
   }
   expect(Date.now()).toBe(600_000)
   expect(FakeEventSource.instances).toHaveLength(21)
-  expect(m.stats().tokenRequests).toBe(15)
+  expect(m.stats().tokenRequests).toBe(total)
+})
+
+it('counts pre-open failures across an intervening open without attachment', async () => {
+  const fetch = vi.fn(async () => Response.json({ token: 'valid', expires_at: nowSeconds() + 900 }))
+  client({ fetch, retryMs: 10, retryJitter: 0 }).private('a')
+  await flush()
+
+  for (const [index, delay] of [10, 20, 40].entries()) {
+    const source = FakeEventSource.instances[index]
+    assert.isDefined(source)
+    if (index === 1) {
+      source.dispatchEvent(new Event('open'))
+    }
+    source.fail()
+    await wait(delay)
+    expect(fetch).toHaveBeenCalledTimes(index === 2 ? 2 : 1)
+  }
 })
 
 it('starts the credential refresh schedule over after attachment', async () => {
@@ -1655,25 +1672,27 @@ it('starts the credential refresh schedule over after attachment', async () => {
   const m = client({ fetch, retryMs: 10, retryJitter: 0 })
   m.private('a')
   await flush()
-  for (const [index, delay] of [10, 20, 40].entries()) {
+  for (const [index, delay] of [10, 20, 40, 80, 160].entries()) {
     const source = FakeEventSource.instances[index]
     assert.isDefined(source)
     source.fail()
     await wait(delay)
   }
-  expect(request).toBe(2)
+  expect(request).toBe(3)
 
-  const recovered = FakeEventSource.instances[3]
+  const recovered = FakeEventSource.instances[5]
   assert.isDefined(recovered)
   recovered.dispatchEvent(new Event('open'))
   recovered.emit('murmur.attached', {}, '')
   recovered.fail()
   await wait(10)
-  const rejected = FakeEventSource.instances[4]
-  assert.isDefined(rejected)
-  rejected.dispatchEvent(Object.assign(new Event('error'), { status: 401 }))
-  await wait(20)
-  expect(request).toBe(3)
+  for (const [index, delay] of [20, 40].entries()) {
+    const rejected = FakeEventSource.instances[index + 6]
+    assert.isDefined(rejected)
+    rejected.fail()
+    await wait(delay)
+    expect(request).toBe(index === 0 ? 3 : 4)
+  }
 })
 
 it('retains cached tokens across known non-credential SSE failures', async () => {

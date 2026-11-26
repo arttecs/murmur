@@ -83,7 +83,7 @@ export class Transport {
     protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | undefined | Promise<string | undefined>,
     protected readonly onMessage: (event: string, data: string) => void,
     protected readonly onStatus: (event: 'connected' | 'disconnected', attached: boolean) => void,
-    protected readonly onUnattachedError?: (url: string, status: number | undefined) => void,
+    protected readonly onPreOpenError?: (url: string, status: number | undefined) => void,
   ) {}
 
   /** Reports whether the active source has opened. */
@@ -191,11 +191,11 @@ export class Transport {
       },
       error: event => {
         if (this.connection === connection && !isMessage(event)) {
-          if (!connection.attached) {
+          if (!connection.opened && !connection.attached) {
             const status = 'status' in event && typeof event.status === 'number' ? event.status
               : 'code' in event && typeof event.code === 'number' ? event.code
                 : undefined
-            this.onUnattachedError?.(url, status)
+            this.onPreOpenError?.(url, status)
           }
           this.handleFailure()
         }

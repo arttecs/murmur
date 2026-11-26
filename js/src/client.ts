@@ -256,8 +256,8 @@ export class Murmur {
   /** The reusable tokens associated with each authorized private topic. */
   protected readonly cachedTokens = new Map<string, AuthorizationToken[]>()
 
-  /** The number of credential-bearing failures that could indicate rejection since attachment. */
-  protected unattachedCredentialFailures = 0
+  /** The number of pre-open failures that could indicate credential rejection since attachment. */
+  protected preOpenCredentialFailures = 0
 
   /** The next credential-bearing failure that triggers an automatic refresh. */
   protected nextCredentialRefresh = 2
@@ -307,7 +307,7 @@ export class Murmur {
         }
         this.emit(event)
       },
-      (url, status) => this.refreshAfterUnattachedError(url, status),
+      (url, status) => this.refreshAfterPreOpenError(url, status),
     )
   }
 
@@ -679,8 +679,8 @@ export class Murmur {
     }
   }
 
-  /** Refreshes credentials on exponentially spaced failures that could indicate rejection. */
-  protected refreshAfterUnattachedError(url: string, status: number | undefined): void {
+  /** Refreshes credentials on exponentially spaced pre-open failures that could indicate rejection. */
+  protected refreshAfterPreOpenError(url: string, status: number | undefined): void {
     if (status !== undefined && status !== 401 && status !== 403) {
       return
     }
@@ -689,9 +689,9 @@ export class Murmur {
       return
     }
 
-    this.unattachedCredentialFailures++
-    const firstKnownRejection = this.unattachedCredentialFailures === 1 && status !== undefined
-    if (!firstKnownRejection && this.unattachedCredentialFailures !== this.nextCredentialRefresh) {
+    this.preOpenCredentialFailures++
+    const firstKnownRejection = this.preOpenCredentialFailures === 1 && status !== undefined
+    if (!firstKnownRejection && this.preOpenCredentialFailures !== this.nextCredentialRefresh) {
       return
     }
     this.nextCredentialRefresh *= 2
@@ -781,7 +781,7 @@ export class Murmur {
 
   /** Acknowledges only the joins included on the connection that attached. */
   protected receiveAttachment(): void {
-    this.unattachedCredentialFailures = 0
+    this.preOpenCredentialFailures = 0
     this.nextCredentialRefresh = 2
     const attached = this.attemptSubscriptions
     this.attemptSubscriptions = []
