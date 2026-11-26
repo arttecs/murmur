@@ -206,7 +206,7 @@ it('explains invalid metrics settings before opening a listener', function () {
     }
 });
 
-it('reports a spawn failure without interrupting the server loop', function () {
+it('refuses to serve when the host cannot launch the metrics recorder', function () {
     $port = ServerHarness::availablePort();
     $process = new Process([
         PHP_BINARY, '-d', 'error_log=', '-d', 'disable_functions=proc_open',
@@ -218,8 +218,42 @@ it('reports a spawn failure without interrupting the server loop', function () {
         'MURMUR_TEST_METRICS_DISABLED' => '1',
     ], timeout: 3);
 
-    $process->mustRun();
+    $process->run();
 
-    expect($process->getOutput())->toContain('Murmur is listening');
-    expect($process->getErrorOutput())->toContain('Murmur could not start the metrics recorder.');
+    expect($process->getExitCode())->toBe(1);
+    expect($process->getOutput())->not->toContain('Murmur is listening');
+    expect($process->getOutput().$process->getErrorOutput())->toContain('Murmur metrics recording requires proc_open() on Linux or macOS.');
+});
+
+it('refuses to start without bash or a descriptor directory', function (string $missing, string $message) {
+    config(['murmur.metrics.store' => 'cache']);
+    expect(fn () => new class($missing) extends MetricsRecorder
+    {
+        public function __construct(protected string $missing)
+        {
+            parent::__construct(Loop::get(), Murmur::metricsConfiguration(), 'test-node', 'php artisan murmur:record-metrics');
+        }
+
+        protected function bashBinary(): ?string
+        {
+            return $this->missing === 'bash' ? null : parent::bashBinary();
+        }
+
+        protected function descriptorsListable(): bool
+        {
+            return $this->missing !== 'descriptors';
+        }
+    })->toThrow(InvalidArgumentException::class, $message);
+})->with([
+    ['bash', 'Murmur metrics recording requires Bash.'],
+    ['descriptors', 'Murmur metrics recording requires a readable /proc/self/fd or /dev/fd.'],
+]);
+
+it('resolves bash to an absolute executable path', function () {
+    config(['murmur.metrics.store' => 'cache']);
+    $recorder = new MetricsRecorder(Loop::get(), Murmur::metricsConfiguration(), 'test-node', 'php artisan murmur:record-metrics');
+    $bash = (new ReflectionProperty($recorder, 'bash'))->getValue($recorder);
+
+    expect($bash)->toStartWith('/')->toEndWith('/bash');
+    expect(is_executable($bash))->toBeTrue();
 });

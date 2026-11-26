@@ -2,6 +2,7 @@
 
 use Arttecs\Murmur\Exceptions\MetricsStoreNotConfigured;
 use Arttecs\Murmur\Facades\Murmur;
+use Arttecs\Murmur\Metrics\Snapshot;
 use Arttecs\Murmur\MurmurServiceProvider;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
@@ -178,3 +179,33 @@ it('reads and displays a database snapshot written by a real murmur server after
         unlink($file);
     }
 });
+
+it('ignores snapshots dated further ahead than the TTL', function () {
+    config(['murmur.metrics.store' => 'cache', 'murmur.metrics.cache.store' => 'array']);
+    $this->freezeTime();
+    $now = now()->timestamp;
+    $store = Murmur::metricsStore();
+    $store->put('ahead', $now + 60, []);
+    $store->put('forever', PHP_INT_MAX, []);
+    $store->put('skewed', $now + 61, []);
+
+    expect(array_keys(Murmur::metrics()))->toBe(['ahead']);
+
+    $this->artisan('murmur:forget-metrics')->expectsOutput('Forgot 2 stale metrics snapshots.')->assertSuccessful();
+    expect(array_keys($store->all()))->toBe(['ahead']);
+});
+
+it('rejects stored samples whose label names are not identifiers', function (string $label, bool $valid) {
+    $json = json_encode(['recorded_at' => 100, 'samples' => [[
+        'name' => 'murmur_publish_requests_total', 'type' => 'counter', 'help' => 'Sample.', 'labels' => [$label => '202'], 'value' => 1,
+    ]]]);
+
+    expect(Snapshot::decode($json) !== null)->toBe($valid);
+})->with([
+    ['status', true],
+    ['_status_2', true],
+    ["x\"} 1\nfake{y", false],
+    ['2status', false],
+    ['sta tus', false],
+    ['', false],
+]);

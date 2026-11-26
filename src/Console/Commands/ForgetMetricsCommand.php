@@ -42,17 +42,22 @@ class ForgetMetricsCommand extends Command
                 }
 
                 $store->forget($node);
+                $this->info("Forgot the metrics of node [{$node}].");
 
                 return self::SUCCESS;
             }
 
-            $cutoff = now()->timestamp - $config->ttl;
+            $now = now()->timestamp;
+            $forgotten = 0;
 
             foreach ($store->all() as $name => $snapshot) {
-                if ($snapshot['recorded_at'] <= $cutoff) {
+                if ($snapshot['recorded_at'] <= $now - $config->ttl || $snapshot['recorded_at'] > $now + $config->ttl) {
                     $store->forget((string) $name);
+                    $forgotten++;
                 }
             }
+
+            $this->info("Forgot {$forgotten} stale metrics snapshots.");
         } catch (MetricsStoreNotConfigured|InvalidArgumentException $error) {
             $this->error($error->getMessage());
 

@@ -44,10 +44,11 @@ class ServeCommand extends Command
         try {
             $config = $this->makeConfig();
             $metrics = $manager->metricsConfiguration();
+            $host = gethostname();
             $recorder = $metrics === null ? null : new MetricsRecorder(
                 $loop,
                 $metrics,
-                $metrics->node ?? gethostname().':'.$config->port,
+                $metrics->node ?? ($host === false ? '' : $host.':'.$config->port),
                 $this->metricsCommand(),
             );
             $log = $this->makeLog();
@@ -119,13 +120,21 @@ class ServeCommand extends Command
 
     /**
      * Build the writer command using the running PHP and Artisan entry point.
+     *
+     * @throws InvalidArgumentException
      */
     protected function metricsCommand(): string
     {
         $artisan = Application::artisanBinary();
 
         if ((! defined('ARTISAN_BINARY') || ARTISAN_BINARY === 'artisan') && $this->input instanceof ArgvInput && isset($_SERVER['SCRIPT_FILENAME'])) {
-            $artisan = escapeshellarg($_SERVER['SCRIPT_FILENAME']);
+            $path = realpath($_SERVER['SCRIPT_FILENAME']);
+
+            if ($path === false || ! is_file($path)) {
+                throw new InvalidArgumentException('Murmur metrics recording could not locate the Artisan entry point.');
+            }
+
+            $artisan = escapeshellarg($path);
         }
 
         return Application::phpBinary().' '.$artisan.' murmur:record-metrics';
@@ -143,7 +152,9 @@ class ServeCommand extends Command
 
         if (! $stopped) {
             $shutdown->then($loop->stop(...));
+            $cap = $loop->addTimer(2.0, $loop->stop(...));
             $loop->run();
+            $loop->cancelTimer($cap);
         }
     }
 

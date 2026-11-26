@@ -66,7 +66,12 @@ class RecordMetricsCommand extends Command
 
         try {
             $manager->metricsStore()->put($data->node, $snapshot['recorded_at'], $snapshot['samples']);
-        } catch (Throwable) {
+        } catch (Throwable $error) {
+            try {
+                report($error);
+            } catch (Throwable) {
+            }
+
             return $this->failure('Murmur could not write the metrics snapshot.');
         }
 

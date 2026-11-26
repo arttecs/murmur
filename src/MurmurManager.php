@@ -234,8 +234,9 @@ class MurmurManager
     public function metrics(): array
     {
         $store = $this->metricsStore() ?? throw new MetricsStoreNotConfigured;
-        $cutoff = now()->timestamp - (float) $this->config->get('murmur.metrics.ttl');
-        $nodes = array_filter($store->all(), fn (array $snapshot): bool => $snapshot['recorded_at'] > $cutoff);
+        $now = now()->timestamp;
+        $ttl = (float) $this->config->get('murmur.metrics.ttl');
+        $nodes = array_filter($store->all(), fn (array $snapshot): bool => $snapshot['recorded_at'] > $now - $ttl && $snapshot['recorded_at'] <= $now + $ttl);
         ksort($nodes, SORT_STRING);
 
         return $nodes;

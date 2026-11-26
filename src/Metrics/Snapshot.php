@@ -58,8 +58,8 @@ class Snapshot
 
             $labels = (array) $sample->labels;
 
-            foreach ($labels as $label) {
-                if (! is_string($label)) {
+            foreach ($labels as $label => $text) {
+                if (! is_string($text) || preg_match('/\A[a-zA-Z_][a-zA-Z0-9_]*\z/', (string) $label) !== 1) {
                     return null;
                 }
             }

@@ -51,7 +51,12 @@ class MetricsRecorder
     protected ?Deferred $stopping = null;
 
     /**
-     * Prepare the recorder and verify that the launcher can signal the actual writer.
+     * The absolute path of the Bash binary that launches writers.
+     */
+    protected string $bash;
+
+    /**
+     * Prepare the recorder and verify that this host can launch and signal the writer.
      *
      * @throws InvalidArgumentException
      */
@@ -65,9 +70,45 @@ class MetricsRecorder
             throw new InvalidArgumentException('Murmur could not derive a valid metrics node name. Set MURMUR_NODE explicitly.');
         }
 
+        if (PHP_OS_FAMILY === 'Windows' || ! function_exists('proc_open')) {
+            throw new InvalidArgumentException('Murmur metrics recording requires proc_open() on Linux or macOS.');
+        }
+
         if (Process::isSigchildEnabled()) {
             throw new InvalidArgumentException('Murmur metrics recording requires PHP built without --enable-sigchild.');
         }
+
+        if (! $this->descriptorsListable()) {
+            throw new InvalidArgumentException('Murmur metrics recording requires a readable /proc/self/fd or /dev/fd.');
+        }
+
+        $this->bash = $this->bashBinary() ?? throw new InvalidArgumentException('Murmur metrics recording requires Bash. Install it or unset MURMUR_METRICS_STORE.');
+    }
+
+    /**
+     * Check whether the launcher can list the descriptors it must close.
+     */
+    protected function descriptorsListable(): bool
+    {
+        return is_readable('/proc/self/fd') || is_readable('/dev/fd');
+    }
+
+    /**
+     * Find the absolute path of an executable Bash binary.
+     */
+    protected function bashBinary(): ?string
+    {
+        $directories = [...explode(PATH_SEPARATOR, (string) getenv('PATH')), '/bin', '/usr/bin', '/usr/local/bin'];
+
+        foreach ($directories as $directory) {
+            $path = $directory.'/bash';
+
+            if (str_starts_with($directory, '/') && is_file($path) && is_executable($path)) {
+                return $path;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -170,7 +211,7 @@ class MetricsRecorder
         exec "$@"
         BASH;
 
-        return 'unset BASH_ENV; exec bash -c '.escapeshellarg($launcher).' murmur-metrics '.$this->command;
+        return 'unset BASH_ENV; exec '.escapeshellarg($this->bash).' -c '.escapeshellarg($launcher).' murmur-metrics '.$this->command;
     }
 
     /**
@@ -179,7 +220,8 @@ class MetricsRecorder
     protected function exited(?int $code, ?int $signal): void
     {
         if ($this->kill === null && $this->stopping === null && ($code !== 0 || $signal !== null)) {
-            ErrorReporter::report(new RuntimeException('Murmur metrics recorder exited unsuccessfully.'));
+            $status = $signal === null ? "exit code {$code}" : "signal {$signal}";
+            ErrorReporter::report(new RuntimeException("Murmur metrics recorder exited unsuccessfully ({$status}). The cause is in the application's log."));
         }
 
         if ($this->deadline !== null) {

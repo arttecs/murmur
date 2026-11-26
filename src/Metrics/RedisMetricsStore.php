@@ -4,6 +4,7 @@ namespace Arttecs\Murmur\Metrics;
 
 use Arttecs\Murmur\Contracts\MetricsStore;
 use Illuminate\Redis\Connections\Connection;
+use RuntimeException;
 
 /**
  * Store node snapshots as fields in a Redis hash.
@@ -17,20 +18,31 @@ class RedisMetricsStore implements MetricsStore
 
     /**
      * {@inheritdoc}
+     *
+     * @throws RuntimeException
      */
     public function put(string $node, int $recordedAt, array $samples): void
     {
-        $this->connection->hset($this->key, $node, Snapshot::encode($recordedAt, $samples));
+        if ($this->connection->hset($this->key, $node, Snapshot::encode($recordedAt, $samples)) === false) {
+            throw new RuntimeException('The Murmur metrics key does not hold a Redis hash.');
+        }
     }
 
     /**
      * {@inheritdoc}
+     *
+     * @throws RuntimeException
      */
     public function all(): array
     {
         $snapshots = [];
+        $entries = $this->connection->hgetall($this->key);
 
-        foreach ($this->connection->hgetall($this->key) as $node => $json) {
+        if (! is_array($entries)) {
+            throw new RuntimeException('The Murmur metrics key does not hold a Redis hash.');
+        }
+
+        foreach ($entries as $node => $json) {
             if (Snapshot::validNode((string) $node) && ($snapshot = Snapshot::decode($json)) !== null) {
                 $snapshots[$node] = $snapshot;
             }

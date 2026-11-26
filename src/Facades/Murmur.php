@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Facade;
  *
  * @method static void extend(string $driver, \Closure $publisher, \Closure $eventLog)
  * @method static void extendMetrics(string $store, \Closure $factory)
+ * @method static \Arttecs\Murmur\Metrics\MetricsConfig|null metricsConfiguration()
  * @method static \Arttecs\Murmur\Contracts\MetricsStore|null metricsStore()
  * @method static array<string, array{recorded_at: int, samples: list<array>}> metrics()
  * @method static array<string, int|float> metricTotals()

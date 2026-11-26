@@ -93,3 +93,20 @@ it('expires cache entries independently and retains live nodes in the index', fu
     $this->travel(4)->seconds();
     expect(Cache::store('array')->get('test:index'))->toBeNull();
 });
+
+it('fails loudly when the redis metrics key does not hold a hash', function () {
+    [$client, $key, $url] = redisStream();
+    $prefix = 'murmur:test:';
+    $name = substr($key, strlen($prefix));
+    config([
+        'database.redis.client' => getenv('REDIS_CLIENT') ?: 'phpredis',
+        'database.redis.metrics-test' => ['url' => $url, 'prefix' => $prefix],
+        'database.redis.options.prefix' => $prefix,
+    ]);
+    React\Async\await($client->set($key, 'not a hash'));
+    $store = new RedisMetricsStore(app(RedisFactory::class)->connection('metrics-test'), $name);
+
+    expect(fn () => $store->put('alpha', 100, []))->toThrow(Exception::class);
+    expect(fn () => $store->all())->toThrow(Exception::class);
+    expect(React\Async\await($client->get($key)))->toBe('not a hash');
+});
