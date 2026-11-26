@@ -46,7 +46,7 @@ export interface MurmurOptions extends Partial<RetryOptions> {
   /** The minimum seconds remaining before a cached token can be reused. */
   tokenRefreshMarginSeconds?: number
 
-  /** The number of consecutive failures that expires an independent stream. */
+  /** The limit on consecutive attempts that fail to attach an independent stream. */
   streamMaxFailures?: number
 
   /** The fetch implementation used for authorization requests. */
@@ -244,17 +244,17 @@ export class Murmur {
   /** The time that must remain on a cached token for it to be reused, in seconds. */
   protected readonly tokenRefreshMarginSeconds: number
 
-  /** The default consecutive failure limit for independent streams. */
+  /** The default limit on consecutive attempts that fail to attach an independent stream. */
   protected readonly streamMaxFailures: number
 
   /** The reusable tokens associated with each authorized private topic. */
   protected readonly cachedTokens = new Map<string, AuthorizationToken[]>()
 
-  /** Whether a token-bearing attempt has already failed without an HTTP status since the last open. */
-  protected sawOpaqueFailure = false
+  /** The number of credential-bearing failures that could indicate rejection since attachment. */
+  protected unattachedCredentialFailures = 0
 
-  /** Whether a pre-open SSE failure has already caused a credential refresh since the last open. */
-  protected refreshedAfterUnopenedError = false
+  /** The next credential-bearing failure that triggers an automatic refresh. */
+  protected nextCredentialRefresh = 2
 
   /** The private topics waiting for explicit authorization or a new join. */
   protected readonly deniedTopics = new Set<string>()
@@ -295,15 +295,13 @@ export class Murmur {
       event => {
         if (event === 'connected') {
           this.counts.connections++
-          this.sawOpaqueFailure = false
-          this.refreshedAfterUnopenedError = false
         } else {
           this.attemptSubscriptions = []
           this.counts.disconnections++
         }
         this.emit(event)
       },
-      (url, status) => this.refreshAfterUnopenedError(url, status),
+      (url, status) => this.refreshAfterUnattachedError(url, status),
     )
   }
 
@@ -675,21 +673,22 @@ export class Murmur {
     }
   }
 
-  /** Refreshes credentials at most once per outage when a pre-open failure suggests rejection. */
-  protected refreshAfterUnopenedError(url: string, status: number | undefined): void {
-    const sent = new URL(url).searchParams.get('token')
-    if (this.refreshedAfterUnopenedError || sent === null) {
-      return
-    }
-    if (status === undefined && !this.sawOpaqueFailure) {
-      this.sawOpaqueFailure = true
-      return
-    }
+  /** Refreshes credentials on exponentially spaced failures that could indicate rejection. */
+  protected refreshAfterUnattachedError(url: string, status: number | undefined): void {
     if (status !== undefined && status !== 401 && status !== 403) {
       return
     }
+    const sent = new URL(url).searchParams.get('token')
+    if (sent === null) {
+      return
+    }
 
-    this.refreshedAfterUnopenedError = true
+    this.unattachedCredentialFailures++
+    const firstKnownRejection = this.unattachedCredentialFailures === 1 && status !== undefined
+    if (!firstKnownRejection && this.unattachedCredentialFailures !== this.nextCredentialRefresh) {
+      return
+    }
+    this.nextCredentialRefresh *= 2
     const rejected = new Set(sent.split(','))
     for (const [topic, tokens] of this.cachedTokens) {
       if (tokens.some(({ token }) => rejected.has(token))) {
@@ -776,6 +775,8 @@ export class Murmur {
 
   /** Acknowledges only the joins included on the connection that attached. */
   protected receiveAttachment(): void {
+    this.unattachedCredentialFailures = 0
+    this.nextCredentialRefresh = 2
     const attached = this.attemptSubscriptions
     this.attemptSubscriptions = []
     for (const { topic } of attached) {

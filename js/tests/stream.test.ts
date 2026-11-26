@@ -100,7 +100,7 @@ it('backs off stream retries with jitter and stops on the third failure', async 
 
 it('changes only the replay cursor on reconnect', async () => {
   const url = '/sse?topics=private%2dc&lastEventId=100-0&token=t%20%7e&filter=a+b&filter=a%20b#fragment'
-  const stream = client({ retryMs: 5 }).stream(url).on('token', () => {})
+  const stream = client({ retryMs: 5, retryJitter: 0 }).stream(url).on('token', () => {})
   await flush()
   const first = FakeEventSource.instances[0]
   assert.isDefined(first)
@@ -114,7 +114,7 @@ it('changes only the replay cursor on reconnect', async () => {
   second.emit('token', { topic: 'private-c', data: 1 }, '107-0')
   second.fail()
 
-  await wait(5)
+  await wait(10)
   const third = FakeEventSource.instances[2]
   assert.isDefined(third)
   expect(third.url).toBe('/sse?topics=private%2dc&lastEventId=107-0&token=t%20%7e&filter=a+b&filter=a%20b#fragment')
@@ -135,7 +135,7 @@ it('appends a replay cursor when the stream URL has none', async () => {
   expect(second.url).toBe('/sse?topics=news&lastEventId=107-0#fragment')
 })
 
-it('emits gap and resets the failure count after receiving it', async () => {
+it('emits a gap before attachment without resetting the failure count', async () => {
   const gap = vi.fn()
   const expired = vi.fn()
   client({ retryMs: 5 }).stream(URL_1).on('gap', gap).on('expired', expired)
@@ -153,34 +153,70 @@ it('emits gap and resets the failure count after receiving it', async () => {
   third.emit('murmur.gap', {}, '')
   expect(gap).toHaveBeenCalledExactlyOnceWith()
   third.fail()
-  await wait(5)
 
-  expect(expired).not.toHaveBeenCalled()
-  expect(FakeEventSource.instances).toHaveLength(4)
-})
-
-it('resets the failure count when the server accepts a connection', async () => {
-  const expired = vi.fn()
-  const stream = client({ retryMs: 5 }).stream(URL_1).on('expired', expired)
-  await flush()
-
-  for (let i = 0; i < 3; i++) {
-    const source = FakeEventSource.instances[i]
-    assert.isDefined(source)
-    source.dispatchEvent(new Event('open'))
-    source.fail()
-    await wait(5)
-  }
-
-  expect(expired).not.toHaveBeenCalled()
-  expect(FakeEventSource.instances).toHaveLength(4)
-  stream.close()
+  expect(expired).toHaveBeenCalledExactlyOnceWith()
   expect(vi.getTimerCount()).toBe(0)
 })
 
-it('resets the failure count when an event is received', async () => {
+it('expires after three consecutive streams open and end before attachment', async () => {
+  vi.spyOn(Math, 'random').mockReturnValue(0.5)
   const expired = vi.fn()
-  const stream = client({ retryMs: 5 }).stream(URL_1).on('token', () => {}).on('expired', expired)
+  client({ retryMs: 100 }).stream(URL_1).on('expired', expired)
+  await flush()
+
+  for (const [index, delay] of [100, 225].entries()) {
+    const source = FakeEventSource.instances[index]
+    assert.isDefined(source)
+    source.dispatchEvent(new Event('open'))
+    source.emit('murmur.connected', { connection_id: '0123456789abcdef0123456789abcdef', protocol: 1 }, '')
+    source.fail()
+    expect(expired).not.toHaveBeenCalled()
+    await wait(delay - 1)
+    expect(FakeEventSource.instances).toHaveLength(index + 1)
+    await wait(1)
+  }
+
+  const third = FakeEventSource.instances[2]
+  assert.isDefined(third)
+  third.dispatchEvent(new Event('open'))
+  third.fail()
+  expect(expired).toHaveBeenCalledExactlyOnceWith()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it('allows the full number of unattached attempts after an attached source drops', async () => {
+  const expired = vi.fn()
+  client({ retryMs: 10, retryJitter: 0 }).stream(URL_1, { maxFailures: 2 }).on('expired', expired)
+  await flush()
+  const [first] = FakeEventSource.instances
+  assert.isDefined(first)
+  first.fail()
+  await wait(10)
+
+  const attached = FakeEventSource.instances[1]
+  assert.isDefined(attached)
+  attached.emit('murmur.attached', {}, '')
+  attached.fail()
+  expect(expired).not.toHaveBeenCalled()
+  await wait(10)
+
+  const unattached = FakeEventSource.instances[2]
+  assert.isDefined(unattached)
+  unattached.fail()
+  expect(expired).not.toHaveBeenCalled()
+  await wait(20)
+
+  const last = FakeEventSource.instances[3]
+  assert.isDefined(last)
+  last.fail()
+  expect(expired).toHaveBeenCalledExactlyOnceWith()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it('delivers replayed events without resetting the failure count before attachment', async () => {
+  const expired = vi.fn()
+  const token = vi.fn()
+  client({ retryMs: 5 }).stream(URL_1).on('token', token).on('expired', expired)
   await flush()
 
   for (let i = 0; i < 2; i++) {
@@ -192,12 +228,11 @@ it('resets the failure count when an event is received', async () => {
   const third = FakeEventSource.instances[2]
   assert.isDefined(third)
   third.emit('token', { topic: 'private-c', data: 1 }, '110-0')
+  expect(token).toHaveBeenCalledExactlyOnceWith(1)
   third.fail()
-  await wait(5)
 
-  expect(expired).not.toHaveBeenCalled()
-  expect(FakeEventSource.instances).toHaveLength(4)
-  stream.close()
+  expect(expired).toHaveBeenCalledExactlyOnceWith()
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 it('delivers an event whose listener was added after the stream opened', async () => {

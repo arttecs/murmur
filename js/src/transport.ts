@@ -89,7 +89,7 @@ export class Transport {
   /** The time scheduled for the next attempt. */
   protected retryTimer?: ReturnType<typeof setTimeout>
 
-  /** The number of failures since the last successful connection. */
+  /** The number of failures since the last attach marker. */
   protected failures = 0
 
   /** The latest replay position acknowledged by the server or an application event. */
@@ -105,8 +105,8 @@ export class Transport {
     protected readonly retryOptions: RetryOptions,
     protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | undefined | Promise<string | undefined>,
     protected readonly onMessage: (event: string, data: string) => void,
-    protected readonly onStatus: (event: 'connected' | 'disconnected', failures: number) => void,
-    protected readonly onUnopenedError?: (url: string, status: number | undefined) => void,
+    protected readonly onStatus: (event: 'connected' | 'disconnected', attached: boolean) => void,
+    protected readonly onUnattachedError?: (url: string, status: number | undefined) => void,
   ) {}
 
   /** Reports whether the active source has opened. */
@@ -123,11 +123,6 @@ export class Transport {
   public connect(): void {
     this.close()
     void this.open()
-  }
-
-  /** Restarts the retry sequence after a successful connection or stream message. */
-  public resetFailures(): void {
-    this.failures = 0
   }
 
   /** Updates named listeners on the active connection and future attempts. */
@@ -215,17 +210,16 @@ export class Transport {
       open: event => {
         if (this.connection === connection && !isMessage(event)) {
           connection.opened = true
-          this.resetFailures()
-          this.onStatus('connected', 0)
+          this.onStatus('connected', connection.attached)
         }
       },
       error: event => {
         if (this.connection === connection && !isMessage(event)) {
-          if (!connection.opened) {
+          if (!connection.attached) {
             const status = 'status' in event && typeof event.status === 'number' ? event.status
               : 'code' in event && typeof event.code === 'number' ? event.code
                 : undefined
-            this.onUnopenedError?.(url, status)
+            this.onUnattachedError?.(url, status)
           }
           this.handleFailure()
         }
@@ -262,10 +256,11 @@ export class Transport {
 
   /** Closes the failed connection, schedules a retry, and reports the failure. */
   protected handleFailure(minimumDelay?: number): void {
+    const attached = this.connection?.attached ?? false
     this.close()
     this.failures++
     this.retry(minimumDelay)
-    this.onStatus('disconnected', this.failures)
+    this.onStatus('disconnected', attached)
   }
 
   /** Captures the resume cursor and dispatches named stream data. */
@@ -280,6 +275,7 @@ export class Transport {
     }
     if (event === 'murmur.attached') {
       connection.attached = true
+      this.failures = 0
     }
     if (id !== undefined && event !== 'murmur.gap' && event !== 'murmur.connected') {
       this.lastEventId = id

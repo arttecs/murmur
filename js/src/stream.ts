@@ -4,7 +4,7 @@ import { Transport, type RetryOptions } from './transport.js'
 
 /** Overrides the client's retry settings for one stream. */
 export interface StreamOptions extends Partial<RetryOptions> {
-  /** The number of consecutive failures that expires this stream. */
+  /** The limit on consecutive attempts that fail to attach. */
   maxFailures?: number
 }
 
@@ -36,15 +36,19 @@ export class MurmurStream {
     onClose: (stream: MurmurStream) => void,
   ) {
     this.onClose = onClose
+    let unattachedFailures = 0
     this.transport = new Transport(
       eventSource,
       withCredentials,
       retryOptions,
       (_signal, lastEventId) => this.connectionUrl(lastEventId),
       (event, data) => this.receive(event, data),
-      (status, failures) => {
-        if (status === 'disconnected' && failures === maxFailures) {
-          this.finish('expired')
+      (status, attached) => {
+        if (status === 'disconnected') {
+          unattachedFailures = attached ? 0 : unattachedFailures + 1
+          if (unattachedFailures === maxFailures) {
+            this.finish('expired')
+          }
         }
       },
     )
@@ -120,13 +124,9 @@ export class MurmurStream {
     return path + (updated.length ? '?' + updated.join('&') : '') + fragment
   }
 
-  /** Resets the failure count and delivers control events or unwrapped data. */
+  /** Delivers control events or unwrapped data. */
   protected receive(event: string, data: string): void {
-    if (event === 'murmur.connected') {
-      return
-    }
-    this.transport.resetFailures()
-    if (event === 'murmur.attached') {
+    if (event === 'murmur.connected' || event === 'murmur.attached') {
       return
     }
     if (event === 'murmur.end') {

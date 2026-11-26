@@ -209,7 +209,7 @@ it('keeps whisper methods chainable without registering or sending client events
 })
 
 it('reports attachment once per channel and again after a transport failure', async () => {
-  const instance = echo()
+  const instance = echo({ retryJitter: 0 })
   const firstSubscribed = vi.fn()
   const secondSubscribed = vi.fn()
   instance.channel('orders').subscribed(firstSubscribed)
@@ -231,8 +231,10 @@ it('reports attachment once per channel and again after a transport failure', as
   await wait(10)
   const incomplete = await connection(2)
   incomplete.dispatchEvent(new Event('open'))
+  expect(instance.connectionStatus()).toBe('connected')
   incomplete.fail()
-  await wait(10)
+  expect(instance.connectionStatus()).toBe('reconnecting')
+  await wait(20)
   const retry = await connection(3)
   retry.dispatchEvent(new Event('open'))
   expect(firstSubscribed).toHaveBeenCalledTimes(1)

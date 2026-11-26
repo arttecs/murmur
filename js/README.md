@@ -43,7 +43,7 @@ Use `murmur.on(event, callback)` to listen for these client events. It returns a
 - `error` receives an `Error` if the shared subscription URL exceeds the request budget or the server announces an unexpected protocol. The first protocol mismatch is reported once and the client continues.
 - `gap` fires when the server reports a gap in replay. Refresh any state that depends on the missing events.
 
-The first retry uses `retryMs` as its base delay. For consecutive failures after the first, the base delay doubles up to `maxRetryMs`, then random jitter of up to `retryJitter` times the base delay is added. Opening the EventSource resets the retry sequence.
+The first retry uses `retryMs` as its base delay. For consecutive failures after the first, the base delay doubles up to `maxRetryMs`, then random jitter of up to `retryJitter` times the base delay is added. The attach marker resets the retry sequence. An EventSource that opens and then ends before attachment counts as a failed attempt.
 
 `news.stopListening('.updated')` removes the callbacks for that event. `murmur.leave('orders.42')` leaves channels joined under that name. `murmur.close()` closes the channel connection and all streams created by the client, and cancels their retries.
 
@@ -73,7 +73,7 @@ Pass these options to `new Murmur(options)`.
 | `maxRetryMs` | `number` | `30000`, or `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be finite and at least `retryMs`. |
 | `retryJitter` | `number` | `0.25` | Maximum fraction of the base delay added as random jitter from the second consecutive failure onward. Must be finite and between 0 and 1, inclusive. Set to `0` to disable jitter. |
 | `tokenRefreshMarginSeconds` | `number` | `30` | Remaining lifetime a cached token must exceed to be reused, in seconds. Must be finite and non-negative. |
-| `streamMaxFailures` | `number` | `3` | Number of consecutive failures that expires an independent stream. Must be an integer of at least 1. |
+| `streamMaxFailures` | `number` | `3` | Consecutive attempts that fail to attach before an independent stream expires. Must be an integer of at least 1. |
 | `fetch` | `typeof fetch` | `globalThis.fetch` | Fetch implementation for the built-in authorization request. |
 | `EventSource` | `typeof EventSource` | `globalThis.EventSource` | Constructor used for the shared connection and independent streams. |
 | `withCredentials` | `boolean` | `false` | Set to `true` to pass `{ withCredentials: true }` to `EventSource` for the shared connection and streams. |
@@ -105,7 +105,7 @@ const murmur = new Murmur({
 
 A successful request returns `{ token, expires_at }`, with expiry in Unix seconds. The client caches credentials by private channel and normally refreshes them when their remaining lifetime reaches `tokenRefreshMarginSeconds` or less on a new attempt. Leaving a topic drops its cached credentials.
 
-On an SSE failure before the connection opens, the client drops the credentials sent on that attempt if the source exposes an HTTP 401 or 403. It does this at most once between successful opens. Native EventSource does not expose HTTP status. In that case the client reuses still-valid credentials on the first retry and can refresh them after the second opaque pre-open failure with credentials. This bounds automatic invalidation during a prolonged outage. If the endpoint rejects the replacement credentials too, the client uses the normal expiry margin to decide when to renew them.
+Before attachment, the client counts SSE failures that sent credentials and either report HTTP 401 or 403 or expose no status. Native EventSource does not expose HTTP status. The client drops the credentials sent on the second, fourth, eighth, and subsequent power-of-two failures. If the first counted failure exposes 401 or 403, the client drops credentials immediately and then on the fourth, eighth, and subsequent power-of-two failures. Known failures with other statuses leave this count and the cache unchanged. An attach marker resets the schedule. The normal expiry margin still applies on every attempt.
 
 Authorization responses with status 408, 425, or 429 retry with backoff, as do 5xx responses, network errors, and invalid token responses. A valid `Retry-After` header in whole seconds or HTTP-date form sets a minimum delay for the failed attempt, capped at `maxRetryMs`. Other 4xx responses, including 401, 403, 419, and 422, leave the affected channel out of the shared connection. Call `murmur.reauthorize('orders.42')` to retry a denied channel, call `murmur.reauthorize()` to retry all denied channels, or leave and rejoin the channel.
 
@@ -157,7 +157,7 @@ Stream event names are literal, and callbacks receive the event payload. The nam
 
 - `end` fires when the server sends `murmur.end`. The stream closes permanently.
 - `gap` fires when the server sends `murmur.gap` to signal missing events.
-- `expired` fires and the stream closes when it reaches its consecutive failure limit. A successful connection, an attach marker, a gap, or an application event on a listened-to name resets the count. A private stream URL carries a fixed token, so retries keep using that token.
+- `expired` fires and the stream closes after `maxFailures` consecutive attempts that fail to attach. Opening the connection, receiving a gap, or replaying application events still leaves the attempt waiting for its attach marker. A drop after attachment starts a new retry sequence and leaves the full allowance of unattached attempts. A private stream URL carries a fixed token, so retries keep using that token.
 
 Pass `StreamOptions` as the optional second argument to `murmur.stream(url, options)`. Each field is an optional number and follows the validation rules of its client default.
 
@@ -166,7 +166,7 @@ Pass `StreamOptions` as the optional second argument to `murmur.stream(url, opti
 | `retryMs` | `number` | Client's `retryMs` | Delay before the first retry in milliseconds. |
 | `maxRetryMs` | `number` | Client's `maxRetryMs`, or this stream's `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be at least this stream's `retryMs`. |
 | `retryJitter` | `number` | Client's `retryJitter` | Maximum jitter fraction from the second consecutive failure onward. |
-| `maxFailures` | `number` | Client's `streamMaxFailures` | Consecutive failure limit for this stream. |
+| `maxFailures` | `number` | Client's `streamMaxFailures` | Limit on consecutive attempts that fail to attach this stream. |
 
 The first connection uses the URL as supplied. On reconnect, the client updates only `lastEventId`, using IDs from attach markers, listened-to events, and newer heartbeats after attachment. Until it receives a cursor update, it reconnects with the original URL and its initial cursor.
 

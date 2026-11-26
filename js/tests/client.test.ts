@@ -286,7 +286,7 @@ it('backs off consecutive authorization failures with jitter and caps the base d
   }
 })
 
-it('resets channel retry backoff when the connection opens', async () => {
+it('resets channel retry backoff when the connection attaches', async () => {
   vi.spyOn(Math, 'random').mockReturnValue(0.5)
   client({ retryMs: 100 }).channel('news')
   await flush()
@@ -305,6 +305,7 @@ it('resets channel retry backoff when the connection opens', async () => {
   const third = FakeEventSource.instances[2]
   assert.isDefined(third)
   third.dispatchEvent(new Event('open'))
+  third.emit('murmur.attached', {}, '')
   third.fail()
 
   await wait(99)
@@ -1089,7 +1090,7 @@ it('returns a fresh plain statistics snapshot with empty initial values', () => 
 })
 
 it('tracks opens and failures across retries and deliberate channel reconnects', async () => {
-  const m = client({ retryMs: 10 })
+  const m = client({ retryMs: 10, retryJitter: 0 })
   m.channel('news')
   m.channel('news')
   await flush()
@@ -1122,7 +1123,7 @@ it('tracks opens and failures across retries and deliberate channel reconnects',
 
   fourth.fail()
   expect(m.stats()).toMatchObject({ connected: false, connections: 3, disconnections: 2 })
-  await wait(10)
+  await wait(20)
   const last = FakeEventSource.instances[4]
   assert.isDefined(last)
   last.dispatchEvent(new Event('open'))
@@ -1450,35 +1451,72 @@ it('sends grouped token results together and replaces the group after a channel 
   expect(new URL(next.url).searchParams.get('token')).toBe('remaining')
 })
 
-it('refreshes an opaque pre-open failure at most once during an outage', async () => {
+it.each([
+  { kind: 'opaque pre-open', open: false, status: undefined, refreshAfter: [2, 4, 8, 16] },
+  { kind: 'opaque early end', open: true, status: undefined, refreshAfter: [2, 4, 8, 16] },
+  { kind: 'known rejection', open: false, status: 401, refreshAfter: [1, 4, 8, 16] },
+])('spaces credential refreshes over ten minutes of $kind failures', async ({ open, status, refreshAfter }) => {
+  vi.spyOn(Math, 'random').mockReturnValue(0.5)
+  vi.setSystemTime(0)
   let request = 0
   const fetch: typeof globalThis.fetch = async () =>
     Response.json({ token: String(++request), expires_at: nowSeconds() + 900 })
-  const m = client({ fetch, retryMs: 10, retryJitter: 0 })
+  const m = client({ fetch })
   for (const topic of ['a', 'b', 'c']) {
     m.private(topic)
   }
   await flush()
 
-  for (const [index, delay] of [10, 20, 40, 80].entries()) {
+  const delays = [3000, 6750, 13500, 27000, ...Array<number>(16).fill(33750)]
+  let requestsForAttempt = 3
+  for (const [index, delay] of [...delays, 9750].entries()) {
     const source = FakeEventSource.instances[index]
     assert.isDefined(source)
-    expect(new URL(source.url).searchParams.get('token')).toBe(index < 2 ? '1,2,3' : '4,5,6')
+    expect(request).toBe(requestsForAttempt)
+    expect(new URL(source.url).searchParams.get('token')).toBe([
+      request - 2, request - 1, request,
+    ].join(','))
+    if (open) {
+      source.dispatchEvent(new Event('open'))
+      source.emit('murmur.connected', { connection_id: connectionId, protocol: 1 }, '')
+    }
+    source.dispatchEvent(Object.assign(new Event('error'), { status }))
+    await wait(delay)
+    if (refreshAfter.includes(index + 1)) {
+      requestsForAttempt += 3
+    }
+  }
+  expect(Date.now()).toBe(600_000)
+  expect(FakeEventSource.instances).toHaveLength(21)
+  expect(m.stats().tokenRequests).toBe(15)
+})
+
+it('starts the credential refresh schedule over after attachment', async () => {
+  let request = 0
+  const fetch: typeof globalThis.fetch = async () =>
+    Response.json({ token: String(++request), expires_at: nowSeconds() + 900 })
+  const m = client({ fetch, retryMs: 10, retryJitter: 0 })
+  m.private('a')
+  await flush()
+  for (const [index, delay] of [10, 20, 40].entries()) {
+    const source = FakeEventSource.instances[index]
+    assert.isDefined(source)
     source.fail()
     await wait(delay)
   }
-  expect(request).toBe(6)
+  expect(request).toBe(2)
 
-  const recovered = FakeEventSource.instances[4]
+  const recovered = FakeEventSource.instances[3]
   assert.isDefined(recovered)
   recovered.dispatchEvent(new Event('open'))
+  recovered.emit('murmur.attached', {}, '')
   recovered.fail()
   await wait(10)
-  const rejected = FakeEventSource.instances[5]
+  const rejected = FakeEventSource.instances[4]
   assert.isDefined(rejected)
   rejected.dispatchEvent(Object.assign(new Event('error'), { status: 401 }))
   await wait(20)
-  expect(request).toBe(9)
+  expect(request).toBe(3)
 })
 
 it('retains cached tokens across known non-credential SSE failures', async () => {
@@ -1597,7 +1635,7 @@ it('reports a protocol mismatch once and continues delivering on repeated connec
 })
 
 it('omits fresh without a cursor but keeps a first join pending until attachment', async () => {
-  const m = client({ retryMs: 10, url: 'https://app.test/sse?fresh=obsolete' })
+  const m = client({ retryMs: 10, retryJitter: 0, url: 'https://app.test/sse?fresh=obsolete' })
   m.channel('news').listen('.updated', () => {})
   await flush()
   const first = FakeEventSource.instances[0]
@@ -1614,7 +1652,7 @@ it('omits fresh without a cursor but keeps a first join pending until attachment
   retry.emit('updated', { topic: 'news', data: 1 }, '3-0')
   retry.fail()
 
-  await wait(10)
+  await wait(20)
   const pending = FakeEventSource.instances[2]
   assert.isDefined(pending)
   expect(new URL(pending.url).searchParams.get('fresh')).toBe('news')
@@ -1822,8 +1860,9 @@ it('uses a newer attached heartbeat as the shared cursor without counting or dis
   expect(new URL(next.url).searchParams.get('lastEventId')).toBe('999999999999999998-10')
 })
 
-it('retries an early end with backoff and keeps the unacknowledged topics fresh', async () => {
-  const m = client({ retryMs: 10, retryJitter: 0 })
+it('retries early ends with growing, capped backoff and keeps the unacknowledged topics fresh', async () => {
+  vi.spyOn(Math, 'random').mockReturnValue(0.4)
+  const m = client({ retryMs: 10, maxRetryMs: 25, retryJitter: 0.5 })
   const attached = vi.fn()
   m.on('attached', attached)
   m.channel('news')
@@ -1835,20 +1874,23 @@ it('retries an early end with backoff and keeps the unacknowledged topics fresh'
   m.channel('alerts')
   await flush()
 
-  for (const index of [1, 2]) {
+  for (const [offset, delay] of [10, 24, 30, 30].entries()) {
+    const index = offset + 1
     const source = FakeEventSource.instances[index]
     assert.isDefined(source)
     source.dispatchEvent(new Event('open'))
+    expect(m.stats().connected).toBe(true)
     source.emit('murmur.connected', { connection_id: '0123456789abcdef0123456789abcdef', protocol: 1 }, '')
     source.emit('murmur.heartbeat', {}, '11-0')
     expect(new URL(source.url).searchParams.get('fresh')).toBe('alerts')
     source.fail()
-    await wait(9)
+    expect(m.stats().connected).toBe(false)
+    await wait(delay - 1)
     expect(FakeEventSource.instances).toHaveLength(index + 1)
     await wait(1)
   }
 
-  const recovered = FakeEventSource.instances[3]
+  const recovered = FakeEventSource.instances[5]
   assert.isDefined(recovered)
   expect(new URL(recovered.url).searchParams.has('fresh')).toBe(true)
   expect(new URL(recovered.url).searchParams.get('lastEventId')).toBe('10-0')
