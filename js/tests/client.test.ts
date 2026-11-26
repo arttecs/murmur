@@ -412,6 +412,32 @@ it('emits gap', async () => {
   expect(gaps).toBe(1)
 })
 
+it('emits a gap before the attach marker on a reconnect with an ahead cursor', async () => {
+  const m = client({ retryMs: 10 })
+  const received: string[] = []
+  m.on('gap', () => received.push('gap'))
+  m.on('attached', () => received.push('attached'))
+  m.channel('news')
+  await flush()
+  const [first] = FakeEventSource.instances
+  assert.isDefined(first)
+  first.emit('murmur.attached', {}, maxCursor)
+  first.fail()
+  await wait(10)
+
+  const reconnect = FakeEventSource.instances[1]
+  assert.isDefined(reconnect)
+  expect(new URL(reconnect.url).searchParams.get('lastEventId')).toBe(maxCursor)
+  reconnect.dispatchEvent(new Event('open'))
+  reconnect.emit('murmur.gap', {}, '')
+  expect(received).toEqual(['attached', 'gap'])
+  expect(m.stats()).toMatchObject({ gaps: 1, lastEventId: maxCursor })
+
+  reconnect.emit('murmur.attached', {}, '3-0')
+  expect(received).toEqual(['attached', 'gap', 'attached'])
+  expect(m.stats().lastEventId).toBe('3-0')
+})
+
 it('stops everything on close', async () => {
   const m = client({ retryMs: 10 })
   m.channel('news')
@@ -1827,7 +1853,7 @@ it('emits attached after opening and continues to report each attach marker', as
   expect(attached).toHaveBeenCalledTimes(2)
 })
 
-it('uses a newer attached heartbeat as the shared cursor without counting or dispatching it', async () => {
+it('replaces a stale shared cursor with a lower heartbeat after an unnumbered marker', async () => {
   const m = client({ retryMs: 10 })
   const heartbeat = vi.fn()
   const attached = vi.fn()
@@ -1837,27 +1863,34 @@ it('uses a newer attached heartbeat as the shared cursor without counting or dis
   const first = FakeEventSource.instances[0]
   assert.isDefined(first)
   first.dispatchEvent(new Event('open'))
-  first.emit('murmur.heartbeat', { topic: 'news', data: 'control' }, '')
-  first.emit('murmur.heartbeat', { topic: 'news', data: 'control' }, '999999999999999999-99')
-  expect(m.stats()).toMatchObject({ lastEventId: undefined, events: 0 })
-  expect(attached).not.toHaveBeenCalled()
-
-  first.emit('murmur.attached', {}, '999999999999999998-9')
-  first.emit('murmur.heartbeat', {}, '999999999999999998-10')
-  expect(m.stats().lastEventId).toBe('999999999999999998-10')
-  first.emit('murmur.heartbeat', {}, '999999999999999998-09')
-  first.emit('murmur.heartbeat', {}, '999999999999999998-010')
-  first.emit('murmur.heartbeat', {}, '9999999999999999999-10')
-  first.emit('murmur.heartbeat', {}, '')
-  expect(m.stats()).toMatchObject({ lastEventId: '999999999999999998-10', events: 0, lastEventAt: undefined })
-  expect(heartbeat).not.toHaveBeenCalled()
-  expect(attached).toHaveBeenCalledExactlyOnceWith()
-
+  first.emit('murmur.attached', {}, maxCursor)
   first.fail()
   await wait(10)
-  const next = FakeEventSource.instances[1]
+
+  const retry = FakeEventSource.instances[1]
+  assert.isDefined(retry)
+  expect(new URL(retry.url).searchParams.get('lastEventId')).toBe(maxCursor)
+  retry.dispatchEvent(new Event('open'))
+  retry.emit('murmur.heartbeat', { topic: 'news', data: 'control' }, '9-0')
+  expect(m.stats()).toMatchObject({ lastEventId: maxCursor, events: 0 })
+  expect(attached).toHaveBeenCalledExactlyOnceWith()
+
+  retry.emit('murmur.attached', {}, '')
+  expect(m.stats().lastEventId).toBe(maxCursor)
+  retry.emit('murmur.heartbeat', { topic: 'news', data: 'control' }, '10-0')
+  expect(m.stats().lastEventId).toBe('10-0')
+  retry.emit('murmur.heartbeat', {}, '9999999999999999999-10')
+  retry.emit('murmur.heartbeat', {}, '11-0\n')
+  retry.emit('murmur.heartbeat', {}, '')
+  expect(m.stats()).toMatchObject({ lastEventId: '10-0', events: 0, lastEventAt: undefined })
+  expect(heartbeat).not.toHaveBeenCalled()
+  expect(attached).toHaveBeenCalledTimes(2)
+
+  retry.fail()
+  await wait(10)
+  const next = FakeEventSource.instances[2]
   assert.isDefined(next)
-  expect(new URL(next.url).searchParams.get('lastEventId')).toBe('999999999999999998-10')
+  expect(new URL(next.url).searchParams.get('lastEventId')).toBe('10-0')
 })
 
 it('retries early ends with growing, capped backoff and keeps the unacknowledged topics fresh', async () => {

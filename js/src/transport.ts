@@ -6,8 +6,6 @@ type Connection = {
   opened: boolean
   /** Whether the server has acknowledged attachment. */
   attached: boolean
-  /** The valid cursor sent in the request, if present. */
-  requestedCursor?: string
   /** Handles a successful connection. */
   open: (event: Event) => void
   /** Handles a failed connection. */
@@ -56,27 +54,6 @@ function isMessage(event: Event): event is Event & { data: string; lastEventId?:
 
 /** Matches the protocol's complete event ID format. */
 const eventIdPattern = /^[0-9]{1,18}-[0-9]{1,18}(?![\s\S])/
-
-/** Reads a valid request cursor from an absolute or relative URL. */
-function readRequestedCursor(url: string): string | undefined {
-  const fragment = url.indexOf('#')
-  const address = fragment === -1 ? url : url.slice(0, fragment)
-  const query = address.indexOf('?')
-  const cursor = query === -1 ? null : new URLSearchParams(address.slice(query + 1)).get('lastEventId')
-  return cursor !== null && eventIdPattern.test(cursor) ? cursor : undefined
-}
-
-/** Compares a candidate ID with the cursor without losing decimal precision. */
-function isLaterEventId(candidate: string, cursor: string): boolean {
-  const candidateSeparator = candidate.indexOf('-')
-  const cursorSeparator = cursor.indexOf('-')
-  const candidateTime = BigInt(candidate.slice(0, candidateSeparator))
-  const cursorTime = BigInt(cursor.slice(0, cursorSeparator))
-  if (candidateTime !== cursorTime) {
-    return candidateTime > cursorTime
-  }
-  return BigInt(candidate.slice(candidateSeparator + 1)) > BigInt(cursor.slice(cursorSeparator + 1))
-}
 
 /** Owns the EventSource lifecycle, retry timer and replay cursor. */
 export class Transport {
@@ -206,7 +183,6 @@ export class Transport {
       source,
       opened: false,
       attached: false,
-      requestedCursor: this.lastEventId ?? readRequestedCursor(url),
       open: event => {
         if (this.connection === connection && !isMessage(event)) {
           connection.opened = true
@@ -267,8 +243,7 @@ export class Transport {
   protected receive(connection: Connection, event: string, data: string, lastEventId: unknown): void {
     const id = typeof lastEventId === 'string' && eventIdPattern.test(lastEventId) ? lastEventId : undefined
     if (event === 'murmur.heartbeat') {
-      const cursor = this.lastEventId ?? connection.requestedCursor
-      if (connection.attached && id !== undefined && (cursor === undefined || isLaterEventId(id, cursor))) {
+      if (connection.attached && id !== undefined) {
         this.lastEventId = id
       }
       return

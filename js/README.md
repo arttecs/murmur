@@ -28,7 +28,7 @@ Joining or leaving a channel rebuilds the shared connection with the current top
 
 A cursorless connection skips stored history and can deliver events published during the tail sample, before the attach marker. Wait for `attached` before fetching initial state. Matching events published after you receive the marker are delivered while the subscription remains active, subject to sender exclusion and any reported history loss.
 
-Each retry opens a new EventSource with the current cursor, credentials, and pending joins. If the stream ends before the attach marker, the retry uses the client's backoff and the unacknowledged joins remain pending. A numbered attach marker replaces the saved cursor even when its ID is lower. After attachment, numbered heartbeats can advance the cursor for idle clients and stay out of application callbacks and event counts.
+Each retry opens a new EventSource with the current cursor, credentials, and pending joins. If the stream ends before the attach marker, the retry uses the client's backoff and the unacknowledged joins remain pending. A numbered attach marker or a numbered heartbeat after attachment replaces the saved cursor even when its ID is lower. Heartbeats stay out of application callbacks and event counts.
 
 The default namespace is `App.Events`. The client resolves `OrderShipped` to `App\Events\OrderShipped`, converting namespace dots to backslashes. Set `namespace` to use a different namespace. Prefix an event name with a dot to use the literal name. For example, `.updated` listens for `updated`.
 
@@ -168,7 +168,7 @@ Pass `StreamOptions` as the optional second argument to `murmur.stream(url, opti
 | `retryJitter` | `number` | Client's `retryJitter` | Maximum jitter fraction from the second consecutive failure onward. |
 | `maxFailures` | `number` | Client's `streamMaxFailures` | Limit on consecutive attempts that fail to attach this stream. |
 
-The first connection uses the URL as supplied. On reconnect, the client updates only `lastEventId`, using IDs from attach markers, listened-to events, and newer heartbeats after attachment. Until it receives a cursor update, it reconnects with the original URL and its initial cursor.
+The first connection uses the URL as supplied. On reconnect, the client updates only `lastEventId`, using IDs from attach markers, listened-to events, and numbered heartbeats after attachment. Until it receives a cursor update, it reconnects with the original URL and its initial cursor.
 
 Call `stream.close()` to stop the stream and cancel any pending retry.
 
@@ -187,7 +187,7 @@ Call `stream.close()` to stop the stream and cancel any pending retry.
 | `tokenFailures` | `number` | Authorization attempts that failed before cancellation, including invalid token responses. An accepted partial grant is a successful request. |
 | `channels` | `number` | Currently joined channels. |
 | `streams` | `number` | Independent streams that have started and have yet to close, including streams waiting to retry. |
-| `lastEventId` | `string \| undefined` | Shared replay cursor. It tracks IDs from attach markers, listened-to data events, and newer heartbeats after attachment. |
+| `lastEventId` | `string \| undefined` | Shared replay cursor. It tracks IDs from attach markers, listened-to data events, and numbered heartbeats after attachment. |
 | `connectionId` | `string \| undefined` | The most recently announced ID of the shared connection. |
 | `lastEventAt` | `number \| undefined` | `Date.now()` when the last valid shared data event was received. |
 

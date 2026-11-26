@@ -422,7 +422,7 @@ it('resumes from the attach marker without dispatching it or adding fresh', asyn
   expect(first.closed).toBe(true)
 })
 
-it('updates a stream cursor only from newer numbered heartbeats after the marker', async () => {
+it('ignores early heartbeats and replaces an independent stream cursor after an unnumbered marker', async () => {
   const heartbeat = vi.fn()
   client({ retryMs: 10 }).stream(URL_1).on('murmur.heartbeat', heartbeat)
   await flush()
@@ -431,9 +431,6 @@ it('updates a stream cursor only from newer numbered heartbeats after the marker
   first.dispatchEvent(new Event('open'))
   first.emit('murmur.heartbeat', { topic: 'private-c', data: 'control' }, '')
   first.emit('murmur.heartbeat', { topic: 'private-c', data: 'control' }, '200-0')
-  first.emit('murmur.attached', {}, '')
-  first.emit('murmur.heartbeat', {}, '99-0')
-  first.emit('murmur.heartbeat', {}, '')
   first.fail()
 
   await wait(10)
@@ -441,17 +438,16 @@ it('updates a stream cursor only from newer numbered heartbeats after the marker
   assert.isDefined(retry)
   expect(retry.url).toBe(URL_1)
   retry.dispatchEvent(new Event('open'))
-  retry.emit('murmur.attached', {}, '90-0')
-  retry.emit('murmur.heartbeat', {}, '91-0')
-  retry.emit('murmur.heartbeat', {}, '90-1')
-  retry.emit('murmur.heartbeat', {}, '091-0')
+  retry.emit('murmur.attached', {}, '')
+  retry.emit('murmur.heartbeat', { topic: 'private-c', data: 'control' }, '99-0')
+  retry.emit('murmur.heartbeat', {}, '101-')
   retry.emit('murmur.heartbeat', {}, '')
   retry.fail()
 
   await wait(10)
   const next = FakeEventSource.instances[2]
   assert.isDefined(next)
-  expect(new URL(next.url).searchParams.get('lastEventId')).toBe('91-0')
+  expect(new URL(next.url).searchParams.get('lastEventId')).toBe('99-0')
   expect(heartbeat).not.toHaveBeenCalled()
 })
 
