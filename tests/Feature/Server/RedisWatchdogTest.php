@@ -89,3 +89,78 @@ it('replaces a stalled redis reader and reports only the loss and recovery trans
         unlink($errorLog);
     }
 });
+
+it('reports trimmed history once across failed reader recoveries and again in a later outage', function () {
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
+    $socket = new SocketServer('127.0.0.1:0');
+    $key = 'test';
+    $log = new RedisEventLog(str_replace('tcp://', 'redis://', $socket->getAddress()), $key);
+    $clients = [];
+    $gapChecks = [];
+    $seen = [];
+    $delivered = new Deferred;
+
+    $socket->on('connection', function (ConnectionInterface $client) use (&$clients, &$gapChecks, $key): void {
+        $clients[] = $client;
+        $attempt = count($clients);
+        $protocol = new ProtocolFactory;
+        $parser = $protocol->createRequestParser();
+        $serializer = $protocol->createSerializer();
+
+        $client->on('data', function (string $data) use ($parser, $serializer, $client, $attempt, $key, &$gapChecks): void {
+            foreach ($parser->pushIncoming($data) as $message) {
+                $command = $message->getValueNative();
+                $id = $attempt === 5 ? '5-0' : '3-0';
+                $name = $attempt === 5 ? 'second-recovery' : 'first-recovery';
+
+                switch (strtoupper($command[0])) {
+                    case 'XREVRANGE':
+                        $client->write($serializer->getReplyMessage([['1-0', []]]));
+                        break;
+                    case 'XINFO':
+                        $gapChecks[] = $attempt;
+                        $client->write($serializer->getReplyMessage(['length', 1, 'entries-added', 3, 'first-entry', [$id, []]]));
+                        break;
+                    case 'XREAD':
+                        $cursor = $command[5];
+
+                        if ($attempt < 4 || ($attempt === 4 && $cursor === '3-0')) {
+                            $client->close();
+                        } elseif ($cursor !== $id) {
+                            $client->write($serializer->getReplyMessage([[$key, [[$id, ['topic', 'news', 'name', $name, 'data', 'null']]]]]));
+                        }
+                        break;
+                }
+            }
+        });
+    });
+
+    try {
+        $log->onGap(function () use (&$seen): void {
+            $seen[] = 'gap';
+        });
+        $log->subscribe(function (Event $event) use (&$seen, $delivered): void {
+            $seen[] = $event->name;
+
+            if ($event->name === 'second-recovery') {
+                $delivered->resolve(null);
+            }
+        });
+
+        await(timeout($delivered->promise(), 7.0));
+
+        expect($gapChecks)->toBe([2, 3, 4, 5]);
+        expect($seen)->toBe(['gap', 'first-recovery', 'gap', 'second-recovery']);
+    } finally {
+        $log->close();
+        $socket->close();
+
+        foreach ($clients as $client) {
+            $client->close();
+        }
+
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
+});
