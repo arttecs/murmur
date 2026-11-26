@@ -368,3 +368,21 @@ it.each([
   expect(open).toThrow(RangeError)
   expect(open).toThrow(option)
 })
+
+it('resumes from the attach marker without dispatching it or adding fresh', async () => {
+  const marker = vi.fn()
+  client({ retryMs: 10 }).stream(URL_1).on('murmur.attached', marker)
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  first.dispatchEvent(new Event('open'))
+  first.emit('murmur.attached', { topic: 'private-c', data: 'control' }, '108-0')
+  first.fail()
+
+  await wait(10)
+  const retry = FakeEventSource.instances[1]
+  assert.isDefined(retry)
+  expect(retry.url).toBe('https://m.test/sse?topics=private-c&token=t&lastEventId=108-0')
+  expect(marker).not.toHaveBeenCalled()
+  expect(first.closed).toBe(true)
+})

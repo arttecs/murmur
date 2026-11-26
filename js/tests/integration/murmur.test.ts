@@ -272,6 +272,40 @@ describe('Murmur client and PHP server', () => {
     expect(m.stats()).toMatchObject({ connections: 2, events: 3, lastEventId: lastId })
   })
 
+  it('skips pre-join history and replays outage events after a new channel attaches', async () => {
+    const attempts: Attempt[] = []
+    const m = client({ retryMs: 250 }, attempts)
+    const first = vi.fn()
+    const second = vi.fn()
+    const disconnected = vi.fn()
+    m.on('disconnected', disconnected)
+    m.channel('first-join').listen('.updated', first)
+    await vi.waitFor(() => expect(m.socketId()).toBeDefined(), waitOptions)
+    await publish(murmur.address, 'first-join', 'updated', 'initial')
+    await vi.waitFor(() => expect(first).toHaveBeenCalledExactlyOnceWith('initial'), waitOptions)
+
+    const beforeJoin = await publish(murmur.address, 'second-join', 'updated', 'before join')
+    m.channel('second-join').listen('.updated', second)
+    await vi.waitFor(() => expect(m.stats().lastEventId).toBe(beforeJoin), waitOptions)
+    expect(attempts[1]?.url.searchParams.get('fresh')).toBe('second-join')
+    expect(second).not.toHaveBeenCalled()
+
+    attempts[1]?.interrupt()
+    await vi.waitFor(() => expect(disconnected).toHaveBeenCalledExactlyOnceWith(), waitOptions)
+    const duringOutage = await publish(murmur.address, 'second-join', 'updated', 'during outage')
+    expect(attempts).toHaveLength(2)
+
+    await vi.waitFor(() => expect(second).toHaveBeenCalledExactlyOnceWith('during outage'), waitOptions)
+    expect(attempts).toHaveLength(3)
+    expect(attempts[2]?.url.searchParams.has('fresh')).toBe(false)
+    expect(attempts[2]?.url.searchParams.get('lastEventId')).toBe(beforeJoin)
+    expect(m.stats().lastEventId).toBe(duringOutage)
+
+    await publish(murmur.address, 'second-join', 'updated', 'live again')
+    await vi.waitFor(() => expect(second).toHaveBeenLastCalledWith('live again'), waitOptions)
+    expect(second.mock.calls).toEqual([['during outage'], ['live again']])
+  })
+
   it('delivers private broadcasts through Echo after the SSE request is interrupted', async () => {
     const topic = 'private-echo-orders.42'
     const { endpoint, requests } = await startAuth(channel => tokenFor([channel], 60))

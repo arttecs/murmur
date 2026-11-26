@@ -42,6 +42,21 @@ function isMessage(event: Event): event is Event & { data: string; lastEventId?:
   return typeof event === 'object' && event !== null && 'data' in event && typeof event.data === 'string'
 }
 
+/** Matches the protocol's complete event ID format. */
+const eventIdPattern = /^[0-9]{1,18}-[0-9]{1,18}(?![\s\S])/
+
+/** Compares a candidate ID with the cursor without losing decimal precision. */
+function isLaterEventId(candidate: string, cursor: string): boolean {
+  const candidateSeparator = candidate.indexOf('-')
+  const cursorSeparator = cursor.indexOf('-')
+  const candidateTime = BigInt(candidate.slice(0, candidateSeparator))
+  const cursorTime = BigInt(cursor.slice(0, cursorSeparator))
+  if (candidateTime !== cursorTime) {
+    return candidateTime > cursorTime
+  }
+  return BigInt(candidate.slice(candidateSeparator + 1)) > BigInt(cursor.slice(cursorSeparator + 1))
+}
+
 /** Owns the EventSource lifecycle, retry timer and replay cursor. */
 export class Transport {
   /** The current connection and its registered listeners. */
@@ -56,11 +71,11 @@ export class Transport {
   /** The number of failures since the last successful connection. */
   protected failures = 0
 
-  /** The ID of the last received data event. */
+  /** The latest replay position acknowledged by the server or an application event. */
   protected lastEventId?: string
 
   /** The wire events that the connection should listen for. */
-  protected events = new Set(['murmur.gap', 'murmur.connected'])
+  protected events = new Set(['murmur.gap', 'murmur.connected', 'murmur.attached'])
 
   /** Creates a transport that prepares a fresh URL for every attempt. */
   public constructor(
@@ -98,6 +113,7 @@ export class Transport {
   public setEvents(events: Set<string>): void {
     events.add('murmur.gap')
     events.add('murmur.connected')
+    events.add('murmur.attached')
     const connection = this.connection
     if (connection) {
       const { source, message } = connection
@@ -231,7 +247,12 @@ export class Transport {
 
   /** Captures the resume cursor and dispatches named stream data. */
   protected receive(event: string, data: string, lastEventId: unknown): void {
-    if (event !== 'murmur.gap' && event !== 'murmur.connected' && typeof lastEventId === 'string' && lastEventId !== '') {
+    if (event !== 'murmur.gap' && event !== 'murmur.connected' &&
+      typeof lastEventId === 'string' && eventIdPattern.test(lastEventId)) {
+      if (event !== 'murmur.attached' && this.lastEventId !== undefined &&
+        !isLaterEventId(lastEventId, this.lastEventId)) {
+        return
+      }
       this.lastEventId = lastEventId
     }
     this.onMessage(event, data)

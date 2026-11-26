@@ -126,6 +126,9 @@ export class MurmurStream {
       return
     }
     this.transport.resetFailures()
+    if (event === 'murmur.attached') {
+      return
+    }
     if (event === 'murmur.end') {
       this.finish('end')
       return

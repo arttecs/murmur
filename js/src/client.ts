@@ -119,6 +119,8 @@ type Subscription = {
   channel: Channel
   /** The callbacks registered by wire event name. */
   listeners: ChannelListeners
+  /** Whether this join is still waiting for its first attach marker. */
+  pending: boolean
 }
 
 /** The prefix that identifies a private topic on the server. */
@@ -208,6 +210,9 @@ export class Murmur {
   /** The private topics waiting for explicit authorization or a new join. */
   protected readonly deniedTopics = new Set<string>()
 
+  /** The subscriptions sent on the attempt waiting for its attach marker. */
+  protected attemptSubscriptions: Subscription[] = []
+
   /** Whether a channel change has queued a connection update. */
   protected connectionQueued = false
 
@@ -242,6 +247,7 @@ export class Murmur {
         if (event === 'connected') {
           this.counts.connections++
         } else {
+          this.attemptSubscriptions = []
           this.counts.disconnections++
         }
         this.emit(event)
@@ -386,6 +392,7 @@ export class Murmur {
       listeners.clear()
     }
     this.channels.clear()
+    this.attemptSubscriptions = []
     for (const listeners of Object.values(this.listeners)) {
       listeners.clear()
     }
@@ -404,7 +411,7 @@ export class Murmur {
     const listeners: ChannelListeners = new Map()
     const channel = new Channel(topic, this.options.namespace ?? 'App.Events', listeners, () => this.updateEvents())
     if (!this.closed) {
-      this.channels.set(key, { channel, listeners })
+      this.channels.set(key, { channel, listeners, pending: true })
       this.scheduleConnection()
     }
     return channel
@@ -414,6 +421,7 @@ export class Murmur {
   protected scheduleConnection(): void {
     this.transport.cancelPending()
     if (this.channels.size === 0) {
+      this.attemptSubscriptions = []
       this.transport.close()
       return
     }
@@ -473,12 +481,20 @@ export class Murmur {
     if (this.connectionId !== undefined) {
       url.searchParams.set('connection', this.connectionId)
     }
+    const subscriptions = [...this.channels.values()].filter(({ channel }) => !this.deniedTopics.has(channel.name))
+    const attached = new Set(subscriptions.filter(({ pending }) => !pending).map(({ channel }) => channel.name))
+    const fresh = topics.filter(topic => !attached.has(topic))
+    url.searchParams.delete('fresh')
+    if (fresh.length > 0) {
+      url.searchParams.set('fresh', fresh.join(','))
+    }
     if (new TextEncoder().encode(url.pathname + url.search).length > requestTargetBudget) {
       this.emit('error', new Error(
         `Murmur subscription URL exceeds the request budget with ${privateTopics.length} private channels requested. Use a multi-topic token for large private subscriptions or reduce the topic list.`,
       ))
       return
     }
+    this.attemptSubscriptions = subscriptions
     return url.href
   }
 
@@ -603,6 +619,10 @@ export class Murmur {
       this.receiveConnection(data)
       return
     }
+    if (event === 'murmur.attached') {
+      this.receiveAttachment()
+      return
+    }
     if (event === 'murmur.gap') {
       this.counts.gaps++
       this.emit('gap')
@@ -626,6 +646,14 @@ export class Murmur {
         invokeListener(callback, payload)
       }
     }
+  }
+
+  /** Acknowledges only the joins included on the connection that attached. */
+  protected receiveAttachment(): void {
+    for (const subscription of this.attemptSubscriptions) {
+      subscription.pending = false
+    }
+    this.attemptSubscriptions = []
   }
 
   /** Stores a valid server-issued connection ID and reports an unexpected protocol. */
