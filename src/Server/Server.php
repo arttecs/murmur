@@ -10,6 +10,7 @@ use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use LogicException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use Psr\Log\LoggerInterface;
 use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;
 use React\EventLoop\TimerInterface;
@@ -99,10 +100,14 @@ class Server
     protected bool $closed = false;
 
     /**
-     * Create a server using the given configuration, log, and loop.
+     * Create a server using the given configuration, event log, loop, and logger.
      */
-    public function __construct(protected ServerConfig $config, protected EventLog $log, ?LoopInterface $loop = null)
-    {
+    public function __construct(
+        protected ServerConfig $config,
+        protected EventLog $log,
+        ?LoopInterface $loop = null,
+        protected ?LoggerInterface $logger = null,
+    ) {
         $this->loop = $loop ?? Loop::get();
         $this->metrics = new Metrics;
         $this->hub = new Hub($this->metrics);
@@ -216,7 +221,21 @@ class Server
         $http->listen($this->socket);
         $this->startedAt = hrtime(true);
         ErrorReporter::countUsing(fn () => $this->metrics->increment('murmur_errors_total'));
+        ErrorReporter::logUsing($this->logger);
         $this->heartbeat = $this->loop->addPeriodicTimer($this->config->heartbeatSeconds, $this->hub->heartbeat(...));
+        $this->logInfo('Murmur is listening on '.$this->address());
+    }
+
+    /**
+     * Write a lifecycle message without letting a logger failure interrupt the server.
+     */
+    protected function logInfo(string $message): void
+    {
+        try {
+            $this->logger?->info($message);
+        } catch (Throwable) {
+            error_log($message);
+        }
     }
 
     /**
@@ -319,6 +338,7 @@ class Server
         }
 
         $this->shutdown = new Deferred;
+        $this->logInfo('Murmur graceful shutdown started.');
         $this->socket?->close();
         $this->socket = null;
 
@@ -365,9 +385,13 @@ class Server
         } finally {
             if ($this->startedAt !== null) {
                 ErrorReporter::countUsing(null);
+                ErrorReporter::logUsing(null);
             }
         }
 
-        $this->shutdown?->resolve(null);
+        if ($this->shutdown !== null) {
+            $this->logInfo('Murmur graceful shutdown finished.');
+            $this->shutdown->resolve(null);
+        }
     }
 }

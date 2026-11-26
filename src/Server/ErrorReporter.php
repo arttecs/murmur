@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Server;
 
 use Closure;
+use Psr\Log\LoggerInterface;
 use Throwable;
 
 /**
@@ -26,6 +27,19 @@ class ErrorReporter
      * @var Closure(): void|null
      */
     protected static ?Closure $counter = null;
+
+    /**
+     * The logger used by the active server.
+     */
+    protected static ?LoggerInterface $logger = null;
+
+    /**
+     * Set or clear the logger for delivery errors.
+     */
+    public static function logUsing(?LoggerInterface $logger): void
+    {
+        static::$logger = $logger;
+    }
 
     /**
      * Set or clear the hook for counting every reported error.
@@ -59,6 +73,17 @@ class ErrorReporter
         static::$lastReport = $now;
         static::$suppressed = 0;
 
-        error_log($error::class.': '.$message.$suffix);
+        $message = $error::class.': '.$message.$suffix;
+
+        if (static::$logger !== null) {
+            try {
+                static::$logger->error($message, ['exception' => $error]);
+
+                return;
+            } catch (Throwable) {
+            }
+        }
+
+        error_log($message);
     }
 }

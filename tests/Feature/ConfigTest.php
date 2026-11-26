@@ -82,6 +82,7 @@ class ConfigTest extends TestCase
             ['MURMUR_SHUTDOWN_GRACE', '7.5', 'server.shutdown_grace', 7.5],
             ['MURMUR_METRICS_ENABLED', 'false', 'server.metrics.enabled', false],
             ['MURMUR_METRICS_TOKEN', 'scrape-secret', 'server.metrics.token', 'scrape-secret'],
+            ['MURMUR_LOG_CHANNEL', 'stderr', 'server.log_channel', 'stderr'],
             ['MURMUR_PUBLIC_URL', 'https://events.test', 'public_url', 'https://events.test'],
             ['MURMUR_PUBLISH_URL', 'http://internal.test', 'publish_url', 'http://internal.test'],
             ['MURMUR_TOKEN_TTL', '600', 'token_ttl', 600],

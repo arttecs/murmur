@@ -7,6 +7,7 @@ use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use React\EventLoop\Loop;
 use Throwable;
@@ -41,7 +42,8 @@ class ServeCommand extends Command
         }
 
         $loop = Loop::get();
-        $server = new Server($config, $log, $loop);
+        $channel = config('murmur.server.log_channel');
+        $server = new Server($config, $log, $loop, $channel === null ? null : Log::channel($channel));
         $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];
         $shuttingDown = false;
         $shutdown = function () use ($server, $loop, &$shuttingDown): void {

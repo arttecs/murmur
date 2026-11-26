@@ -49,6 +49,12 @@ return [
         /** Seconds to drain connections on shutdown before closing the remaining sockets. */
         'shutdown_grace' => (float) env('MURMUR_SHUTDOWN_GRACE', 5.0),
         /**
+         * Laravel channel for server errors and lifecycle messages. The
+         * server writes from inside the event loop. Choose a fast local
+         * channel such as stderr, a file, or syslog that makes no network requests.
+         */
+        'log_channel' => ($logChannel = env('MURMUR_LOG_CHANNEL')) === null ? null : (string) $logChannel,
+        /**
          * Per-process metrics at GET /metrics. Set a bearer token before
          * exposing the endpoint outside a trusted network.
          */

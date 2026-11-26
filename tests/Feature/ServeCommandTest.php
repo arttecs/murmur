@@ -8,6 +8,8 @@ use Arttecs\Murmur\Server\Log\RedisEventLog;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
 use Clue\Redis\Protocol\Factory as ProtocolFactory;
+use React\EventLoop\Loop;
+use React\EventLoop\StreamSelectLoop;
 use React\Promise\Deferred;
 use React\Promise\Timer\TimeoutException;
 use React\Socket\ConnectionInterface;
@@ -220,5 +222,29 @@ it('uses the configured redis query deadline and blocking read duration', functi
         foreach ($clients as $client) {
             $client->close();
         }
+    }
+});
+
+it('writes server lifecycle messages to the configured laravel log channel', function () {
+    $file = tempnam(sys_get_temp_dir(), 'murmur');
+    $port = ServerHarness::availablePort();
+    config([
+        'murmur.server.log_channel' => 'murmur_test',
+        'logging.channels.murmur_test' => ['driver' => 'single', 'path' => $file],
+    ]);
+    $previousLoop = Loop::get();
+    $loop = new StreamSelectLoop;
+    Loop::set($loop);
+    $loop->addTimer(0.0, $loop->stop(...));
+
+    try {
+        $this->artisan('murmur:serve', ['--port' => $port])
+            ->expectsOutput("Murmur is listening on http://127.0.0.1:{$port}")
+            ->assertSuccessful();
+
+        expect(file_get_contents($file))->toContain("Murmur is listening on http://127.0.0.1:{$port}");
+    } finally {
+        Loop::set($previousLoop);
+        unlink($file);
     }
 });
