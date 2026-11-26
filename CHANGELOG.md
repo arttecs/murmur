@@ -25,6 +25,7 @@
 - `GET /ready` for live event log readiness and staggered graceful shutdown with SSE reconnect hints.
 - `murmur:install` to publish configuration and set the application's environment values for Murmur.
 - SSE connection IDs and sender exclusion through Laravel's `toOthers()` and `Murmur::publish()`.
+- A `murmur.attached` control frame that advances the cursor to the sampled tail after replay and acknowledges newly joined topics.
 - Protocol 1 documentation and the `X-Murmur-Protocol` response header on subscriptions and probes.
 - `Murmur::fake()` and PHPUnit conformance suites for event logs and metrics stores.
 - Guides for migrating from Reverb, writing drivers, testing applications, and operating Murmur.
@@ -35,3 +36,10 @@
 - SSE subscriptions can combine several tokens and skip replay for newly joined topics.
 - `Contracts\EventLog` gained `onGap()`, `ready()`, and `healthy()` during pre-release development. Custom event logs must implement all three methods. The `since()` method accepts a filter and returns a replay bounded by the sampled tail.
 - Murmur supplies the Laravel broadcast connection by default and marks classes outside the supported PHP surface as internal.
+
+### Fixed
+
+- Cursorless connections sample the log tail so quiet subscribers can replay from their attach point when it has an ID.
+- Custom authorizer grants are validated, duplicate tokens are verified once per request, and distant expiries avoid scheduling timers outside the supported range.
+- Conformance suites share a bounded ReactPHP loop waiter and exercise replay snapshots during appends.
+- Origin matching normalizes explicit HTTP and HTTPS default ports. The installer derives origins from HTTP and HTTPS application URLs and explains how to add a loopback development port.

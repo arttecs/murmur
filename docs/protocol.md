@@ -32,6 +32,7 @@ A topic is 1–200 bytes and cannot contain a comma or ASCII whitespace. Topic n
 | 400 | The topic list is missing, malformed, or over its entry limit, the connection ID is malformed, the token list is invalid, or `fresh` contains an invalid or unsubscribed topic. |
 | 401 | The authorizer rejected a credential, for example because a required token is missing or a supplied token is malformed, expired, or has an invalid signature. |
 | 403 | The `Origin` header is disallowed, or the granted topics fail to cover at least one requested private topic. |
+| 431 | The request line and headers exceed the 8 KiB request-head limit. |
 | 500 | The server could not complete the subscription, for example because the authorizer failed unexpectedly. |
 | 503 | The server has reached its SSE connection limit (900 by default) or is shutting down. |
 
@@ -56,7 +57,9 @@ data: {"connection_id":"0123456789abcdef0123456789abcdef","protocol":1}
 
 ```
 
-The announcement has no `id:` field and does not advance the replay cursor. A connection ID is exactly 32 lowercase hexadecimal characters. When the client omits `connection`, the server generates the ID from 16 random bytes. A supplied well-formed ID is used as is. Several streams may share an ID. An ID only causes matching events to be withheld from streams that present it and grants no access. Send this ID as the `X-Socket-ID` header on Laravel requests that can trigger a `toOthers()` broadcast.
+The announcement has no `id:` field and does not advance the replay cursor. A connection ID is exactly 32 lowercase hexadecimal characters. When the client omits `connection`, the server generates the ID from 128 random bits and announces it only to that client. A supplied well-formed ID is used as is and several streams may share an ID. Clients should reuse only server-issued IDs. Put the ID in the client's own stream URL as `connection` when reconnecting and send it as `X-Socket-ID` on Laravel requests that can trigger a `toOthers()` broadcast.
+
+A connection ID grants no access. An authenticated user who can call an application endpoint that broadcasts with `toOthers()` can pass another connection's ID in `X-Socket-ID` and hide that one event from the matching connection, live and in replay. Proxy and access logs that capture the stream URL or the Laravel request header can expose the ID. This is the same class of risk as a Pusher or Reverb socket ID. [Nginx logging configuration](../README.md#nginx).
 
 The server sends `: ping\n\n` comment frames periodically, every 20 seconds by default. These frames carry no event ID and do not advance the replay cursor.
 
@@ -77,9 +80,9 @@ data: {}
 
 ```
 
-The marker's ID is the sampled tail, including after a gap and when the requested cursor was ahead of the tail. The marker omits `id:` when there is no known tail, for example on an empty log. Treat it as a control frame. A numbered marker replaces the stored cursor even if it is lower than the one sent. The server withholds subsequent numbered events at or before the tail, including entries arriving late from the Redis reader.
+The marker's ID is the sampled tail, including after a gap and when the requested cursor was ahead of the tail. The marker omits `id:` when there is no known tail, for example on an empty log. An unnumbered marker acknowledges attachment without supplying a resume ID. Treat it as a control frame. Its bytes count toward `murmur_bytes_sent_total`, and the event and replay counters count only published events. A numbered marker replaces the stored cursor even if it is lower than the one sent. The server withholds subsequent numbered events at or before the tail, including entries arriving late from the Redis reader.
 
-Include a newly added topic in `fresh` on the attempt that adds it. Once `murmur.attached` or any later numbered event arrives on that connection, omit that topic from `fresh` on reconnect and send the latest cursor. Ordinary replay then starts at the acknowledged join or later. If the stream drops before the marker arrives, send `fresh` again for the unacknowledged topic. Numbered replay events received before the marker do not acknowledge the join. The server evaluates `fresh` per request, so clients that use it must build a new URL per attempt instead of letting native `EventSource` retry the same URL.
+Include a newly added topic in `fresh` on the attempt that adds it. Once `murmur.attached` or any later numbered event arrives on that connection, omit that topic from `fresh` on reconnect and send the latest cursor. When a cursor is available, ordinary replay then starts at the acknowledged join or later. If the stream drops before the marker arrives, send `fresh` again for the unacknowledged topic. Numbered replay events received before the marker do not acknowledge the join. The server evaluates `fresh` per request, so clients that use it must build a new URL per attempt instead of letting native `EventSource` retry the same URL.
 
 Live events arriving during replay are held until the server writes the marker. The server drops duplicate or older IDs once it has written a frame with a newer ID. The connection closes if the replay query fails or the held live data exceeds `server.max_buffer_bytes`. The server also closes a stream whose output exceeds that limit under backpressure. The default byte limit is 1,048,576.
 
@@ -104,10 +107,12 @@ Topic names beginning with `private-` require authorization. The default authori
 
 | Claim | Value |
 | --- | --- |
-| `topics` | JSON array of strings containing full wire topic names, including `private-`. Each private topic must match an entry exactly. |
-| `exp` | Integer Unix expiration time in seconds. Laravel issues tokens for `token_ttl` seconds, 900 by default. |
+| `topics` | JSON array of valid full wire topic names, including the `private-` prefix where applicable. Each private topic must match an entry exactly. |
+| `exp` | Positive integer Unix expiration time in seconds. Laravel issues tokens for `token_ttl` seconds, 900 by default. |
 
-The server verifies the JWT signature and expiration with no clock leeway. It checks both claims' types. Laravel issues tokens with these two claims only. If another issuer adds `nbf` or `iat`, the server also rejects a token whose `nbf`, or whose `iat` when `nbf` is absent, is later than its own clock, again with no leeway; omit both claims or keep the clocks synchronized. With the default authorizer, a public-only request can omit `token`. When supplied, the comma-separated list must contain only nonempty items and at most `server.max_topics_per_connection` tokens. The server verifies every token, including those unused by the subscription. It checks the union of their grants against the requested private topics. When grants overlap, each private topic stays authorized through the latest expiry of a token that covers it. The server closes the stream at the first of those per-topic expiries. Public topics do not impose an expiry. Obtain fresh tokens before reconnecting to private topics.
+The server verifies the JWT signature and expiration with no clock leeway. It checks both claims' types. Laravel issues tokens with these two claims only. If another issuer adds `nbf` or `iat`, the server also rejects a token whose `nbf`, or whose `iat` when `nbf` is absent, is later than its own clock, again with no leeway; omit both claims or keep the clocks synchronized. With the default authorizer, a public-only request can omit `token`. When supplied, the comma-separated list must contain only nonempty items and at most `server.max_topics_per_connection` tokens. The server verifies every distinct token, including those unused by the subscription. One expired token fails the entire request with 401, even if the other tokens cover all the topics. Drop a channel's token when you leave that channel and refresh before the earliest expiry of any token you still send.
+
+The server checks the union of the grants against the requested private topics. When grants overlap, each private topic stays authorized through the latest expiry of a token that covers it. The server closes the stream at the first of those per-topic expiries. Public topics do not impose an expiry. If the calculated expiry is more than ten years away or exceeds the platform's timer range, the server keeps the stream open without scheduling an expiry.
 
 A deployment may replace token verification. In that case the token format and handling of an omitted token are deployment-defined. Tokens still cannot contain commas, which delimit list entries after URL decoding. The status codes and grant coverage and expiry rules are the same.
 
@@ -117,11 +122,24 @@ Use `POST /broadcasting/auth` on the Laravel application. The application regist
 
 Laravel strips the `private-` prefix and checks the registered channel callback with its configured guards. An authorized request receives 200 with `{"token":"<JWT>","expires_at":1710000900}`. The token covers exactly the requested topic and `expires_at` is the Unix time in seconds from the token. Missing or invalid channel names, public and presence channels, unauthenticated requests, and denied channel callbacks receive 403. Application middleware may reject the request earlier.
 
-For several private topics, make one authorization request per topic and send the resulting tokens together on the SSE URL. The topic and token counts are each limited to `server.max_topics_per_connection`, and all encoded query parameters and headers must fit in the 8 KiB request-head limit.
+For several private topics, make one authorization request per topic and send the resulting tokens together on the SSE URL. An application can also authorize several topics in its own endpoint and return one token minted with `Murmur::token(['private-orders.42', 'private-orders.43'])`.
+
+### Request head budget
+
+The topic and token lists each have a default cap of 50 entries, and the 8 KiB limit applies to the entire request line and headers. The byte limit often takes effect before the count limit when sending one JWT per channel. These measurements use Murmur's default HS256 tokens, URL-encoded lists, both `connection` and `lastEventId`, and `Host`, `Accept`, and `Origin` headers. Each count is the most channels that the server accepted for that setup with the default count limit.
+
+| Example wire topic | Topic bytes | JWT bytes | Channels with lean headers | Channels with a 1 KiB cookie value |
+| --- | ---: | ---: | ---: | ---: |
+| `private-a` | 9 | 136 | 50 | 46 |
+| `private-orders.0042` | 19 | 149 | 46 | 40 |
+| `private-orders.00000000-0000-4000-8000-000000000042` | 51 | 192 | 32 | 28 |
+| 200-byte ASCII topic | 200 | 391 | 13 | 11 |
+
+Allow room for the browser's actual headers and for longer encoded topic names. A single multi-topic token reduces the request size by sharing the JWT header, signature, and expiry across the authorized topics.
 
 ### CORS
 
-The default `server.allowed_origins` list is empty. The subscription handler serves requests without an `Origin` header and omits `Access-Control-Allow-Origin`. A request with an `Origin` header receives 403 unless its origin is allowed. Configure complete origins (`scheme://host[:port]`) without paths, trailing slashes, queries, or fragments. Matching is case-insensitive for the scheme and host and exact for the port. The handler echoes an allowed request's `Origin` value. A list containing `*` allows every origin and returns `Access-Control-Allow-Origin: *`. The SSE server adds `Vary: Origin` to routed responses whenever the list excludes `*`.
+The default `server.allowed_origins` list is empty. The subscription handler serves requests without an `Origin` header and omits `Access-Control-Allow-Origin`. A request with an `Origin` header receives 403 unless its origin is allowed. Configure complete origins (`scheme://host[:port]`) without paths, trailing slashes, queries, or fragments. Matching is case-insensitive for the scheme and host. Explicit HTTP port 80 and HTTPS port 443 are equivalent to an omitted port. Other ports match exactly. The handler echoes an allowed request's `Origin` value. A list containing `*` allows every origin and returns `Access-Control-Allow-Origin: *`. The SSE server adds `Vary: Origin` to routed responses whenever the list excludes `*`.
 
 Murmur's SSE server does not emit `Access-Control-Allow-Credentials` or implement OPTIONS preflights. A reverse proxy can provide those headers or handle OPTIONS for cross-origin clients that require them. CORS on the Laravel authorization route is controlled by the Laravel application.
 

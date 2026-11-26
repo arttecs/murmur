@@ -13,7 +13,7 @@ php artisan murmur:install
 
 The installer publishes `config/murmur.php`, fills in a missing or blank `MURMUR_SECRET` in `.env`, and sets `BROADCAST_CONNECTION=murmur`. If another broadcaster is configured, the installer asks before changing it. In non-interactive mode it keeps the existing broadcaster unless you pass `--force`. That flag also allows replacing the published configuration. For private channels, the installer points you to Laravel's broadcasting setup if the auth route is missing.
 
-Laravel and every Murmur server must share the same signing secret of at least 32 bytes. The installer generates a 64-character hexadecimal secret and stores it in `.env`. It adds blank placeholders for the secret and origin allowlist to an existing `.env.example` when needed. If `MURMUR_ALLOWED_ORIGINS` is missing or blank and `APP_URL` in `.env` has a valid origin, the installer adds that origin and prints it.
+Laravel and every Murmur server must share the same signing secret of at least 32 bytes. The installer generates a 64-character hexadecimal secret and stores it in `.env`. It adds blank placeholders for the secret and origin allowlist to an existing `.env.example` when needed. If `MURMUR_ALLOWED_ORIGINS` is missing or blank, the installer adds and prints the origin of a valid HTTP or HTTPS `APP_URL` from `.env`. For a loopback origin, it reminds you to add a development page served from another port, such as a Vite dev server.
 
 Start the server from your Laravel application directory.
 
@@ -27,7 +27,7 @@ The default address is `http://127.0.0.1:8080`. To override the bind address for
 php artisan murmur:serve --host=127.0.0.1 --port=8081
 ```
 
-A public subscription receives a reconnect interval and a connection ID immediately, followed by a heartbeat every 20 seconds by default.
+A public subscription receives a reconnect interval, a connection ID, and an attach marker. The server sends a heartbeat every 20 seconds by default.
 
 ```sh
 curl -N 'http://127.0.0.1:8080/sse?topics=news'
@@ -49,9 +49,13 @@ Register Laravel's broadcasting routes with `php artisan install:broadcasting`, 
 
 Send an authenticated JSON request to `POST /broadcasting/auth` with `{"channel_name":"private-orders.42"}`. The app's middleware controls credentials. Laravel uses the channel's configured guard and returns `{"token":"<JWT>","expires_at":1710000900}` for an authorized channel or 403 for a denied, missing, invalid, public, or presence channel. Each token covers one channel. An optional `socket_id` is ignored because the token authorizes the channel and the connection ID grants no access.
 
-Use `Murmur::token($topics, $ttl)` when your application needs to mint subscription tokens itself. To use the broadcasting endpoint, request a token for each private topic and join the tokens with commas in the `token` query parameter on `/sse`. The number of tokens is limited by `server.max_topics_per_connection` and by the 8 KiB limit for the request line and headers. Refresh tokens before expiry. See [the wire protocol](docs/protocol.md#private-topics) for SSE status codes and expiry rules.
+Request a token for each private topic and send the tokens as one comma-separated, URL-encoded `token` query parameter on `/sse`. One expired token anywhere in the list fails the whole request with 401, even if other tokens grant all requested topics. Drop a channel's token when you leave it and refresh before the earliest expiry of the tokens you still send.
+
+The 8 KiB request-head limit often takes effect before the default `server.max_topics_per_connection` limit of 50. With one JWT per channel and lean headers, 19-byte topics such as `private-orders.0042` produced 149-byte JWTs and fit 46 channels. UUID order topics produced 192-byte JWTs and fit 32. At the 200-byte topic limit, 391-byte JWTs fit 13 channels. Fifty channels fit in the test with 9-byte topics and 136-byte JWTs. Headers such as cookies reduce these counts. To fit more topics, authorize them in your own Laravel endpoint and return one token minted with `Murmur::token(['private-orders.42', 'private-orders.43'])`. See the [wire protocol measurements](docs/protocol.md#request-head-budget).
 
 Use Laravel's `broadcast($event)->toOthers()` to skip the sending subscription. Send the ID from the `murmur.connected` event in the `X-Socket-ID` header on the Laravel request that triggers the broadcast. Pass the same ID as `connection` on reconnect to keep the exclusion in replay. For a direct publication, pass the ID as the fourth argument to `Murmur::publish()`.
+
+A connection ID grants no access. An authenticated user who can call an application endpoint that broadcasts with `toOthers()` can send another connection's ID in `X-Socket-ID` and hide that one event from that connection in live delivery and replay. Murmur generates IDs from 128 random bits and sends each generated ID only to its owner in `murmur.connected`. The owner then sends it in its own stream URL and Laravel request headers. Proxy and access logs can expose the ID, the same class of risk as a Pusher or Reverb socket ID. Clients should reuse only server-issued IDs.
 
 ## Stream API
 
@@ -75,7 +79,9 @@ Use a distinct topic for each stream run. Reusing a topic can replay the previou
 
 Use `@arttecs/murmur` to subscribe to channels and consume streams in the browser. See the [JavaScript client README](js/README.md) for installation and usage.
 
-When reopening an SSE connection after adding topics, pass the newly joined topics as a comma-separated `fresh` query value. Those topics start at the log tail sampled for the new connection. Other topics still replay from the cursor.
+The SSE server sends `retry:`, `murmur.connected`, any initial `murmur.gap`, replayed events, and then `murmur.attached` before live events. The attach marker has `data: {}` and carries the sampled log tail as its ID when one is known. A numbered marker updates the cursor, even when it corrects a cursor ahead of the log.
+
+When adding topics, include them as a comma-separated `fresh` query value on the request that adds them. Fresh topics start after the sampled tail and existing topics replay from the cursor. Once you receive `murmur.attached` or a later numbered event on that connection, reconnect with the latest cursor and omit the acknowledged topics from `fresh`. If the stream drops before the marker arrives, send the unacknowledged topics in `fresh` again. The server evaluates `fresh` per request, so a client that uses it must build its URL for each attempt and take over reconnection from native `EventSource`. See the [replay protocol](docs/protocol.md#replay).
 
 ## Migrating from Laravel Reverb
 
@@ -173,7 +179,7 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 
 Write `MURMUR_ALLOWED_ORIGINS` as a comma-separated list. Murmur trims whitespace and drops empty entries. Keep `server.max_sockets` at least as high as `server.max_connections`.
 
-A subscriber receives `murmur.gap` in place of a replay if the requested history exceeds `server.max_replay_events` matching events or if the encoded replay frames exceed half of `server.max_buffer_bytes`. The connection continues delivering live events.
+A subscriber receives `murmur.gap` in place of a replay if the requested history exceeds `server.max_replay_events` matching events or if the encoded replay frames exceed half of `server.max_buffer_bytes`. The attach marker still carries the sampled tail, and the connection continues delivering live events.
 
 ## Writing a driver
 
@@ -208,11 +214,11 @@ Set `MURMUR_DRIVER=example` and, independently, `MURMUR_METRICS_STORE=reports` t
 
 Laravel calls the `Publisher` to send events. `murmur:serve` uses the `EventLog` for live delivery and replay. Event log methods and callbacks run in the server's event loop and must never block. Return ReactPHP promises from `since()` and `ready()` and keep `healthy()` a cheap synchronous check. Metrics store writes run in the separate Artisan writer. A store's `put()` replaces one node's snapshot, `all()` returns snapshots keyed by node, and `forget()` removes a node.
 
-The subscription authorizer factory builds an object when `murmur:serve` creates the server. Its `authorize(?string $token, array $topics)` method runs in that server process's event loop and must be non-blocking. It receives the requested topics and one token at a time, or `null` when the request contains no token. Resolve a ReactPHP promise with an immutable `Server\Auth\Grant` containing the allowed topics and their Unix expiry. Reject with `Exceptions\InvalidToken` for invalid credentials. The server checks whether the grants cover each requested private topic. Use a token format without commas. With no custom factory, the server verifies Murmur's HS256 JWTs. Laravel's broadcasting endpoint, `Murmur::token()`, and private stream URLs still issue Murmur JWTs, so configure clients and the authorizer to use compatible credentials.
+The subscription authorizer factory builds an object when `murmur:serve` creates the server. Its `authorize(?string $token, array $topics)` method runs in that server process's event loop and must be non-blocking. It receives the requested topics and one distinct token at a time, or `null` when the request contains no token. Cache or bound authorization I/O for up to `server.max_topics_per_connection` calls per request. Resolve a ReactPHP promise with an immutable `Server\Auth\Grant` containing a list of valid topic names and a positive Unix expiry in seconds. Reject with `Exceptions\InvalidToken` for invalid credentials. The server checks whether the grants cover each requested private topic. Use a token format without commas. With no custom factory, the server verifies Murmur's HS256 JWTs. Laravel's broadcasting endpoint, `Murmur::token()`, and private stream URLs still issue Murmur JWTs, so configure clients and the authorizer to use compatible credentials.
 
 Run the packaged PHPUnit suites against your implementations. Extend `Testing\EventLogConformanceTestCase` and provide a new empty log with the supplied loop and a writer that appends into that log's backend. The fixture must trim to the requested capacity and return the assigned `EventId` directly or through a promise.
 
-Event logs sample the tail before querying replay history and return it even when the topic list is empty. Return events through that tail and apply the optional `since()` event filter before counting results against the limit.
+Event logs sample the tail before querying replay history and return it even when the topic list is empty. An empty topic list returns no events, and an empty log returns a null tail. Return events through the sampled tail and apply the optional `since()` event filter before counting results against the limit.
 
 ```php
 use App\Tests\Support\EventLogFixture;
@@ -230,7 +236,7 @@ class ExampleEventLogTest extends EventLogConformanceTestCase
 }
 ```
 
-For a metrics store, extend `Testing\MetricsStoreConformanceTestCase` and implement `createMetricsStore(): MetricsStore` to return an empty, isolated store for each test. For a token-based authorizer, extend `Testing\SubscriptionAuthorizerConformanceTestCase` and supply the authorizer and its valid, malformed, and expired token fixtures. All three suites use plain PHPUnit.
+For a metrics store, extend `Testing\MetricsStoreConformanceTestCase` and implement `createMetricsStore(): MetricsStore` to return an empty, isolated store for each test. For a token-based authorizer, extend `Testing\SubscriptionAuthorizerConformanceTestCase` and supply the authorizer and its valid, malformed, and expired token fixtures. Use the fixture loop for asynchronous authorization and test your missing-token policy in your own suite. All three suites use plain PHPUnit.
 
 ## Deployment
 
@@ -255,7 +261,7 @@ With `ext-pcntl` enabled in CLI PHP, `SIGTERM` and `SIGINT` stop new TCP connect
 
 ### Nginx
 
-Proxy `/sse` to Murmur and disable buffering so events reach subscribers as they arrive. Set `MURMUR_PUBLIC_URL` to the external base URL. With the `http` driver, point `MURMUR_PUBLISH_URL` at the internal server address. Subscription tokens travel in the `/sse` query string. Exclude that query string from proxy and load balancer logs and from traces.
+Proxy `/sse` to Murmur and disable buffering so events reach subscribers as they arrive. Set `MURMUR_PUBLIC_URL` to the external base URL. With the `http` driver, point `MURMUR_PUBLISH_URL` at the internal server address. The `token` and `connection` parameters travel in the `/sse` query string. Exclude that query string from proxy and load balancer logs and traces. Avoid logging `X-Socket-ID` on Laravel requests as well.
 
 ```nginx
 location = /sse {
@@ -298,7 +304,7 @@ Configure the Laravel connection named by `MURMUR_REDIS_CONNECTION` to reach the
 
 Run `php artisan murmur:serve` on each node and route `/sse` through a load balancer with response buffering disabled. With the Redis driver, a node starts listening only after it can reach Redis and resolve its starting cursor. It logs one message while waiting for Redis. A node listens on `127.0.0.1` by default, so set `MURMUR_HOST` to an address the load balancer can reach. Set `MURMUR_PUBLIC_URL` to the load balancer's public base URL. Each node reads the same stream, so a reconnect can resume on any node while its cursor is retained. The Redis driver disables the server's `POST /publish` endpoint.
 
-During a Redis outage, each server retries its stream read one second after a failure. Murmur logs when the reader loses its connection and when it recovers. If Redis trimmed events during the outage, Murmur sends a `murmur.gap` event to connected subscribers before it resumes delivering retained events. The check errs towards signalling: a subscriber may receive `murmur.gap` when the only trimmed entries were ones it had already received. Replay queries share one Redis connection and each has a 5 second deadline by default, so a Redis slower than that fails the replays in flight and those subscribers reconnect.
+During a Redis outage, each server retries its stream read one second after a failure. Murmur logs when the reader loses its connection and when it recovers. If Redis trimmed events during the outage, Murmur sends a `murmur.gap` event to connected subscribers before it resumes delivering retained events. The check errs towards signalling: a subscriber may receive `murmur.gap` when the only trimmed entries were ones it had already received. Tail samples and replay queries share one Redis connection. Each command has a 5 second deadline by default. If a sample or replay fails, the server closes the affected subscription.
 
 Synchronize clocks across the Laravel application, Murmur nodes, and Redis. `stream_cursor_margin_ms` sets how much skew to allow in stream start cursors.
 
