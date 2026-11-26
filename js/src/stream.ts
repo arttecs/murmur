@@ -1,10 +1,10 @@
 import { parseEnvelope } from './envelope.js'
 import { invokeListener } from './invoke-listener.js'
-import { Transport, type RetryOptions } from './transport.js'
+import { readRequestedCursor, Transport, type RetryOptions } from './transport.js'
 
 /** Overrides the client's retry settings for one stream. */
 export interface StreamOptions extends Partial<RetryOptions> {
-  /** The limit on consecutive attempts that fail to attach. */
+  /** The limit on consecutive attempts without attachment or replay progress. */
   maxFailures?: number
 }
 
@@ -36,24 +36,31 @@ export class MurmurStream {
     onClose: (stream: MurmurStream) => void,
   ) {
     this.onClose = onClose
-    let unattachedFailures = 0
+    let stalledAttempts = 0
     this.transport = new Transport(
       eventSource,
       withCredentials,
       retryOptions,
       (_signal, lastEventId) => this.connectionUrl(lastEventId),
       (event, data) => this.receive(event, data),
-      (status, attached) => {
+      (status, madeProgress) => {
         if (status === 'disconnected') {
-          unattachedFailures = attached ? 0 : unattachedFailures + 1
-          if (unattachedFailures === maxFailures) {
+          stalledAttempts = madeProgress ? 0 : stalledAttempts + 1
+          if (stalledAttempts === maxFailures) {
             this.finish('expired')
           }
         }
       },
+      undefined,
+      readRequestedCursor(url),
     )
     this.transport.setEvents(new Set(['murmur.end']))
     this.transport.connect()
+  }
+
+  /** Returns the current replay cursor, including after the stream expires. */
+  public get lastEventId(): string | undefined {
+    return this.transport.replayCursor
   }
 
   /** Registers a callback for a literal stream event. */

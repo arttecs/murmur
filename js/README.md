@@ -73,7 +73,7 @@ Pass these options to `new Murmur(options)`.
 | `maxRetryMs` | `number` | `30000`, or `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be finite and at least `retryMs`. |
 | `retryJitter` | `number` | `0.25` | Maximum fraction of the base delay added as random jitter from the second consecutive failure onward. Must be finite and between 0 and 1, inclusive. Set to `0` to disable jitter. |
 | `tokenRefreshMarginSeconds` | `number` | `30` | Remaining lifetime a cached token must exceed to be reused, in seconds. Must be finite and non-negative. |
-| `streamMaxFailures` | `number` | `3` | Consecutive attempts that fail to attach before an independent stream expires. Must be an integer of at least 1. |
+| `streamMaxFailures` | `number` | `8` | Consecutive attempts without attachment or replay progress before an independent stream expires. Must be an integer of at least 1. |
 | `fetch` | `typeof fetch` | `globalThis.fetch` | Fetch implementation for the built-in authorization request. |
 | `EventSource` | `typeof EventSource` | `globalThis.EventSource` | Constructor used for the shared connection and independent streams. |
 | `withCredentials` | `boolean` | `false` | Set to `true` to pass `{ withCredentials: true }` to `EventSource` for the shared connection and streams. |
@@ -157,7 +157,9 @@ Stream event names are literal, and callbacks receive the event payload. The nam
 
 - `end` fires when the server sends `murmur.end`. The stream closes permanently.
 - `gap` fires when the server sends `murmur.gap` to signal missing events.
-- `expired` fires and the stream closes after `maxFailures` consecutive attempts that fail to attach. Opening the connection, receiving a gap, or replaying application events still leaves the attempt waiting for its attach marker. A drop after attachment starts a new retry sequence and leaves the full allowance of unattached attempts. A private stream URL carries a fixed token, so retries keep using that token.
+- `expired` fires and the stream closes after `maxFailures` consecutive attempts that end without attachment or replay progress. A replayed event that advances the cursor resets the expiry count. Retry backoff keeps growing until the attach marker. A drop after attachment starts a new retry sequence and leaves the full allowance of eight attempts by default. A private stream URL carries a fixed token, so retries keep using that token.
+
+With the defaults and immediate failures, expiry takes 135–168 seconds when the first connection never attaches, or 165–205.5 seconds after an attached connection drops. These ranges include the client retry delays and jitter. Time spent waiting for connections to open or fail adds to the total. Set `streamMaxFailures` on the client or `maxFailures` on an individual stream to change the number of attempts. Tune `retryMs`, `maxRetryMs`, and `retryJitter` to change the delay between attempts.
 
 Pass `StreamOptions` as the optional second argument to `murmur.stream(url, options)`. Each field is an optional number and follows the validation rules of its client default.
 
@@ -166,9 +168,31 @@ Pass `StreamOptions` as the optional second argument to `murmur.stream(url, opti
 | `retryMs` | `number` | Client's `retryMs` | Delay before the first retry in milliseconds. |
 | `maxRetryMs` | `number` | Client's `maxRetryMs`, or this stream's `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be at least this stream's `retryMs`. |
 | `retryJitter` | `number` | Client's `retryJitter` | Maximum jitter fraction from the second consecutive failure onward. |
-| `maxFailures` | `number` | Client's `streamMaxFailures` | Limit on consecutive attempts that fail to attach this stream. |
+| `maxFailures` | `number` | Client's `streamMaxFailures` | Limit on consecutive attempts without attachment or replay progress for this stream. |
 
-The first connection uses the URL as supplied. On reconnect, the client updates only `lastEventId`, using IDs from attach markers, listened-to events, and numbered heartbeats after attachment. Until it receives a cursor update, it reconnects with the original URL and its initial cursor.
+The first connection uses the URL as supplied. On reconnect, the client updates only the `lastEventId` query parameter. The read-only `stream.lastEventId` starts with the URL's valid cursor, if present, and tracks IDs from listened-to events, attach markers, and numbered heartbeats after attachment. It is `undefined` when the stream has no cursor and remains readable after the stream closes.
+
+To resume after `expired`, get a subscription URL for the same stream from your application and replace its `lastEventId` query parameter with the saved cursor. A fresh URL also provides a fresh token for a private stream. Pass the updated URL to `murmur.stream()` and register the listeners on the new stream. A new EventSource starts without a `Last-Event-ID` header. If a custom transport sends a valid `Last-Event-ID` header, the server gives it precedence over the query parameter.
+
+```js
+function consumeStream(subscriptionUrl, lastEventId) {
+  const url = new URL(subscriptionUrl, window.location.href)
+  if (lastEventId !== undefined) {
+    url.searchParams.set('lastEventId', lastEventId)
+  }
+
+  const stream = murmur.stream(url.href)
+    .on('token', data => console.log(data))
+    .on('gap', () => console.log('Some events are missing'))
+
+  stream.on('expired', async () => {
+    consumeStream(await getSubscriptionUrl(), stream.lastEventId)
+  })
+  return stream
+}
+
+consumeStream(await getSubscriptionUrl())
+```
 
 Call `stream.close()` to stop the stream and cancel any pending retry.
 

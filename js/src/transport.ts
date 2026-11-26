@@ -6,6 +6,8 @@ type Connection = {
   opened: boolean
   /** Whether the server has acknowledged attachment. */
   attached: boolean
+  /** Whether an event advanced the cursor before attachment. */
+  replayed: boolean
   /** Handles a successful connection. */
   open: (event: Event) => void
   /** Handles a failed connection. */
@@ -55,6 +57,27 @@ function isMessage(event: Event): event is Event & { data: string; lastEventId?:
 /** Matches the protocol's complete event ID format. */
 const eventIdPattern = /^[0-9]{1,18}-[0-9]{1,18}(?![\s\S])/
 
+/** Reads a valid replay cursor from an absolute or relative URL. */
+export function readRequestedCursor(url: string): string | undefined {
+  const fragment = url.indexOf('#')
+  const address = fragment === -1 ? url : url.slice(0, fragment)
+  const query = address.indexOf('?')
+  const cursor = query === -1 ? undefined : new URLSearchParams(address.slice(query)).getAll('lastEventId').at(-1)
+  return cursor !== undefined && eventIdPattern.test(cursor) ? cursor : undefined
+}
+
+/** Compares valid event IDs numerically without losing decimal precision. */
+function isLaterEventId(candidate: string, cursor: string): boolean {
+  const candidateSeparator = candidate.indexOf('-')
+  const cursorSeparator = cursor.indexOf('-')
+  const candidateTime = BigInt(candidate.slice(0, candidateSeparator))
+  const cursorTime = BigInt(cursor.slice(0, cursorSeparator))
+  if (candidateTime !== cursorTime) {
+    return candidateTime > cursorTime
+  }
+  return BigInt(candidate.slice(candidateSeparator + 1)) > BigInt(cursor.slice(cursorSeparator + 1))
+}
+
 /** Owns the EventSource lifecycle, retry timer and replay cursor. */
 export class Transport {
   /** The current connection and its registered listeners. */
@@ -82,8 +105,9 @@ export class Transport {
     protected readonly retryOptions: RetryOptions,
     protected readonly connectionUrl: (signal: AbortSignal, lastEventId: string | undefined) => string | undefined | Promise<string | undefined>,
     protected readonly onMessage: (event: string, data: string) => void,
-    protected readonly onStatus: (event: 'connected' | 'disconnected', attached: boolean) => void,
+    protected readonly onStatus: (event: 'connected' | 'disconnected', madeProgress: boolean) => void,
     protected readonly onPreOpenError?: (url: string, status: number | undefined) => void,
+    protected readonly initialCursor?: string,
   ) {}
 
   /** Reports whether the active source has opened. */
@@ -93,7 +117,7 @@ export class Transport {
 
   /** Returns the cursor used when opening the next source. */
   public get replayCursor(): string | undefined {
-    return this.lastEventId
+    return this.lastEventId ?? this.initialCursor
   }
 
   /** Replaces the active connection with a new attempt. */
@@ -183,10 +207,11 @@ export class Transport {
       source,
       opened: false,
       attached: false,
+      replayed: false,
       open: event => {
         if (this.connection === connection && !isMessage(event)) {
           connection.opened = true
-          this.onStatus('connected', connection.attached)
+          this.onStatus('connected', connection.attached || connection.replayed)
         }
       },
       error: event => {
@@ -232,11 +257,12 @@ export class Transport {
 
   /** Closes the failed connection, schedules a retry, and reports the failure. */
   protected handleFailure(minimumDelay?: number): void {
-    const attached = this.connection?.attached ?? false
+    const connection = this.connection
+    const madeProgress = connection !== undefined && (connection.attached || connection.replayed)
     this.close()
     this.failures++
     this.retry(minimumDelay)
-    this.onStatus('disconnected', attached)
+    this.onStatus('disconnected', madeProgress)
   }
 
   /** Captures the resume cursor and dispatches named stream data. */
@@ -253,6 +279,10 @@ export class Transport {
       this.failures = 0
     }
     if (id !== undefined && event !== 'murmur.gap' && event !== 'murmur.connected') {
+      if (!connection.attached && !connection.replayed) {
+        const cursor = this.replayCursor
+        connection.replayed = cursor === undefined || isLaterEventId(id, cursor)
+      }
       this.lastEventId = id
     }
     this.onMessage(event, data)

@@ -46,7 +46,7 @@ export interface MurmurOptions extends Partial<RetryOptions> {
   /** The minimum seconds remaining before a cached token can be reused. */
   tokenRefreshMarginSeconds?: number
 
-  /** The limit on consecutive attempts that fail to attach an independent stream. */
+  /** The limit on consecutive independent stream attempts without attachment or replay progress. */
   streamMaxFailures?: number
 
   /** The fetch implementation used for authorization requests. */
@@ -250,7 +250,7 @@ export class Murmur {
   /** The time that must remain on a cached token for it to be reused, in seconds. */
   protected readonly tokenRefreshMarginSeconds: number
 
-  /** The default limit on consecutive attempts that fail to attach an independent stream. */
+  /** The default limit on consecutive independent stream attempts without attachment or replay progress. */
   protected readonly streamMaxFailures: number
 
   /** The reusable tokens associated with each authorized private topic. */
@@ -289,7 +289,7 @@ export class Murmur {
       throw new RangeError('tokenRefreshMarginSeconds must be finite and greater than or equal to zero')
     }
 
-    this.streamMaxFailures = options.streamMaxFailures ?? 3
+    this.streamMaxFailures = options.streamMaxFailures ?? 8
     validateFailureLimit(this.streamMaxFailures, 'streamMaxFailures')
 
     this.transport = new Transport(
