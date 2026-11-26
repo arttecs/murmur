@@ -115,6 +115,18 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `redis.stream` | `MURMUR_REDIS_STREAM` | `murmur:events` | Stream name before Laravel's Redis key prefix. Set this to isolate applications in one database. |
 | `redis.query_timeout` | `MURMUR_REDIS_QUERY_TIMEOUT` | `5.0` | Seconds allowed for a Redis query outside the blocking live read. Increase this for slower Redis round trips. |
 | `redis.block_ms` | `MURMUR_REDIS_BLOCK_MS` | `5000` | Milliseconds Redis waits for new events during a live read. A stalled reader is replaced 5 seconds after this wait. |
+| `metrics.store` | `MURMUR_METRICS_STORE` | `null` | Snapshot store. Set to `database`, `redis`, `cache`, or a registered custom store. |
+| `metrics.interval` | `MURMUR_METRICS_INTERVAL` | `15.0` | Seconds between snapshots from each server. |
+| `metrics.ttl` | `MURMUR_METRICS_TTL` | `60` | Age in seconds at which a snapshot becomes stale. Must exceed the interval. |
+| `metrics.timeout` | `MURMUR_METRICS_TIMEOUT` | `10.0` | Seconds a writer can run before being terminated. |
+| `metrics.node` | `MURMUR_NODE` | `null` | Identifier of this server. Defaults to its hostname and listening port. |
+| `metrics.only` | `MURMUR_METRICS_ONLY` | `[]` | Comma-separated metric names to record. An empty list records all server metrics. |
+| `metrics.database.connection` | `MURMUR_METRICS_DB_CONNECTION` | `null` | Laravel database connection. Uses the application default when unset. |
+| `metrics.database.table` | `MURMUR_METRICS_DB_TABLE` | `murmur_metrics` | Table where the database store keeps snapshots. |
+| `metrics.redis.connection` | `MURMUR_METRICS_REDIS_CONNECTION` | `default` | Laravel Redis connection for snapshots. |
+| `metrics.redis.key` | `MURMUR_METRICS_REDIS_KEY` | `murmur:metrics` | Redis hash key before Laravel applies its prefix. |
+| `metrics.cache.store` | `MURMUR_METRICS_CACHE_STORE` | `null` | Laravel cache store. Uses the application default when unset. |
+| `metrics.cache.prefix` | `MURMUR_METRICS_CACHE_PREFIX` | `murmur:metrics:` | Prefix applied to the cache entries and their index. |
 
 Write `MURMUR_ALLOWED_ORIGINS` and `MURMUR_AUTH_MIDDLEWARE` as comma-separated lists. Murmur trims whitespace and drops empty entries. Keep `server.max_sockets` at least as high as `server.max_connections`. Set `MURMUR_AUTH_ENABLED=false` to omit the Laravel authorization route. Its name is `murmur.auth` whenever it is registered. Boolean variables accept `true`, `false`, `1`, `0`, `on`, `off`, `yes`, and `no`; any other value counts as false. Middleware with comma-separated parameters, such as `throttle:60,1`, cannot be written in `MURMUR_AUTH_MIDDLEWARE`; publish the config file and set `auth.middleware` there.
 
@@ -207,15 +219,17 @@ Synchronize clocks across the Laravel application, Murmur nodes, and Redis. `str
 
 ## Metrics
 
-Each server process counts what it does in memory. Murmur serves no metrics route: you read the numbers with methods and decide where they go.
+Each server process collects metrics in memory. Storing snapshots is off by default. Murmur has no HTTP metrics route.
 
-`Server::metrics()` returns the process's `Arttecs\Murmur\Server\Metrics` registry:
+### Read metrics in the server process
+
+`Server::metrics()` returns the process's `Arttecs\Murmur\Server\Metrics` registry.
 
 - `snapshot()` returns a list of samples, each with `name`, `type`, `help`, `labels`, and `value`.
 - `value($name, $labels = [])` returns one series, or `null` when it has no sample yet.
 - `toPrometheus()` returns the snapshot in the Prometheus text exposition format (0.0.4).
 
-`murmur:serve` creates the server for you. Register a callback with `Murmur::serving()` in a service provider's `boot()` method to receive the server and its event loop before it starts listening:
+Register a callback with `Murmur::serving()` in a service provider's `boot()` method to receive the server and its event loop before it starts listening.
 
 ```php
 use Arttecs\Murmur\Facades\Murmur;
@@ -233,7 +247,68 @@ Murmur::serving(function (Server $server, LoopInterface $loop): void {
 });
 ```
 
-The callback runs inside the server process and its timers run inside the event loop, so keep the work fast and local: write to stderr, a file, or a local agent, and do not perform blocking network requests. Metrics describe one server process; collect from each process in a deployment. The two metrics with a `status` label have no samples until the first response with that status. A `POST /publish` to a server where publishing is disabled, as with the `redis` driver, counts under `status="404"`.
+The callback runs in the server process. Keep timer callbacks fast and local, such as writing to stderr, and keep blocking store or network calls out of the event loop. The metrics with a `status` label gain a sample on the first response with that status. For example, a request to `POST /publish` on a server using the Redis transport counts under `status="404"`.
+
+### Store snapshots for Laravel
+
+Set `MURMUR_METRICS_STORE` in the Laravel app and on each Murmur server, and point them to the same store. The metrics store is independent of the Murmur event transport.
+
+- **Database.** Set `MURMUR_METRICS_STORE=database`. Set the database connection and table before publishing and running the migration. The migration uses the configured connection and table.
+- **Redis.** Set `MURMUR_METRICS_STORE=redis`. Use the same Laravel Redis connection, prefix, and metrics hash key on each host. Both PhpRedis and Predis work.
+- **Cache.** Set `MURMUR_METRICS_STORE=cache` and choose a Laravel cache store shared by the writer processes and the app, such as Redis or the database cache. Use the same metrics key prefix on each host. Snapshots and their index expire in the cache. Concurrent index updates use an atomic lock when the cache store supports it and are last-writer-wins otherwise.
+
+For the database store, publish and run the migration once during setup.
+
+```bash
+php artisan vendor:publish --tag=murmur-migrations
+php artisan migrate
+```
+
+Each store keeps the latest snapshot for each node. A node identifies one `murmur:serve` process and defaults to `hostname:port` using the listening port, including a `--port` override. Set a distinct `MURMUR_NODE` for each process if the defaults collide. Node names can use up to 128 ASCII letters, digits, dots, underscores, colons, or hyphens. Set `MURMUR_METRICS_ONLY` to a comma-separated selection from the metric names below, or leave it blank to record all of them.
+
+After the server starts listening, it sends a snapshot to a separate, short-lived Artisan process, then repeats at the configured interval. Store I/O runs in that child so a slow store cannot block event delivery. The server skips a write while a previous child is running and terminates a child that exceeds the timeout. On graceful shutdown, it stops scheduling writes and lets the latest snapshot become stale. Readers ignore snapshots when their age reaches the TTL. Use a TTL greater than the interval and keep the clocks on the servers and the Laravel app synchronized.
+
+The recorder uses ReactPHP ChildProcess and requires PHP's `proc_open()`, Bash, and a readable `/proc/self/fd` or `/dev/fd` on Unix. PHP builds with `--enable-sigchild` cannot run this recorder because ReactPHP's compatibility wrapper changes which process receives termination signals. ReactPHP rejects its default process pipes on Windows because they block. The library documents alternatives such as socket pairs. Murmur's recorder uses the default pipes and runs on Unix. [ReactPHP ChildProcess documentation](https://github.com/reactphp/child-process/tree/v0.6.7#windows-compatibility)
+
+```php
+use Arttecs\Murmur\Facades\Murmur;
+
+$nodes = Murmur::metrics();
+$totals = Murmur::metricTotals();
+```
+
+`Murmur::metrics()` returns fresh snapshots keyed and sorted by node name. Each contains the Unix timestamp `recorded_at` and a `samples` list. The values belong to one server process and are as old as its timestamp. `Murmur::metricTotals()` sums fresh counters and gauges across nodes except `murmur_uptime_seconds`. Keys use Prometheus-style series names, such as `murmur_publish_requests_total{status="202"}`, or the bare metric name for an unlabeled series. Both methods throw `Arttecs\Murmur\Exceptions\MetricsStoreNotConfigured` when storing is disabled.
+
+```bash
+php artisan murmur:status
+php artisan murmur:status --json --node=edge-1:8080
+php artisan murmur:forget-metrics edge-1:8080
+php artisan murmur:forget-metrics
+```
+
+`murmur:status` shows the snapshot age, open connections, topics, events sent, errors, and memory per node, followed by a totals row. Use `--json` for the snapshots and totals as JSON, and `--node` to limit both to one node. The command exits with status 1 if the store is disabled or no fresh snapshots match. `murmur:forget-metrics` removes the named node or clears all stale snapshots when no name is supplied. Use it to remove stale database rows or Redis hash fields that remain after their snapshots have aged out.
+
+### Register a custom store
+
+Call `Murmur::extendMetrics()` from a Laravel service provider's `boot()` method. The factory receives the application and returns an implementation of `Arttecs\Murmur\Contracts\MetricsStore`. The manager resolves it once per process on demand. This example registers a store backed by Laravel's `redis` cache with its own prefix. Set `MURMUR_METRICS_STORE=reports` to use it.
+
+```php
+use Arttecs\Murmur\Contracts\MetricsStore;
+use Arttecs\Murmur\Facades\Murmur;
+use Arttecs\Murmur\Metrics\CacheMetricsStore;
+use Illuminate\Contracts\Cache\Factory as CacheFactory;
+use Illuminate\Contracts\Foundation\Application;
+
+Murmur::extendMetrics('reports', fn (Application $app): MetricsStore => new CacheMetricsStore(
+    $app->make(CacheFactory::class)->store('redis'),
+    'reports:murmur:',
+    (int) ceil((float) config('murmur.metrics.ttl')),
+));
+```
+
+To use a different backend, implement `put()` to replace one node's snapshot, `all()` to return the snapshots keyed by node, and `forget()` to remove a node. Custom names use lowercase ASCII letters, digits, underscores, or hyphens. Murmur reserves `database`, `redis`, and `cache`.
+
+### Metric names
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
