@@ -24,7 +24,11 @@ murmur.private('orders.42')
 
 `channel('news')` subscribes to `news` and `private('orders.42')` subscribes to `private-orders.42`. Each callback receives the event payload for its channel.
 
-Joining or leaving a channel rebuilds the shared connection with the current topics and replay cursor. A new channel starts at the server's attach point, skipping earlier events for that topic. The client keeps sending the topic as `fresh` until the server acknowledges it with `murmur.attached`. After attachment, the channel participates in ordinary replay and can receive retained events from an outage. Each retry closes the old EventSource and opens a new one with the latest cursor, credentials, and pending joins.
+Joining or leaving a channel rebuilds the shared connection with the current topics and replay cursor. On attempts with a cursor, the client sends a pending topic as `fresh` until the server acknowledges it with `murmur.attached`. A fresh topic starts strictly after the sampled log tail. After attachment, the topic participates in ordinary replay and can receive retained events from an outage. Pending joins are tracked by wire topic, so leaving one alias preserves attachment while another alias remains joined.
+
+A cursorless connection skips stored history and can deliver events published during the tail sample, before the attach marker. Wait for `attached` before fetching initial state. Matching events published after you receive the marker are delivered while the subscription remains active, subject to sender exclusion and any reported history loss.
+
+Each retry opens a new EventSource with the current cursor, credentials, and pending joins. If the stream ends before the attach marker, the retry uses the client's backoff and the unacknowledged joins remain pending. A numbered attach marker replaces the saved cursor even when its ID is lower. After attachment, numbered heartbeats can advance the cursor for idle clients and stay out of application callbacks and event counts.
 
 The default namespace is `App.Events`. The client resolves `OrderShipped` to `App\Events\OrderShipped`, converting namespace dots to backslashes. Set `namespace` to use a different namespace. Prefix an event name with a dot to use the literal name. For example, `.updated` listens for `updated`.
 
@@ -32,13 +36,14 @@ Laravel Echo converts dots in relative class names such as `Sub.Event` to namesp
 
 Use `murmur.on(event, callback)` to listen for these client events. It returns a function that removes the listener.
 
-- `connected` fires when the channel connection opens.
-- `disconnected` fires when a transport or authorization attempt fails and is eligible for retry, or when an open connection drops.
+- `connected` fires when the shared EventSource opens.
+- `attached` fires each time the server confirms attachment, after tail sampling and any replay on that connection. Register the listener before joining channels if you need the first notification.
+- `disconnected` fires when a shared transport or authorization attempt fails and enters backoff. Leaving the last channel, having every topic denied, exceeding the URL budget, and closing the client do not fire this event.
 - `unauthorized` fires as `(status, channelName)` for each denied private channel. The name is the one passed to `murmur.private()`. Register `murmur.private(name).error(callback)` to receive the numeric status for just that channel.
 - `error` receives an `Error` if the shared subscription URL exceeds the request budget or the server announces an unexpected protocol. The first protocol mismatch is reported once and the client continues.
 - `gap` fires when the server reports a gap in replay. Refresh any state that depends on the missing events.
 
-The first retry uses `retryMs`. For consecutive failures after the first, the base delay doubles up to `maxRetryMs`, then random jitter of up to `retryJitter` times the base delay is added. A successful connection resets the retry sequence.
+The first retry uses `retryMs` as its base delay. For consecutive failures after the first, the base delay doubles up to `maxRetryMs`, then random jitter of up to `retryJitter` times the base delay is added. Opening the EventSource resets the retry sequence.
 
 `news.stopListening('.updated')` removes the callbacks for that event. `murmur.leave('orders.42')` leaves channels joined under that name. `murmur.close()` closes the channel connection and all streams created by the client, and cancels their retries.
 
@@ -98,11 +103,13 @@ const murmur = new Murmur({
 })
 ```
 
-A successful request returns `{ token, expires_at }`, with expiry in Unix seconds. The client caches credentials by private channel while their remaining lifetime exceeds `tokenRefreshMarginSeconds`. It releases a channel's cached credentials on leave and drops every token sent on a connection that fails before opening.
+A successful request returns `{ token, expires_at }`, with expiry in Unix seconds. The client caches credentials by private channel and normally refreshes them when their remaining lifetime reaches `tokenRefreshMarginSeconds` or less on a new attempt. Leaving a topic drops its cached credentials.
 
-A built-in 4xx response leaves only that channel out of the shared connection. Call `murmur.reauthorize('orders.42')` to retry a denied channel, call `murmur.reauthorize()` to retry all denied channels, or leave and rejoin the channel. Network errors, 5xx responses, and invalid token responses fail the attempt and retry with backoff.
+On an SSE failure before the connection opens, the client drops the credentials sent on that attempt if the source exposes an HTTP 401 or 403. It does this at most once between successful opens. Native EventSource does not expose HTTP status. In that case the client reuses still-valid credentials on the first retry and can refresh them after the second opaque pre-open failure with credentials. This bounds automatic invalidation during a prolonged outage. If the endpoint rejects the replacement credentials too, the client uses the normal expiry margin to decide when to renew them.
 
-To control how tokens are requested, pass an `authorizer(channels, signal)` function. Whenever an eligible private topic needs credentials, the function receives all eligible private wire topic names, including those with cached credentials. A rejection with a numeric 4xx `status` denies only the topics without valid cached credentials. Other rejections retry with backoff. The custom authorizer takes over requests from `authEndpoint`, `auth`, and the client's `fetch` option.
+Authorization responses with status 408, 425, or 429 retry with backoff, as do 5xx responses, network errors, and invalid token responses. A valid `Retry-After` header in whole seconds or HTTP-date form sets a minimum delay for the failed attempt, capped at `maxRetryMs`. Other 4xx responses, including 401, 403, 419, and 422, leave the affected channel out of the shared connection. Call `murmur.reauthorize('orders.42')` to retry a denied channel, call `murmur.reauthorize()` to retry all denied channels, or leave and rejoin the channel.
+
+To control how tokens are requested, pass an `authorizer(channels, signal)` function. Whenever an eligible private topic needs credentials, the function receives all eligible private wire topic names, including those with cached credentials. A rejection with a numeric 4xx `status`, except for 408, 425, and 429, denies only the topics without valid cached credentials. The client can keep unexpired batch credentials on a rejection even if it was attempting to refresh them. Other rejections retry with backoff. Reject with the HTTP `Response` to pass its `Retry-After` header through to the retry logic. The custom authorizer takes over requests from `authEndpoint`, `auth`, and the client's `fetch` option.
 
 Resolve with one token result or an array of results. Use `{ token, expires_at, channels }` to declare the full wire topic names covered by each token. When `channels` is omitted, the client treats the token as covering the whole batch. Multiple tokens with omitted coverage can together authorize the batch and are cached as a group. To grant only some topics, resolve with tokens whose `channels` list only the topics they cover. Every uncovered topic receives a 403 denial and is left out of the SSE request. An empty result array denies the entire batch.
 
@@ -117,7 +124,7 @@ const murmur = new Murmur({
       signal,
     })
     if (!response.ok) {
-      throw Object.assign(new Error('Authorization failed'), { status: response.status })
+      throw response
     }
     return response.json()
   },
@@ -153,7 +160,7 @@ Pass `StreamOptions` as the optional second argument to `murmur.stream(url, opti
 | `retryJitter` | `number` | Client's `retryJitter` | Maximum jitter fraction from the second consecutive failure onward. |
 | `maxFailures` | `number` | Client's `streamMaxFailures` | Consecutive failure limit for this stream. |
 
-The first connection uses the URL as supplied. On reconnect, the client updates only `lastEventId` from the latest numbered attach marker or listened-to event. Until it receives an ID, it reconnects with the original URL and its initial cursor.
+The first connection uses the URL as supplied. On reconnect, the client updates only `lastEventId`, using IDs from attach markers, listened-to events, and newer heartbeats after attachment. Until it receives a cursor update, it reconnects with the original URL and its initial cursor.
 
 Call `stream.close()` to stop the stream and cancel any pending retry.
 
@@ -169,10 +176,10 @@ Call `stream.close()` to stop the stream and cancel any pending retry.
 | `events` | `number` | Valid data envelopes received on a listened-to shared event name and passed to channel dispatch, once per received event. |
 | `gaps` | `number` | `murmur.gap` signals received on the shared connection. |
 | `tokenRequests` | `number` | Authorization attempts, including custom authorizer calls and attempts cancelled before completing. Reusing a cached token skips the request. |
-| `tokenFailures` | `number` | Authorization attempts that failed before cancellation, including invalid token responses. |
+| `tokenFailures` | `number` | Authorization attempts that failed before cancellation, including invalid token responses. An accepted partial grant is a successful request. |
 | `channels` | `number` | Currently joined channels. |
 | `streams` | `number` | Independent streams that have started and have yet to close, including streams waiting to retry. |
-| `lastEventId` | `string \| undefined` | Shared replay cursor. It tracks IDs from attach markers and listened-to data events. |
+| `lastEventId` | `string \| undefined` | Shared replay cursor. It tracks IDs from attach markers, listened-to data events, and newer heartbeats after attachment. |
 | `connectionId` | `string \| undefined` | The most recently announced ID of the shared connection. |
 | `lastEventAt` | `number \| undefined` | `Date.now()` when the last valid shared data event was received. |
 
@@ -223,7 +230,7 @@ echo.private('orders.1')
 | `streamMaxFailures` | Sets the failure limit for independent streams opened on the underlying client. |
 | `fetch`, `EventSource` | Override the Fetch implementation for token requests and the EventSource constructor for SSE. |
 
-The built-in token request uses Murmur's JSON and CSRF cookie conventions. Echo also resolves `X-CSRF-TOKEN` from the first non-empty value among `window.Laravel.csrfToken`, the `csrfToken` option, and the `content` attribute of `<meta name="csrf-token">`. That value overrides a supplied `X-CSRF-TOKEN` header. A custom `authorizer` handles its own headers. Echo 2.6.3's TypeScript declarations specify static authorization headers. To pass a header provider or set `auth.credentials`, build a `MurmurConnectorOptions` value and cast the Echo options. [Authorization options](#authorization)
+The built-in token request uses Murmur's JSON and CSRF cookie conventions. For each built-in token request, the connector resolves `X-CSRF-TOKEN` from the first non-empty value among `window.Laravel.csrfToken`, the `csrfToken` option, and the `content` attribute of `<meta name="csrf-token">`. That value overrides a supplied `X-CSRF-TOKEN` header. After a 419, refresh the application's CSRF token and call `echo.connector.murmur.reauthorize(name)` with the private channel name. A custom `authorizer` handles its own headers. Echo 2.6.3's TypeScript declarations specify static authorization headers. To pass a header provider or set `auth.credentials`, build a `MurmurConnectorOptions` value and cast the Echo options. [Authorization options](#authorization)
 
 ```ts
 import Echo, { type EchoOptions } from 'laravel-echo'
@@ -242,12 +249,21 @@ Laravel Echo 2.6.3's axios, Vue, jQuery, and Turbo interceptors send the announc
 Public channels, private channels, and Laravel broadcast notifications share one SSE connection. Event names follow Echo's formatter. For example, `Sub.OrderShipped` resolves to `App\Events\Sub\OrderShipped`, while `.order.shipped` listens for the literal `order.shipped`. An initial backslash also marks a literal event name.
 
 - `stopListening(event, callback)` removes one callback. Omit the callback to remove all listeners for the event. `stopListeningForNotification(callback)` removes one notification callback.
-- Register `subscribed(callback)` before attachment to receive the initial notification. It fires on the first `murmur.attached` that includes the channel and on successful attachment after a connection failure. Joining or leaving another channel preserves the existing channels' subscription state. The marker is the closest equivalent to Pusher's per-channel `subscription_succeeded` event because it confirms server-side readiness after replay.
-- On a private channel, `error(callback)` receives that channel's numeric authorization denial status. The other authorized and public channels continue to receive events. Retry a denied channel through `echo.connector.murmur.reauthorize(name)` or by leaving and rejoining it.
+- Register `subscribed(callback)` before attachment to receive the initial notification. It fires on the first `murmur.attached` that includes the channel and on successful attachment after a connection failure. Joining or leaving another channel preserves the existing channels' subscription state. Wait for this callback before fetching initial state.
+- On a private channel, `error(callback)` receives that channel's numeric authorization denial status. Other authorized and public channels remain eligible for the shared connection. Retry a denied channel through `echo.connector.murmur.reauthorize(name)` or by leaving and rejoining it.
 - `leave('orders.1')` leaves both public and private variants. `leaveChannel('private-orders.1')` leaves just the private one. The `private-` prefix identifies an authorized topic.
-- `connectionStatus()` reports `disconnected`, `connecting`, `connected`, or `reconnecting`. `onConnectionChange(callback)` on the connector returns an unsubscribe function.
 - `echo.connector.murmur` exposes the underlying client for statistics, streams, and replay gaps. In TypeScript, read `echo.connector` into an `unknown` variable and narrow it with `instanceof MurmurConnector` to access the typed client.
 - `echo.disconnect()` closes the shared connection, cancels retries, and closes independent streams. Call `echo.connect()` to create a fresh connector, then rejoin the channels you need.
+
+`connectionStatus()` reports the shared connection's state. `onConnectionChange(callback)` on the connector returns an unsubscribe function.
+
+| Status | Meaning |
+| --- | --- |
+| `disconnected` | No shared connection is needed, the client is closed, or every joined topic is unauthorized. |
+| `connecting` | The client is preparing or opening the stream after a subscription change or explicit reauthorization. |
+| `connected` | The shared EventSource is open. Attachment is reported through `subscribed(callback)`. |
+| `reconnecting` | An attempt failed or the connection dropped, and the client is retrying with backoff. |
+| `failed` | The shared subscription URL exceeds the request budget. Change the subscription to try again. |
 
 Murmur's Echo connector has these limitations.
 
