@@ -12,6 +12,8 @@ type Attempt = {
   url: URL
   /** The status returned by the server. */
   status?: number
+  /** The cursor sent by the server's attach marker. */
+  attached?: string
   /** Aborts the HTTP response without affecting other SSE requests. */
   interrupt: () => void
 }
@@ -74,11 +76,13 @@ function client(options: Partial<MurmurOptions> = {}, attempts: Attempt[] = []):
   class ObservedEventSource extends EventSource {
     /** Opens the real EventSource and records its HTTP requests. */
     public constructor(url: string | URL, init?: EventSourceInit) {
+      let current: Attempt | undefined
       super(url, {
         ...init,
         fetch: async (url, request) => {
           const controller = new AbortController()
           const attempt: Attempt = { url: new URL(url), interrupt: () => controller.abort(new Error('SSE connection interrupted')) }
+          current = attempt
           attempts.push(attempt)
           const signal = request?.signal
             ? AbortSignal.any([request.signal, controller.signal])
@@ -87,6 +91,11 @@ function client(options: Partial<MurmurOptions> = {}, attempts: Attempt[] = []):
           attempt.status = response.status
           return response
         },
+      })
+      this.addEventListener('murmur.attached', (event: MessageEvent) => {
+        if (current) {
+          current.attached = event.lastEventId
+        }
       })
     }
   }
@@ -362,10 +371,12 @@ describe('Murmur client and PHP server', () => {
 
   it('excludes the sender by its announced ID during live delivery and replay', async () => {
     const attempts: Attempt[] = []
-    const sender = client({ retryMs: 100 }, attempts)
+    const sender = client({ retryMs: 250 }, attempts)
     const recipient = client()
+    const disconnected = vi.fn()
     const senderUpdates = vi.fn()
     const recipientUpdates = vi.fn()
+    sender.on('disconnected', disconnected)
     sender.channel('exclusion').listen('.updated', senderUpdates)
     recipient.channel('exclusion').listen('.updated', recipientUpdates)
     await vi.waitFor(() => {
@@ -380,7 +391,9 @@ describe('Murmur client and PHP server', () => {
     await vi.waitFor(() => expect(senderUpdates).toHaveBeenCalledExactlyOnceWith('first'), waitOptions)
 
     attempts[0]?.interrupt()
+    await vi.waitFor(() => expect(disconnected).toHaveBeenCalledExactlyOnceWith(), waitOptions)
     await publish(murmur.address, 'exclusion', 'updated', 'excluded during outage', id)
+    expect(attempts).toHaveLength(1)
     await publish(murmur.address, 'exclusion', 'updated', 'second')
     await vi.waitFor(() => {
       expect(senderUpdates).toHaveBeenLastCalledWith('second')
@@ -394,6 +407,23 @@ describe('Murmur client and PHP server', () => {
     expect(recipientUpdates.mock.calls).toEqual([
       ['excluded live'], ['first'], ['excluded during outage'], ['second'],
     ])
+  })
+
+  it('resumes a stream at the numbered marker when its requested cursor was ahead of the log', async () => {
+    const topic = 'private-cursor-correction'
+    const tail = await publish(murmur.address, topic, 'entry', 'stored before the join')
+    const ahead = '999999999999999999-0'
+    const received = vi.fn()
+    const attempts: Attempt[] = []
+    client({ retryMs: 25 }, attempts).stream(streamUrl(topic, ahead, 60)).on('entry', received)
+    await vi.waitFor(() => expect(attempts[0]?.attached).toBe(tail), waitOptions)
+    expect(attempts[0]?.url.searchParams.get('lastEventId')).toBe(ahead)
+    expect(received).not.toHaveBeenCalled()
+
+    attempts[0]?.interrupt()
+    await vi.waitFor(() => expect(attempts[1]?.attached).toBe(tail), waitOptions)
+    expect(attempts[1]?.url.searchParams.get('lastEventId')).toBe(tail)
+    expect(received).not.toHaveBeenCalled()
   })
 
   it('reports a gap when the stream cursor predates the log', async () => {

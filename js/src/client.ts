@@ -104,6 +104,8 @@ type ClientEventArgs = {
   gap: []
   /** Reports a shared connection that opened. */
   connected: []
+  /** Reports that the server finished attaching the shared connection. */
+  attached: []
   /** Reports a failed or dropped shared connection. */
   disconnected: []
   /** Reports a channel denied authorization by the application. */
@@ -124,7 +126,13 @@ type Subscription = {
   channel: Channel
   /** The callbacks registered by wire event name. */
   listeners: ChannelListeners
-  /** Whether this join is still waiting for its first attach marker. */
+  /** The join state shared by every alias of this topic. */
+  topic: JoinedTopic
+}
+
+/** The attachment state of a single wire topic. */
+type JoinedTopic = {
+  /** Whether this topic is still waiting for its first attach marker. */
   pending: boolean
 }
 
@@ -181,12 +189,16 @@ export class Murmur {
   /** The joined channels and their callbacks, indexed by subscription name and kind. */
   protected readonly channels = new Map<string, Subscription>()
 
+  /** The wire topics with at least one joined channel. */
+  protected readonly topics = new Map<string, JoinedTopic>()
+
   /** The callbacks registered for client events. */
   protected readonly listeners: {
     [Event in ClientEvent]: Set<(...args: ClientEventArgs[Event]) => void>
   } = {
     gap: new Set(),
     connected: new Set(),
+    attached: new Set(),
     disconnected: new Set(),
     unauthorized: new Set(),
     error: new Set(),
@@ -349,6 +361,7 @@ export class Murmur {
     this.channels.delete(key)
     const topic = subscription.channel.name
     if (![...this.channels.values()].some(({ channel }) => channel.name === topic)) {
+      this.topics.delete(topic)
       this.deniedTopics.delete(topic)
       const group = this.cachedTokens.get(topic)
       this.cachedTokens.delete(topic)
@@ -429,6 +442,7 @@ export class Murmur {
       channel.detach()
     }
     this.channels.clear()
+    this.topics.clear()
     this.attemptSubscriptions = []
     for (const listeners of Object.values(this.listeners)) {
       listeners.clear()
@@ -450,7 +464,9 @@ export class Murmur {
     const listeners: ChannelListeners = new Map()
     const channel = new Channel(topic, this.options.namespace ?? 'App.Events', listeners, () => this.updateEvents())
     if (!this.closed) {
-      this.channels.set(key, { channel, listeners, pending: true })
+      const joinedTopic = this.topics.get(topic) ?? { pending: true }
+      this.topics.set(topic, joinedTopic)
+      this.channels.set(key, { channel, listeners, topic: joinedTopic })
       this.scheduleConnection()
     }
     return channel
@@ -492,7 +508,7 @@ export class Murmur {
 
   /** Builds the stream URL for the current subscriptions. */
   protected async connectionUrl(signal: AbortSignal, lastEventId: string | undefined): Promise<string | undefined> {
-    const requested = [...new Set(Array.from(this.channels.values(), ({ channel }) => channel.name))]
+    const requested = [...this.topics.keys()]
     const privateTopics = requested.filter(topic => topic.startsWith(privatePrefix))
     await this.authorize(privateTopics.filter(topic => !this.deniedTopics.has(topic)), signal)
     signal.throwIfAborted()
@@ -526,8 +542,7 @@ export class Murmur {
     const subscriptions = [...this.channels.values()].filter(({ channel }) => !this.deniedTopics.has(channel.name))
     url.searchParams.delete('fresh')
     if (lastEventId !== undefined) {
-      const attached = new Set(subscriptions.filter(({ pending }) => !pending).map(({ channel }) => channel.name))
-      const fresh = topics.filter(topic => !attached.has(topic))
+      const fresh = topics.filter(topic => this.topics.get(topic)?.pending)
       if (fresh.length > 0) {
         url.searchParams.set('fresh', fresh.join(','))
       }
@@ -752,12 +767,13 @@ export class Murmur {
   protected receiveAttachment(): void {
     const attached = this.attemptSubscriptions
     this.attemptSubscriptions = []
-    for (const subscription of attached) {
-      subscription.pending = false
+    for (const { topic } of attached) {
+      topic.pending = false
     }
     for (const { channel } of attached) {
       channel.attachmentConfirmed()
     }
+    this.emit('attached')
   }
 
   /** Stores a valid server-issued connection ID and reports an unexpected protocol. */
@@ -772,13 +788,17 @@ export class Murmur {
       return
     }
 
-    if ('connection_id' in announcement && typeof announcement.connection_id === 'string' &&
-      announcement.connection_id.length === 32 && !/[^a-f0-9]/.test(announcement.connection_id)) {
-      this.connectionId = announcement.connection_id
+    if (!('connection_id' in announcement) || typeof announcement.connection_id !== 'string' ||
+      announcement.connection_id.length !== 32 || /[^a-f0-9]/.test(announcement.connection_id) ||
+      !('protocol' in announcement) ||
+      (typeof announcement.protocol !== 'string' && !Number.isFinite(announcement.protocol))) {
+      return
     }
-    if ('protocol' in announcement && announcement.protocol !== 1 && !this.protocolMismatchReported) {
+
+    this.connectionId = announcement.connection_id
+    if (announcement.protocol !== 1 && !this.protocolMismatchReported) {
       this.protocolMismatchReported = true
-      this.emit('error', new Error(`Murmur server announced protocol ${String(announcement.protocol)}; expected 1.`))
+      this.emit('error', new Error(`Murmur server announced protocol ${JSON.stringify(announcement.protocol)}; expected 1.`))
     }
   }
 

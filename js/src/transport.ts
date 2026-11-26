@@ -4,6 +4,10 @@ type Connection = {
   source: EventSource
   /** Whether the source has opened. */
   opened: boolean
+  /** Whether the server has acknowledged attachment. */
+  attached: boolean
+  /** The valid cursor sent in the request, if present. */
+  requestedCursor?: string
   /** Handles a successful connection. */
   open: (event: Event) => void
   /** Handles a failed connection. */
@@ -53,6 +57,15 @@ function isMessage(event: Event): event is Event & { data: string; lastEventId?:
 /** Matches the protocol's complete event ID format. */
 const eventIdPattern = /^[0-9]{1,18}-[0-9]{1,18}(?![\s\S])/
 
+/** Reads a valid request cursor from an absolute or relative URL. */
+function readRequestedCursor(url: string): string | undefined {
+  const fragment = url.indexOf('#')
+  const address = fragment === -1 ? url : url.slice(0, fragment)
+  const query = address.indexOf('?')
+  const cursor = query === -1 ? null : new URLSearchParams(address.slice(query + 1)).get('lastEventId')
+  return cursor !== null && eventIdPattern.test(cursor) ? cursor : undefined
+}
+
 /** Compares a candidate ID with the cursor without losing decimal precision. */
 function isLaterEventId(candidate: string, cursor: string): boolean {
   const candidateSeparator = candidate.indexOf('-')
@@ -83,7 +96,7 @@ export class Transport {
   protected lastEventId?: string
 
   /** The wire events that the connection should listen for. */
-  protected events = new Set(['murmur.gap', 'murmur.connected', 'murmur.attached'])
+  protected events = new Set(['murmur.gap', 'murmur.connected', 'murmur.attached', 'murmur.heartbeat'])
 
   /** Creates a transport that prepares a fresh URL for every attempt. */
   public constructor(
@@ -122,6 +135,7 @@ export class Transport {
     events.add('murmur.gap')
     events.add('murmur.connected')
     events.add('murmur.attached')
+    events.add('murmur.heartbeat')
     const connection = this.connection
     if (connection) {
       const { source, message } = connection
@@ -196,6 +210,8 @@ export class Transport {
     const connection: Connection = {
       source,
       opened: false,
+      attached: false,
+      requestedCursor: this.lastEventId ?? readRequestedCursor(url),
       open: event => {
         if (this.connection === connection && !isMessage(event)) {
           connection.opened = true
@@ -216,7 +232,7 @@ export class Transport {
       },
       message: event => {
         if (this.connection === connection && isMessage(event)) {
-          this.receive(event.type, event.data, event.lastEventId)
+          this.receive(connection, event.type, event.data, event.lastEventId)
         }
       },
     }
@@ -253,14 +269,20 @@ export class Transport {
   }
 
   /** Captures the resume cursor and dispatches named stream data. */
-  protected receive(event: string, data: string, lastEventId: unknown): void {
-    if (event !== 'murmur.gap' && event !== 'murmur.connected' &&
-      typeof lastEventId === 'string' && eventIdPattern.test(lastEventId)) {
-      if (event !== 'murmur.attached' && this.lastEventId !== undefined &&
-        !isLaterEventId(lastEventId, this.lastEventId)) {
-        return
+  protected receive(connection: Connection, event: string, data: string, lastEventId: unknown): void {
+    const id = typeof lastEventId === 'string' && eventIdPattern.test(lastEventId) ? lastEventId : undefined
+    if (event === 'murmur.heartbeat') {
+      const cursor = this.lastEventId ?? connection.requestedCursor
+      if (connection.attached && id !== undefined && (cursor === undefined || isLaterEventId(id, cursor))) {
+        this.lastEventId = id
       }
-      this.lastEventId = lastEventId
+      return
+    }
+    if (event === 'murmur.attached') {
+      connection.attached = true
+    }
+    if (id !== undefined && event !== 'murmur.gap' && event !== 'murmur.connected') {
+      this.lastEventId = id
     }
     this.onMessage(event, data)
   }

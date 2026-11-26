@@ -467,6 +467,27 @@ it('bounds concurrent requests and aborts every outstanding request on supersede
   expect(new URL(source.url).searchParams.get('token')).toBe('current-0,current-1,current-2,current-3,current-4')
 })
 
+it('aborts sibling authorization requests when one channel returns a 5xx', async () => {
+  const { fetch, requests } = pendingAuthFetch()
+  const m = client({ fetch, retryMs: 10, retryJitter: 0 })
+  for (const name of ['a', 'b', 'c', 'd', 'e']) {
+    m.private(name)
+  }
+  await flush()
+  expect(requests).toHaveLength(4)
+
+  requests[1]?.resolve(new Response(null, { status: 503 }))
+  await flush()
+  expect(requests).toHaveLength(4)
+  expect(requests.every(request => request.signal?.aborted)).toBe(true)
+  expect(m.stats()).toMatchObject({ tokenRequests: 4, tokenFailures: 1, disconnections: 1 })
+
+  requests[0]?.resolve(Response.json({ token: 'obsolete', expires_at: nowSeconds() + 900 }))
+  await wait(10)
+  expect(requests).toHaveLength(8)
+  expect(FakeEventSource.instances).toHaveLength(0)
+})
+
 it('replaces the pending retry when a channel is joined', async () => {
   const m = client({ retryMs: 10 })
   m.channel('news')
@@ -1415,6 +1436,40 @@ it('stores the announced connection ID and reuses it for SSE and Laravel authori
   expect(new URL(independent.url).searchParams.has('connection')).toBe(false)
 })
 
+it.each([
+  '{',
+  'null',
+  '[]',
+  '42',
+  '{"connection_id":42,"protocol":2}',
+  '{"connection_id":"0123456789abcdef0123456789abcdef","protocol":true}',
+  '{"connection_id":"0123456789abcdef0123456789abcdef","protocol":null}',
+  '{"connection_id":"0123456789abcdef0123456789abcdef"}',
+  '{"connection_id":"ABCDEF0123456789ABCDEF0123456789","protocol":2}',
+  '{"connection_id":"0123456789abcdef0123456789abcdef0","protocol":2}',
+  '{"connection_id":"0123456789abcdef/../../aaaaaaaa","protocol":2}',
+])('ignores an invalid connection announcement (%s)', async data => {
+  const m = client()
+  const error = vi.fn()
+  m.on('error', error)
+  m.channel('news')
+  await flush()
+  const source = FakeEventSource.instances[0]
+  assert.isDefined(source)
+  source.dispatchEvent(new Event('open'))
+  const before = m.stats()
+
+  source.dispatchEvent(new MessageEvent('murmur.connected', { data, lastEventId: '9-0' }))
+  expect(m.stats()).toEqual(before)
+  expect(m.socketId()).toBeUndefined()
+  expect(error).not.toHaveBeenCalled()
+
+  const issued = 'fedcba9876543210fedcba9876543210'
+  source.emit('murmur.connected', { connection_id: issued, protocol: '1' }, '')
+  expect(m.socketId()).toBe(issued)
+  expect(error.mock.calls[0]?.[0]?.message).toBe('Murmur server announced protocol "1"; expected 1.')
+})
+
 it('reports a protocol mismatch once and continues delivering on repeated connections', async () => {
   const m = client({ retryMs: 10 })
   const error = vi.fn()
@@ -1536,7 +1591,7 @@ it('does not let an old attach marker acknowledge a replacement join', async () 
   expect(new URL(next.url).searchParams.get('lastEventId')).toBe('10-0')
 })
 
-it('handles a lower attach cursor before filtering older or duplicate data IDs', async () => {
+it('accepts a lower numbered attach cursor without dispatching the marker as data', async () => {
   const m = client({ retryMs: 10 })
   const controls = vi.fn()
   const updated = vi.fn()
@@ -1555,9 +1610,149 @@ it('handles a lower attach cursor before filtering older or duplicate data IDs',
   expect(controls).not.toHaveBeenCalled()
 
   retry.emit('updated', { topic: 'news', data: 'new' }, '999999999999999998-10')
-  retry.emit('updated', { topic: 'news', data: 'duplicate' }, '999999999999999998-10')
-  retry.emit('updated', { topic: 'news', data: 'old' }, '999999999999999998-8')
-  retry.emit('murmur.attached', {}, '')
   expect(updated.mock.calls).toEqual([['before correction'], ['new']])
   expect(m.stats()).toMatchObject({ lastEventId: '999999999999999998-10', events: 2 })
+})
+
+it('delivers lower IDs after reconnecting with a cursor ahead of an empty log', async () => {
+  const m = client({ retryMs: 10 })
+  const updated = vi.fn()
+  m.channel('news').listen('.updated', updated)
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  first.emit('murmur.attached', {}, '2000-5')
+  first.fail()
+
+  await wait(10)
+  const retry = FakeEventSource.instances[1]
+  assert.isDefined(retry)
+  expect(new URL(retry.url).searchParams.get('lastEventId')).toBe('2000-5')
+  retry.emit('murmur.attached', {}, '')
+  expect(m.stats().lastEventId).toBe('2000-5')
+  retry.emit('updated', { topic: 'news', data: 1 }, '1999-0')
+  retry.emit('updated', { topic: 'news', data: 2 }, '1999-1')
+  expect(updated.mock.calls).toEqual([[1], [2]])
+  expect(m.stats()).toMatchObject({ lastEventId: '1999-1', events: 2 })
+})
+
+it('keeps a wire topic attached while any alias remains joined', async () => {
+  const m = client({ retryMs: 10, fetch: authFetch({ token: 'jwt', expires_at: nowSeconds() + 900 }) })
+  m.private('x')
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  first.emit('murmur.attached', {}, '10-0')
+
+  m.channel('private-x')
+  await flush()
+  const alias = FakeEventSource.instances[1]
+  assert.isDefined(alias)
+  expect(new URL(alias.url).searchParams.has('fresh')).toBe(false)
+  alias.fail()
+  m.leave('x')
+  await flush()
+
+  const remaining = FakeEventSource.instances[2]
+  assert.isDefined(remaining)
+  expect(topicsOf(remaining)).toEqual(['private-x'])
+  expect(new URL(remaining.url).searchParams.has('fresh')).toBe(false)
+})
+
+it('emits attached after opening and continues to report each attach marker', async () => {
+  const m = client({ retryMs: 10 })
+  const connected = vi.fn()
+  const attached = vi.fn(() => m.stats().lastEventId)
+  m.on('connected', connected)
+  const unsubscribe = m.on('attached', attached)
+  m.channel('news')
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  first.dispatchEvent(new Event('open'))
+  first.emit('murmur.connected', { connection_id: '0123456789abcdef0123456789abcdef', protocol: 1 }, '')
+  expect(connected).toHaveBeenCalledExactlyOnceWith()
+  expect(attached).not.toHaveBeenCalled()
+  first.emit('murmur.attached', {}, '5-0')
+  expect(attached).toHaveBeenCalledExactlyOnceWith()
+  expect(attached).toHaveReturnedWith('5-0')
+
+  m.channel('alerts')
+  await flush()
+  const replacement = FakeEventSource.instances[1]
+  assert.isDefined(replacement)
+  replacement.dispatchEvent(new Event('open'))
+  replacement.emit('murmur.attached', {}, '6-0')
+  expect(attached).toHaveBeenCalledTimes(2)
+  unsubscribe()
+  replacement.fail()
+  await wait(10)
+  FakeEventSource.instances[2]?.emit('murmur.attached', {}, '7-0')
+  expect(attached).toHaveBeenCalledTimes(2)
+})
+
+it('uses a newer attached heartbeat as the shared cursor without counting or dispatching it', async () => {
+  const m = client({ retryMs: 10 })
+  const heartbeat = vi.fn()
+  const attached = vi.fn()
+  m.on('attached', attached)
+  m.channel('news').listen('.murmur.heartbeat', heartbeat)
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  first.dispatchEvent(new Event('open'))
+  first.emit('murmur.heartbeat', { topic: 'news', data: 'control' }, '')
+  first.emit('murmur.heartbeat', { topic: 'news', data: 'control' }, '999999999999999999-99')
+  expect(m.stats()).toMatchObject({ lastEventId: undefined, events: 0 })
+  expect(attached).not.toHaveBeenCalled()
+
+  first.emit('murmur.attached', {}, '999999999999999998-9')
+  first.emit('murmur.heartbeat', {}, '999999999999999998-10')
+  expect(m.stats().lastEventId).toBe('999999999999999998-10')
+  first.emit('murmur.heartbeat', {}, '999999999999999998-09')
+  first.emit('murmur.heartbeat', {}, '999999999999999998-010')
+  first.emit('murmur.heartbeat', {}, '9999999999999999999-10')
+  first.emit('murmur.heartbeat', {}, '')
+  expect(m.stats()).toMatchObject({ lastEventId: '999999999999999998-10', events: 0, lastEventAt: undefined })
+  expect(heartbeat).not.toHaveBeenCalled()
+  expect(attached).toHaveBeenCalledExactlyOnceWith()
+
+  first.fail()
+  await wait(10)
+  const next = FakeEventSource.instances[1]
+  assert.isDefined(next)
+  expect(new URL(next.url).searchParams.get('lastEventId')).toBe('999999999999999998-10')
+})
+
+it('retries an early end with backoff and keeps the unacknowledged topics fresh', async () => {
+  const m = client({ retryMs: 10, retryJitter: 0 })
+  const attached = vi.fn()
+  m.on('attached', attached)
+  m.channel('news')
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  first.dispatchEvent(new Event('open'))
+  first.emit('murmur.attached', {}, '10-0')
+  m.channel('alerts')
+  await flush()
+
+  for (const index of [1, 2]) {
+    const source = FakeEventSource.instances[index]
+    assert.isDefined(source)
+    source.dispatchEvent(new Event('open'))
+    source.emit('murmur.connected', { connection_id: '0123456789abcdef0123456789abcdef', protocol: 1 }, '')
+    source.emit('murmur.heartbeat', {}, '11-0')
+    expect(new URL(source.url).searchParams.get('fresh')).toBe('alerts')
+    source.fail()
+    await wait(9)
+    expect(FakeEventSource.instances).toHaveLength(index + 1)
+    await wait(1)
+  }
+
+  const recovered = FakeEventSource.instances[3]
+  assert.isDefined(recovered)
+  expect(new URL(recovered.url).searchParams.has('fresh')).toBe(true)
+  expect(new URL(recovered.url).searchParams.get('lastEventId')).toBe('10-0')
+  expect(attached).toHaveBeenCalledTimes(1)
 })
