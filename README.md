@@ -79,7 +79,7 @@ Use a distinct topic for each stream run. Reusing a topic can replay the previou
 
 Use `@arttecs/murmur` to subscribe to channels and consume streams in the browser. See the [JavaScript client README](js/README.md) for installation and usage.
 
-The SSE server sends `retry:`, `murmur.connected`, any initial `murmur.gap`, replayed events, and then `murmur.attached` before live events. The attach marker has `data: {}` and carries the sampled log tail as its ID when one is known. A numbered marker updates the cursor, even when it corrects a cursor ahead of the log.
+The SSE server sends `retry:` and `murmur.connected` before any events. Replay and some live events on a cursorless connection can arrive before `murmur.attached`. The attach marker has `data: {}` and carries the sampled log tail as its ID when one is known. A numbered marker updates the cursor, even when it corrects a cursor ahead of the log. Wait for the marker before fetching initial state or invoking subscribed callbacks.
 
 When adding topics, include them as a comma-separated `fresh` query value on the request that adds them. Fresh topics start after the sampled tail and existing topics replay from the cursor. Once you receive `murmur.attached` or a later numbered event on that connection, reconnect with the latest cursor and omit the acknowledged topics from `fresh`. If the stream drops before the marker arrives, send the unacknowledged topics in `fresh` again. The server evaluates `fresh` per request, so a client that uses it must build its URL for each attempt and take over reconnection from native `EventSource`. See the [replay protocol](docs/protocol.md#replay).
 

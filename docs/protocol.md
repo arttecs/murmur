@@ -20,7 +20,7 @@ Open a GET request to `/sse` with these URL query parameters.
 | --- | --- | --- |
 | `topics` | Yes | A comma-separated list of topic names, URL-encoded as a single query parameter. |
 | `token` | Depends on the authorizer | A comma-separated list of tokens that together grant access to the requested private topics. The default verifier requires tokens for private topics. |
-| `fresh` | No | A comma-separated subset of `topics` that starts at the attach point, skipping earlier events. |
+| `fresh` | No | A comma-separated subset of `topics` that starts strictly after the sampled log tail. |
 | `connection` | No | A previously announced connection ID to reuse across reconnects. |
 | `lastEventId` | No | A fallback replay cursor when `Last-Event-ID` is absent or malformed. |
 
@@ -67,11 +67,13 @@ IDs use `<milliseconds>-<sequence>`. A received cursor must contain 1–18 decim
 
 ### Replay
 
-For a reconnect, send the latest ID received as the `Last-Event-ID` HTTP header or the `lastEventId` query parameter. When both are valid, the header wins. Invalid cursors are ignored. Without a valid cursor, delivery starts after the sampled log tail.
+For a reconnect, send the latest ID received as the `Last-Event-ID` HTTP header or the `lastEventId` query parameter. When both are valid, the header wins. Invalid cursors are ignored.
 
-Replay sends retained matching events with IDs strictly greater than the cursor and at or before the sampled tail, in log order. When `fresh` is present, every entry must also appear in `topics`. Fresh topics deliver only events after the sampled tail. The other topics still replay from the requested cursor. Every connection samples the tail, including one without a cursor or with only fresh topics. Redis uses one tail read within the existing query deadline, with no history lookup when there are no topics to replay. A failed tail sample closes the stream through the same path as a failed replay. The initial `murmur.connected` may arrive while the sample is pending.
+Without a valid cursor, the subscription takes effect when the server attaches it for live delivery, before `murmur.attached`. Events dispatched to the subscription during the tail sample can arrive before the marker. Publications after `murmur.connected` can still precede attachment or reach the Redis reader after the marker has advanced past them, so events published between the two frames may or may not arrive. Once the client receives `murmur.attached`, it can rely on matching events published afterward being delivered while the subscription stays active, subject to sender exclusion and any signalled loss of live history. Wait for `murmur.attached` before fetching initial state or invoking subscribed callbacks.
 
-The stream starts with `retry:`, then `murmur.connected`, an optional `murmur.gap`, any replayed events, and exactly one attach marker before held and live delivery.
+Replay sends retained matching events with IDs strictly greater than the cursor and at or before the sampled tail, in log order. When `fresh` is present, every entry must also appear in `topics`. Fresh topics deliver only events strictly after the sampled tail. With a cursor, the other topics replay from it. Every connection samples the tail, including one without a cursor or with only fresh topics. Redis uses one tail read within the existing query deadline, with no history lookup when there are no topics to replay. A failed tail sample closes the stream through the same path as a failed replay. The initial `murmur.connected` may arrive while the sample is pending.
+
+The stream starts with `retry:`, then `murmur.connected`. Before the single attach marker, a subscription with a cursor can receive an initial `murmur.gap` and replayed events. A subscription without a cursor receives held numbered events at or before the sampled tail on its non-fresh topics before the marker, in log order. Remaining held frames and live delivery follow the marker.
 
 ```text
 id: 1710000000000-2
@@ -80,11 +82,11 @@ data: {}
 
 ```
 
-The marker's ID is the sampled tail, including after a gap and when the requested cursor was ahead of the tail. The marker omits `id:` when there is no known tail, for example on an empty log. An unnumbered marker acknowledges attachment without supplying a resume ID. Treat it as a control frame. Its bytes count toward `murmur_bytes_sent_total`, and the event and replay counters count only published events. A numbered marker replaces the stored cursor even if it is lower than the one sent. The server withholds subsequent numbered events at or before the tail, including entries arriving late from the Redis reader.
+The marker's ID is the sampled tail or the highest ID already written on this connection, whichever is greater. This also applies after a gap and when the requested cursor was ahead of the tail. The marker omits `id:` when the server has neither position, for example on an empty log. An unnumbered marker acknowledges attachment without supplying a resume ID. Treat it as a control frame. Its bytes count toward `murmur_bytes_sent_total`, and the event and replay counters count only published events. A numbered marker replaces the stored cursor even if it is lower than the one sent. The server withholds subsequent numbered events at or before the marker's ID, including entries arriving late from the Redis reader.
 
 Include a newly added topic in `fresh` on the attempt that adds it. Once `murmur.attached` or any later numbered event arrives on that connection, omit that topic from `fresh` on reconnect and send the latest cursor. When a cursor is available, ordinary replay then starts at the acknowledged join or later. If the stream drops before the marker arrives, send `fresh` again for the unacknowledged topic. Numbered replay events received before the marker do not acknowledge the join. The server evaluates `fresh` per request, so clients that use it must build a new URL per attempt instead of letting native `EventSource` retry the same URL.
 
-Live events arriving during replay are held until the server writes the marker. The server drops duplicate or older IDs once it has written a frame with a newer ID. The connection closes if the replay query fails or the held live data exceeds `server.max_buffer_bytes`. The server also closes a stream whose output exceeds that limit under backpressure. The default byte limit is 1,048,576.
+Live events arriving during replay are held for release around the attach marker. The server drops duplicate or older event IDs once it has written a frame with the same or a newer ID. The connection closes if the replay query fails or the held live data exceeds `server.max_buffer_bytes`. The server also closes a stream whose output exceeds that limit under backpressure. The default byte limit is 1,048,576.
 
 The server can send an unnumbered gap frame before resuming delivery.
 

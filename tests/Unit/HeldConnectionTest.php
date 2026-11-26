@@ -17,7 +17,7 @@ beforeEach(function () {
 });
 
 it('writes replay before held events and sends subsequent events immediately', function () {
-    $connection = new HeldConnection($this->stream);
+    $connection = new HeldConnection($this->stream, cursor: new EventId(10, 0));
     $replayed = new Event('news', 'replay', id: new EventId(10, 2));
     $queued = new Event('news', 'queued', id: new EventId(10, 3));
     $live = new Event('news', 'live', id: new EventId(10, 4));
@@ -68,7 +68,7 @@ it('evicts a held connection when its encoded event bytes exceed the limit', fun
 });
 
 it('drops events at or behind the last written id after going live', function () {
-    $connection = new HeldConnection($this->stream);
+    $connection = new HeldConnection($this->stream, cursor: new EventId(10, 0));
     $replayed = new Event('news', 'replay', id: new EventId(10, 2));
     $held = new Event('news', 'held', id: new EventId(10, 3));
     $live = new Event('news', 'live', id: new EventId(10, 4));
@@ -83,6 +83,19 @@ it('drops events at or behind the last written id after going live', function ()
     $connection->sendEvent($held);
 
     expect($this->frames)->toBe([Frame::event($replayed), Frame::attached($replayed->id), Frame::event($held), Frame::event($live)]);
+});
+
+it('keeps the marker and watermark at the last written id when replay exceeds the sampled tail', function () {
+    $connection = new HeldConnection($this->stream, cursor: new EventId(10, 1));
+    $event = new Event('news', 'ahead-of-tail', id: new EventId(10, 3));
+
+    $connection->release(new Replay(false, [$event], new EventId(10, 2)));
+    $connection->sendEvent($event);
+
+    expect($this->frames)->toBe([
+        Frame::event($event),
+        "id: 10-3\nevent: murmur.attached\ndata: {}\n\n",
+    ]);
 });
 
 it('always writes events without an id without resetting its last written id', function () {

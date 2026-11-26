@@ -91,11 +91,13 @@ class HeldConnection extends Connection
     }
 
     /**
-     * Write replayed events and acknowledge attachment before releasing held frames.
+     * Write replay and eligible held events, acknowledge attachment, and release the remaining frames.
+     *
+     * @param  list<string>  $fresh
      *
      * @throws \JsonException
      */
-    public function release(?Replay $replay = null): void
+    public function release(?Replay $replay = null, array $fresh = []): void
     {
         if ($this->held === null) {
             return;
@@ -137,8 +139,25 @@ class HeldConnection extends Connection
             $this->writeEvent($event, $frame, replayed: true);
         }
 
-        $this->lastWrittenId = $tail ?? $this->lastWrittenId;
-        $this->sendImmediately(Frame::attached($tail));
+        if ($this->cursor === null && $tail !== null) {
+            foreach ($this->held ?? [] as $item) {
+                if (! is_array($item)) {
+                    continue;
+                }
+
+                [$event, $frame] = $item;
+
+                if ($event->id !== null && $event->id->compare($tail) <= 0 && ! in_array($event->topic, $fresh, true)) {
+                    $this->writeEvent($event, $frame);
+                }
+            }
+        }
+
+        if ($tail !== null && ($this->lastWrittenId === null || $tail->compare($this->lastWrittenId) > 0)) {
+            $this->lastWrittenId = $tail;
+        }
+
+        $this->sendImmediately(Frame::attached($this->lastWrittenId));
 
         for ($index = 0; isset($this->held[$index]); $index++) {
             $item = $this->held[$index];

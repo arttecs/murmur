@@ -105,9 +105,13 @@ it('binds only after redis is ready and delivers an immediate publish to a new s
         await(React\Promise\Timer\timeout($listening, 2.0));
 
         $r = SseReader::open($server->address().'/sse?topics=news');
-        expect($r->start()['retry'])->toBe('3000');
+        expect($r->start(replaying: true)['retry'])->toBe('3000');
         $id = xadd($key, 'news', 'immediate');
-        expect($r->next()['id'])->toBe($id);
+        $frames = [$r->next(), $r->next()];
+        $byEvent = array_column($frames, 'id', 'event');
+        expect($byEvent)->toHaveKeys(['murmur.attached', 'immediate']);
+        expect($byEvent['immediate'])->toBe($id);
+        expect(fn () => $r->next(0.05))->toThrow(RuntimeException::class, 'Timed out');
     } finally {
         $server->close();
     }

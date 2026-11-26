@@ -195,7 +195,7 @@ class SseHandler
         $replayTopics = $cursor === null ? [] : array_values(array_diff($topics, $fresh));
         $snapshot = $this->replay($connection, $cursor, $replayTopics);
 
-        $this->loop->futureTick(function () use ($connection, $snapshot, $endStream): void {
+        $this->loop->futureTick(function () use ($connection, $snapshot, $endStream, $fresh): void {
             if ($connection->isClosed()) {
                 return;
             }
@@ -212,14 +212,14 @@ class SseHandler
                 return;
             }
 
-            $snapshot->then(function (?Replay $replay) use ($connection, $endStream): void {
+            $snapshot->then(function (?Replay $replay) use ($connection, $endStream, $fresh): void {
                 if ($replay === null) {
                     $endStream();
 
                     return;
                 }
 
-                $connection->release($replay);
+                $connection->release($replay, $fresh);
             })->catch($endStream);
         });
 

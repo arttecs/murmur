@@ -29,9 +29,14 @@ it('times out unanswered replay queries and opens a fresh redis connection', fun
 
         $client->on('data', function (string $data) use ($parser, $client, $first, &$commands, $stalledCommand): void {
             foreach ($parser->pushIncoming($data) as $message) {
-                $command = strtoupper($message->getValueNative()[0]);
+                $arguments = $message->getValueNative();
+                $command = strtoupper($arguments[0]);
 
                 $commands[] = $command;
+
+                if ($command === 'XRANGE') {
+                    expect($arguments[3])->toBe('1-0');
+                }
 
                 if ($first && $command === $stalledCommand) {
                     continue;
