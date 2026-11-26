@@ -40,6 +40,7 @@ it('tracks events, connections, output bytes and gauges for a listening server',
         'murmur_events_sent_total' => 0,
         'murmur_bytes_sent_total' => 0,
         'murmur_replays_total' => 0,
+        'murmur_replay_failures_total' => 0,
         'murmur_replayed_events_total' => 0,
         'murmur_gaps_total' => 0,
         'murmur_errors_total' => 0,
@@ -179,6 +180,8 @@ it('counts slow consumers only when their output or pending replay queue exceeds
             'murmur_events_received_total' => 1,
             'murmur_events_sent_total' => $held ? 0 : 1,
             'murmur_replayed_events_total' => 0,
+            'murmur_replay_failures_total' => 0,
+            'murmur_errors_total' => 0,
         ]);
     } finally {
         $client->close();

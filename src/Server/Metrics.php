@@ -21,6 +21,7 @@ class Metrics
         'murmur_events_sent_total' => ['Live and replayed event frames written to connections.', false],
         'murmur_bytes_sent_total' => ['Bytes of SSE output written to connections.', false],
         'murmur_replays_total' => ['Connections that requested replay with a cursor.', false],
+        'murmur_replay_failures_total' => ['Subscriptions whose tail sample or replay query failed.', false],
         'murmur_replayed_events_total' => ['Event frames written from replay.', false],
         'murmur_gaps_total' => ['Murmur gap frames written to connections.', false],
         'murmur_publish_requests_total' => ['HTTP publish responses by status.', true],

@@ -63,7 +63,7 @@ it('resolves built-in stores once with their configured services', function (str
 ]);
 
 it('exposes the known names even for counters without a series yet', function () {
-    expect(Metrics::names())->toContain('murmur_publish_requests_total', 'murmur_connections_rejected_total', 'murmur_uptime_seconds');
+    expect(Metrics::names())->toContain('murmur_publish_requests_total', 'murmur_connections_rejected_total', 'murmur_replay_failures_total', 'murmur_uptime_seconds');
 });
 
 it('resolves a custom metrics store registered from a provider boot method once', function () {

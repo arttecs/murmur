@@ -2,6 +2,8 @@
 
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
+use Arttecs\Murmur\Tests\Support\ServerHarness;
+use Arttecs\Murmur\Tests\Support\SseReader;
 use Clue\Redis\Protocol\Factory as ProtocolFactory;
 use React\Promise\Deferred;
 use React\Promise\Timer\TimeoutException;
@@ -9,6 +11,7 @@ use React\Socket\ConnectionInterface;
 use React\Socket\SocketServer;
 
 use function React\Async\await;
+use function React\Async\delay;
 use function React\Promise\Timer\timeout;
 
 it('times out unanswered replay queries and opens a fresh redis connection', function (string $stalledCommand, array $topics) {
@@ -79,6 +82,74 @@ it('times out unanswered replay queries and opens a fresh redis connection', fun
     'stream info' => ['XINFO', ['news']],
     'tail only' => ['XREVRANGE', []],
 ]);
+
+it('reports each subscription that loses its tail sample or replay on the shared redis connection', function (string $stalledCommand) {
+    delay(1.01);
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
+    $socket = new SocketServer('127.0.0.1:0');
+    $log = new RedisEventLog(str_replace('tcp://', 'redis://', $socket->getAddress()), 'test', queryTimeoutSeconds: 0.25);
+    $clients = [];
+    $queued = new Deferred;
+
+    $socket->on('connection', function (ConnectionInterface $client) use (&$clients, $queued, $stalledCommand): void {
+        $clients[] = $client;
+        $shared = count($clients) === 2;
+        $parser = (new ProtocolFactory)->createRequestParser();
+        $pending = 0;
+
+        $client->on('data', function (string $data) use ($parser, $client, $shared, $queued, $stalledCommand, &$pending): void {
+            foreach ($parser->pushIncoming($data) as $message) {
+                $command = strtoupper($message->getValueNative()[0]);
+
+                if ($shared && ($pending > 0 || $command === $stalledCommand)) {
+                    if (++$pending === 2) {
+                        $queued->resolve(null);
+                    }
+
+                    continue;
+                }
+
+                if ($command === 'XREVRANGE') {
+                    $client->write("*1\r\n*2\r\n\$3\r\n1-0\r\n*0\r\n");
+                }
+            }
+        });
+    });
+
+    try {
+        $h = ServerHarness::start(log: $log);
+        $path = $h->url('/sse?topics=news');
+        $first = SseReader::open($path, ['Last-Event-ID' => '0-0']);
+        $first->start(replaying: true);
+        $second = SseReader::open($path);
+        $second->start(replaying: true);
+        await(timeout($queued->promise(), 1.0));
+
+        foreach ([$first, $second] as $reader) {
+            expect(fn () => $reader->nextRaw())->toThrow(RuntimeException::class, 'SSE stream closed');
+        }
+
+        expect($h->metrics()->value('murmur_replay_failures_total'))->toBe(2);
+        expect($h->metrics()->value('murmur_errors_total'))->toBe(2);
+        expect(file($errorLog, FILE_IGNORE_NEW_LINES))->toHaveCount(1);
+
+        $recovered = SseReader::open($path);
+        $recovered->start(replaying: true);
+        expect($recovered->attached()['id'])->toBe('1-0');
+        expect($h->metrics()->value('murmur_replay_failures_total'))->toBe(2);
+    } finally {
+        $log->close();
+        $socket->close();
+
+        foreach ($clients as $client) {
+            $client->close();
+        }
+
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
+})->with(['XREVRANGE', 'XRANGE']);
 
 it('retries an unanswered initial cursor query on a fresh redis connection', function () {
     $errorLog = tempnam(sys_get_temp_dir(), 'murmur');

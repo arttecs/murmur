@@ -304,13 +304,15 @@ Configure the Laravel connection named by `MURMUR_REDIS_CONNECTION` to reach the
 
 Run `php artisan murmur:serve` on each node and route `/sse` through a load balancer with response buffering disabled. With the Redis driver, a node starts listening only after it can reach Redis and resolve its starting cursor. It logs one message while waiting for Redis. A node listens on `127.0.0.1` by default, so set `MURMUR_HOST` to an address the load balancer can reach. Set `MURMUR_PUBLIC_URL` to the load balancer's public base URL. Each node reads the same stream, so a reconnect can resume on any node while its cursor is retained. The Redis driver disables the server's `POST /publish` endpoint.
 
-During a Redis outage, each server retries its stream read one second after a failure. Murmur logs when the reader loses its connection and when it recovers. If Redis trimmed events during the outage, Murmur sends a `murmur.gap` event to connected subscribers before it resumes delivering retained events. The check errs towards signalling: a subscriber may receive `murmur.gap` when the only trimmed entries were ones it had already received. Tail samples and replay queries share one Redis connection. Each command has a 5 second deadline by default. If a sample or replay fails, the server closes the affected subscription.
+During a Redis outage, each server retries its stream read one second after a failure. Murmur logs when the reader loses its connection and when it recovers. If Redis trimmed events during the outage, Murmur sends a `murmur.gap` event to connected subscribers before it resumes delivering retained events. The check can signal a gap when the only trimmed entries were ones the subscriber had already received.
+
+Every subscription samples the tail. Tail samples and replay queries share one Redis connection per Murmur process. Each command has a 5 second deadline by default. A command that exceeds its deadline closes that shared connection and fails all samples and replay queries queued on it. Each failed subscription ends before `murmur.attached` and increments `murmur_replay_failures_total`. Clients that rebuild their subscription URL should honor the stream's `retry:` delay or apply their own backoff when a stream ends before the marker.
 
 Synchronize clocks across the Laravel application, Murmur nodes, and Redis. `stream_cursor_margin_ms` sets how much skew to allow in stream start cursors.
 
 ### Replay storage trade-off
 
-Murmur uses one global Redis stream for all topics. A subscriber can resume with one cursor, event IDs have a total order, and each Murmur node needs one live reader regardless of how many topics it serves. Replay queries scan entries for other topics while looking for matches. Redis trims the stream approximately to `murmur.server.log_size` entries across all topics, so a noisy topic shortens the history available to every topic. Clients that track numbered heartbeats can resume quiet subscriptions from a recent cursor, reducing replay work and the chance of a gap after unrelated traffic has trimmed the stream. Account for aggregate publish volume when choosing a log size, especially when clients reconnect after long interruptions.
+Murmur uses one global Redis stream for all topics. A subscriber can resume with one cursor, event IDs have a total order, and each Murmur node needs one live reader regardless of how many topics it serves. A reconnect with an old cursor can scan the whole retained range after that cursor, including entries on unrelated topics. Redis trims the stream approximately to `murmur.server.log_size` entries, so a noisy topic shortens the history available to every topic. Replay stops scanning if matching events exceed `server.max_replay_events`, and the server discards replay frames if their encoded size exceeds half of `server.max_buffer_bytes`. Clients that track numbered heartbeats can resume quiet subscriptions from a recent cursor, reducing replay work and the chance of a gap after unrelated traffic has trimmed the stream. Account for aggregate publish volume when choosing a log size, especially when clients reconnect after long interruptions.
 
 ### Redis Sentinel and Cluster
 
@@ -404,6 +406,7 @@ php artisan murmur:forget-metrics
 | `murmur_events_sent_total` | counter | — | Live and replayed event frames written to connections. |
 | `murmur_bytes_sent_total` | counter | — | Bytes of SSE output written to connections. |
 | `murmur_replays_total` | counter | — | Connections that requested replay with a cursor. |
+| `murmur_replay_failures_total` | counter | — | Subscriptions whose tail sample or replay query failed. |
 | `murmur_replayed_events_total` | counter | — | Event frames written from replay. |
 | `murmur_gaps_total` | counter | — | Murmur gap frames written to connections. |
 | `murmur_publish_requests_total` | counter | `status` | HTTP publish responses by status. |

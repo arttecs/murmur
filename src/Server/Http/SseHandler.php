@@ -274,7 +274,14 @@ class SseHandler
             $topics,
             $this->config->maxReplayEvents,
             fn (Event $event): bool => $event->except !== $connection->id,
-        ))->catch(fn (Throwable $error) => null);
+        ))->catch(function (Throwable $error) use ($connection): ?Replay {
+            if (! $connection->isClosed()) {
+                $this->metrics?->increment('murmur_replay_failures_total');
+                ErrorReporter::report($error);
+            }
+
+            return null;
+        });
         $connection->onClose($replay->cancel(...));
 
         return $replay;
