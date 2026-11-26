@@ -6,6 +6,7 @@ use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
+use Arttecs\Murmur\Tests\Support\SseReader;
 use Psr\Log\AbstractLogger;
 use React\EventLoop\StreamSelectLoop;
 
@@ -158,6 +159,23 @@ it('does not let a throwing error counter interrupt a report', function () {
     ErrorReporter::report(new RuntimeException('Reported anyway.'));
 
     expect(array_column($this->logger->entries, 1))->toBe(['RuntimeException: Reported anyway.']);
+});
+
+it('reports and counts a release failure when replay cannot be encoded', function () {
+    $log = new MemoryEventLog;
+    $cursor = $log->append(new Event('news', 'seen'))->id;
+    $log->append(new Event('news', 'unencodable', INF));
+    $h = ServerHarness::start(log: $log);
+    ErrorReporter::logUsing($this->logger);
+
+    $r = SseReader::open($h->url('/sse?topics=news'), ['Last-Event-ID' => (string) $cursor]);
+    $r->start(replaying: true);
+    expect(fn () => $r->nextRaw())->toThrow(RuntimeException::class, 'The SSE stream closed');
+
+    expect($h->metrics()->value('murmur_replay_failures_total'))->toBe(1);
+    expect($h->metrics()->value('murmur_errors_total'))->toBe(1);
+    expect($this->logger->entries)->toHaveCount(1);
+    expect($this->logger->entries[0][2]['exception'])->toBeInstanceOf(JsonException::class);
 });
 
 it('measures blocked loop ticks and warns once while counting each breach', function () {

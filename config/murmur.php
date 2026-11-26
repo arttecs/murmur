@@ -56,7 +56,8 @@ return [
         'max_buffer_bytes' => (int) env('MURMUR_MAX_BUFFER_BYTES', 1048576),
         /**
          * Comma-separated browser origins allowed for SSE. Ports and bracketed IPv6
-         * literals are canonicalized. Leave empty to deny requests with an Origin header.
+         * literals are canonicalized. Write internationalised hosts in punycode.
+         * Leave empty to deny requests with an Origin header.
          */
         'allowed_origins' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('MURMUR_ALLOWED_ORIGINS', ''))), fn (string $origin): bool => $origin !== '')),
         /** Allowed difference in seconds between the server clock and an HTTP publish timestamp. */

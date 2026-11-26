@@ -112,6 +112,7 @@ it('skips malformed entries and delivers valid entries that follow them', functi
     waitForRedisReader($client, $readerId);
     await($client->xadd($key, '*', 'topic', 'news', 'name', 'missing-data'));
     await($client->xadd($key, '*', 'topic', 'news', 'name', 'invalid-json', 'data', '{'));
+    await($client->xadd($key, '*', 'topic', 'news', 'name', 'unencodable-json', 'data', '{"value":1e400}'));
     await($client->xadd($key, '*', 'topic', 'invalid topic', 'name', 'updated', 'data', 'null'));
     await($client->xadd($key, '*', 'topic', 'news', 'name', "invalid\nname", 'data', 'null'));
     await($client->xadd($key, '*', 'topic', 'news', 'name', 'murmur.gap', 'data', 'null'));

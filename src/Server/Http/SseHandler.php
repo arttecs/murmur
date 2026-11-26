@@ -220,7 +220,10 @@ class SseHandler
                 }
 
                 $connection->release($replay, $fresh);
-            })->catch($endStream);
+            })->catch(function (Throwable $error) use ($endStream): void {
+                $this->reportReplayFailure($error);
+                $endStream();
+            });
         });
 
         return new Response(200, $headers + [
@@ -276,8 +279,7 @@ class SseHandler
             fn (Event $event): bool => $event->except !== $connection->id,
         ))->catch(function (Throwable $error) use ($connection): ?Replay {
             if (! $connection->isClosed()) {
-                $this->metrics?->increment('murmur_replay_failures_total');
-                ErrorReporter::report($error);
+                $this->reportReplayFailure($error);
             }
 
             return null;
@@ -285,6 +287,15 @@ class SseHandler
         $connection->onClose($replay->cancel(...));
 
         return $replay;
+    }
+
+    /**
+     * Count and report a failure while preparing or releasing a subscription.
+     */
+    protected function reportReplayFailure(Throwable $error): void
+    {
+        $this->metrics?->increment('murmur_replay_failures_total');
+        ErrorReporter::report($error);
     }
 
     /**

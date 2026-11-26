@@ -242,7 +242,7 @@ For a metrics store, extend `Testing\MetricsStoreConformanceTestCase` and implem
 
 ## Deployment
 
-Run Murmur behind a reverse proxy. The default empty origin allowlist serves requests that omit the `Origin` header, including typical same-origin EventSource requests. To serve a browser application from another origin, set `MURMUR_ALLOWED_ORIGINS` to its scheme, host, and non-default port, with no trailing slash. The server canonicalizes numeric ports and bracketed IPv6 literals, so `[::1]` and `[0:0:0:0:0:0:0:1]` match. Requests with an unlisted origin receive 403. Use `*` only when every origin should be allowed.
+Run Murmur behind a reverse proxy. The default empty origin allowlist serves requests that omit the `Origin` header, including typical same-origin EventSource requests. To serve a browser application from another origin, set `MURMUR_ALLOWED_ORIGINS` to its scheme, host, and non-default port, with no trailing slash. Write internationalised hosts in punycode. The server canonicalizes numeric ports and bracketed IPv6 literals, so `[::1]` and `[0:0:0:0:0:0:0:1]` match. Requests with an unlisted origin receive 403. Use `*` only when every origin should be allowed.
 
 Keep `POST /publish` on a trusted network. A signed request is replayable within the default 60-second timestamp tolerance.
 
@@ -408,7 +408,7 @@ php artisan murmur:forget-metrics
 | `murmur_events_sent_total` | counter | — | Live and replayed event frames written to connections. |
 | `murmur_bytes_sent_total` | counter | — | Bytes of SSE output written to connections. |
 | `murmur_replays_total` | counter | — | Connections that requested replay with a cursor. |
-| `murmur_replay_failures_total` | counter | — | Subscriptions whose tail sample or replay query failed. |
+| `murmur_replay_failures_total` | counter | — | Subscriptions whose tail sample, replay query, or initial release failed. |
 | `murmur_replayed_events_total` | counter | — | Event frames written from replay. |
 | `murmur_gaps_total` | counter | — | Murmur gap frames written to connections. |
 | `murmur_publish_requests_total` | counter | `status` | HTTP publish responses by status. |

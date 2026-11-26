@@ -510,7 +510,10 @@ class RedisEventLog implements EventLog
         }
 
         try {
-            return new Event($values['topic'], $values['name'], json_decode($values['data'], flags: JSON_THROW_ON_ERROR), $id, $values['except'] ?? null);
+            $data = json_decode($values['data'], flags: JSON_THROW_ON_ERROR);
+            json_encode($data, JSON_THROW_ON_ERROR);
+
+            return new Event($values['topic'], $values['name'], $data, $id, $values['except'] ?? null);
         } catch (InvalidArgumentException|JsonException) {
             return null;
         }
