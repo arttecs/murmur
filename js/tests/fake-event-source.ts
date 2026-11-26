@@ -12,15 +12,25 @@ export class FakeEventSource extends EventTarget implements EventSource {
   /** The connections created during the current test. */
   public static readonly instances: FakeEventSource[] = []
 
+  /** The instance constant for a connection attempt. */
   public readonly CONNECTING = FakeEventSource.CONNECTING
+  /** The instance constant for an open connection. */
   public readonly OPEN = FakeEventSource.OPEN
+  /** The instance constant for a closed connection. */
   public readonly CLOSED = FakeEventSource.CLOSED
+  /** The URL supplied to the constructor. */
   public readonly url: string
+  /** Whether the connection was configured to send credentials. */
   public readonly withCredentials: boolean
+  /** The observable EventSource state. */
   public readyState: number = this.CONNECTING
+  /** The EventSource handler property for open events. */
   public onopen: EventSource['onopen'] = null
+  /** The EventSource handler property for unnamed messages. */
   public onmessage: EventSource['onmessage'] = null
+  /** The EventSource handler property for connection errors. */
   public onerror: EventSource['onerror'] = null
+  /** Whether the source has been closed. */
   public closed = false
 
   /** Records the URL and credentials of a new connection. */

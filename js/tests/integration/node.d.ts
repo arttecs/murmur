@@ -2,18 +2,27 @@
 declare module 'node:child_process' {
   /** A subprocess pipe that delivers UTF-8 output. */
   interface Output {
+    /** Configures the text encoding of received chunks. */
     setEncoding(encoding: 'utf8'): Output
+    /** Receives text written to the pipe. */
     on(event: 'data', listener: (chunk: string) => void): void
   }
 
   /** The pipes and exit state of the PHP subprocess. */
   interface ChildProcess {
+    /** The subprocess standard output. */
     readonly stdout: Output
+    /** The subprocess standard error. */
     readonly stderr: Output
+    /** The exit code when the process exits normally. */
     readonly exitCode: number | null
+    /** The signal that terminated the process, if any. */
     readonly signalCode: string | null
+    /** Receives subprocess errors. */
     on(event: 'error', listener: (error: Error) => void): void
+    /** Runs once when the process and its pipes have closed. */
     once(event: 'close', listener: () => void): void
+    /** Sends a termination signal to the subprocess. */
     kill(signal: 'SIGTERM' | 'SIGKILL'): boolean
   }
 
@@ -30,10 +39,15 @@ declare module 'node:child_process' {
 declare module 'node:net' {
   /** A TCP server that can bind on loopback and report its port. */
   export interface Server {
+    /** Binds the server and reports when it is listening. */
     listen(port: number, host: string, callback: () => void): void
+    /** Returns the bound address, if any. */
     address(): { port: number } | string | null
+    /** Stops listening and waits for connections to close. */
     close(callback: () => void): void
+    /** Receives the next server error. */
     once(event: 'error', listener: (error: Error) => void): void
+    /** Removes a registered error listener. */
     removeListener(event: 'error', listener: (error: Error) => void): void
   }
 
@@ -47,19 +61,25 @@ declare module 'node:http' {
 
   /** An incoming HTTP request with an asynchronously readable body. */
   interface IncomingMessage {
+    /** The request's HTTP method. */
     readonly method?: string
+    /** The request target as received by the server. */
     readonly url?: string
+    /** Reads body chunks as UTF-8 text. */
     setEncoding(encoding: 'utf8'): AsyncIterable<string>
   }
 
   /** An HTTP response whose headers and body can be written. */
   interface ServerResponse {
+    /** Writes the response status and headers. */
     writeHead(status: number, headers?: Record<string, string>): ServerResponse
+    /** Finishes the response with an optional body. */
     end(body?: string): void
   }
 
   /** An HTTP server that can immediately close active and idle HTTP connections. */
   export interface Server extends TcpServer {
+    /** Closes all HTTP connections to the server. */
     closeAllConnections(): void
   }
 
@@ -71,6 +91,7 @@ declare module 'node:http' {
 declare module 'node:buffer' {
   /** Converts text to bytes and encodes them as base64url. */
   export const Buffer: {
+    /** Creates a buffer containing the encoded input string. */
     from(input: string): { toString(encoding: 'base64url'): string }
   }
 }
@@ -79,7 +100,9 @@ declare module 'node:buffer' {
 declare module 'node:crypto' {
   /** An HMAC digest that accepts UTF-8 input. */
   interface Hmac {
+    /** Adds text to the digest input. */
     update(data: string): Hmac
+    /** Returns the digest in the requested encoding. */
     digest(encoding: 'hex' | 'base64url'): string
   }
 
