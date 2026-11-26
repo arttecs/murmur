@@ -7,6 +7,7 @@ use Arttecs\Murmur\Server\Http\MetricsHandler;
 use Arttecs\Murmur\Server\Http\PublishHandler;
 use Arttecs\Murmur\Server\Http\SseHandler;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
+use Closure;
 use LogicException;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -93,6 +94,13 @@ class Server
      * The deadline for closing any sockets left during shutdown.
      */
     protected ?TimerInterface $shutdownDeadline = null;
+
+    /**
+     * The error counter installed on the reporter while listening.
+     *
+     * @var Closure(): void|null
+     */
+    protected ?Closure $errorCounter = null;
 
     /**
      * Indicates whether the server has shut down.
@@ -220,8 +228,13 @@ class Server
 
         $http->listen($this->socket);
         $this->startedAt = hrtime(true);
-        ErrorReporter::countUsing(fn () => $this->metrics->increment('murmur_errors_total'));
-        ErrorReporter::logUsing($this->logger);
+        $this->errorCounter = fn () => $this->metrics->increment('murmur_errors_total');
+        ErrorReporter::countUsing($this->errorCounter);
+
+        if ($this->logger !== null) {
+            ErrorReporter::logUsing($this->logger);
+        }
+
         $this->heartbeat = $this->loop->addPeriodicTimer($this->config->heartbeatSeconds, $this->hub->heartbeat(...));
         $this->logInfo('Murmur is listening on '.$this->address());
     }
@@ -383,10 +396,8 @@ class Server
         try {
             $this->log->close();
         } finally {
-            if ($this->startedAt !== null) {
-                ErrorReporter::countUsing(null);
-                ErrorReporter::logUsing(null);
-            }
+            ErrorReporter::forget($this->errorCounter, $this->logger);
+            $this->errorCounter = null;
         }
 
         if ($this->shutdown !== null) {

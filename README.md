@@ -111,14 +111,14 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `http.connect_timeout` | `MURMUR_HTTP_CONNECT_TIMEOUT` | `1.0` | Connection deadline in seconds. |
 | `auth.enabled` | `MURMUR_AUTH_ENABLED` | `true` | Whether to register the murmur.auth route. |
 | `auth.path` | `MURMUR_AUTH_PATH` | `murmur/auth` | URL path for the authorization endpoint. Change this if the path is already in use. |
-| `auth.middleware` | `MURMUR_AUTH_MIDDLEWARE` | `["web"]` | Comma-separated Laravel middleware for the authorization route. Match your application's authentication setup. |
+| `auth.middleware` | `MURMUR_AUTH_MIDDLEWARE` | `["web"]` | Comma-separated Laravel middleware for the authorization route. Publish this file to use middleware whose parameters contain commas. |
 | `redis.connection` | `MURMUR_REDIS_CONNECTION` | `default` | Name of the Laravel Redis connection used to append events. |
 | `redis.url` | `MURMUR_REDIS_URL` | `redis://127.0.0.1:6379` | Redis URL used by the server for live reading and replay. |
 | `redis.stream` | `MURMUR_REDIS_STREAM` | `murmur:events` | Stream name before Laravel's Redis key prefix. Set this to isolate applications in one database. |
 | `redis.query_timeout` | `MURMUR_REDIS_QUERY_TIMEOUT` | `5.0` | Seconds allowed for a Redis query outside the blocking live read. Increase this for slower Redis round trips. |
-| `redis.block_ms` | `MURMUR_REDIS_BLOCK_MS` | `5000` | Milliseconds Redis waits for new events during a live read. Lower this to check the reader more often. |
+| `redis.block_ms` | `MURMUR_REDIS_BLOCK_MS` | `5000` | Milliseconds Redis waits for new events during a live read. A stalled reader is replaced 5 seconds after this wait. |
 
-Write `MURMUR_ALLOWED_ORIGINS` and `MURMUR_AUTH_MIDDLEWARE` as comma-separated lists. Murmur trims whitespace and drops empty entries. Keep `server.max_sockets` at least as high as `server.max_connections`. Set `MURMUR_AUTH_ENABLED=false` to omit the Laravel authorization route. Its name is `murmur.auth` whenever it is registered.
+Write `MURMUR_ALLOWED_ORIGINS` and `MURMUR_AUTH_MIDDLEWARE` as comma-separated lists. Murmur trims whitespace and drops empty entries. Keep `server.max_sockets` at least as high as `server.max_connections`. Set `MURMUR_AUTH_ENABLED=false` to omit the Laravel authorization route. Its name is `murmur.auth` whenever it is registered. Boolean variables accept `true`, `false`, `1`, `0`, `on`, `off`, `yes`, and `no`; any other value counts as false. Middleware with comma-separated parameters, such as `throttle:60,1`, cannot be written in `MURMUR_AUTH_MIDDLEWARE`; publish the config file and set `auth.middleware` there.
 
 A subscriber receives `murmur.gap` in place of a replay if the requested history exceeds `server.max_replay_events` matching events or if the encoded replay frames exceed half of `server.max_buffer_bytes`. The connection continues delivering live events.
 
@@ -222,7 +222,7 @@ scrape_configs:
       credentials: 'replace-with-metrics-token'
 ```
 
-Use the same token in Prometheus and in `MURMUR_METRICS_TOKEN`. The socket gauge includes the scrape connection itself.
+Use the same token in Prometheus and in `MURMUR_METRICS_TOKEN`. The socket gauge includes the scrape connection itself. The two metrics with a `status` label have no samples until the first response with that status. A `POST /publish` to a server where publishing is disabled, as with the `redis` driver, counts under `status="404"`. In JSON, `labels` is always an object.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
@@ -256,7 +256,7 @@ The command exits with code 1 and prints a one-line error when metrics are unava
 
 ## Logging
 
-Set `MURMUR_LOG_CHANNEL` to a Laravel log channel to receive server delivery errors and informational messages when the server starts listening and when graceful shutdown begins and ends. Choose a fast local channel such as stderr, a file, or syslog because the server writes inside its event loop.
+Set `MURMUR_LOG_CHANNEL` to a Laravel log channel to receive server delivery errors and informational messages when the server starts listening and when graceful shutdown begins and ends. Choose a fast local channel such as stderr, a file, or syslog because the server writes inside its event loop. Listeners of Laravel's `MessageLogged` event run inside the loop as well, so they must not perform network requests either. `murmur:serve` exits with an error when the channel is not defined in `logging.channels`.
 
 Delivery errors go to PHP's error log by default and fall back to it if the configured logger throws. Murmur rate-limits these messages to one per second and includes the number of suppressed errors in the next message. Redis reader connection transitions use PHP's error log.
 

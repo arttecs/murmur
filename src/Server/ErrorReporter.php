@@ -22,11 +22,11 @@ class ErrorReporter
     protected static int $suppressed = 0;
 
     /**
-     * The active server's error counter.
+     * The error counters of the listening servers.
      *
-     * @var Closure(): void|null
+     * @var list<Closure(): void>
      */
-    protected static ?Closure $counter = null;
+    protected static array $counters = [];
 
     /**
      * The logger used by the active server.
@@ -42,13 +42,31 @@ class ErrorReporter
     }
 
     /**
-     * Set or clear the hook for counting every reported error.
+     * Add a hook that counts every reported error, or clear every hook.
      *
      * @param  (callable(): void)|null  $counter
      */
     public static function countUsing(?callable $counter): void
     {
-        static::$counter = $counter === null ? null : Closure::fromCallable($counter);
+        if ($counter === null) {
+            static::$counters = [];
+        } else {
+            static::$counters[] = Closure::fromCallable($counter);
+        }
+    }
+
+    /**
+     * Clear the given hooks if they are still the ones installed.
+     *
+     * @param  (callable(): void)|null  $counter
+     */
+    public static function forget(?callable $counter, ?LoggerInterface $logger): void
+    {
+        static::$counters = array_values(array_filter(static::$counters, fn (Closure $installed): bool => $installed !== $counter));
+
+        if ($logger !== null && static::$logger === $logger) {
+            static::$logger = null;
+        }
     }
 
     /**
@@ -56,8 +74,11 @@ class ErrorReporter
      */
     public static function report(Throwable $error): void
     {
-        if (static::$counter !== null) {
-            (static::$counter)();
+        foreach (static::$counters as $counter) {
+            try {
+                $counter();
+            } catch (Throwable) {
+            }
         }
 
         $now = hrtime(true);

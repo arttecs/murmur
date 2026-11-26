@@ -52,15 +52,16 @@ return [
          * Laravel channel for server errors and lifecycle messages. The
          * server writes from inside the event loop. Choose a fast local
          * channel such as stderr, a file, or syslog that makes no network requests.
+         * Listeners of Laravel's MessageLogged event run inside the loop too.
          */
-        'log_channel' => ($logChannel = env('MURMUR_LOG_CHANNEL')) === null ? null : (string) $logChannel,
+        'log_channel' => ((string) env('MURMUR_LOG_CHANNEL', '')) ?: null,
         /**
          * Per-process metrics at GET /metrics. Set a bearer token before
          * exposing the endpoint outside a trusted network.
          */
         'metrics' => [
             /** Whether to serve the metrics endpoint. Disable this if you do not scrape the process. */
-            'enabled' => (bool) env('MURMUR_METRICS_ENABLED', true),
+            'enabled' => filter_var(env('MURMUR_METRICS_ENABLED', true), FILTER_VALIDATE_BOOL),
             /** Bearer token required for metrics requests. Leave null to allow unauthenticated scrapes. */
             'token' => ($metricsToken = env('MURMUR_METRICS_TOKEN')) === null ? null : (string) $metricsToken,
         ],
@@ -107,10 +108,10 @@ return [
      */
     'auth' => [
         /** Whether to register the murmur.auth route. */
-        'enabled' => (bool) env('MURMUR_AUTH_ENABLED', true),
+        'enabled' => filter_var(env('MURMUR_AUTH_ENABLED', true), FILTER_VALIDATE_BOOL),
         /** URL path for the authorization endpoint. Change this if the path is already in use. */
         'path' => (string) env('MURMUR_AUTH_PATH', 'murmur/auth'),
-        /** Comma-separated Laravel middleware for the authorization route. Match your application's authentication setup. */
+        /** Comma-separated Laravel middleware for the authorization route. Publish this file to use middleware whose parameters contain commas. */
         'middleware' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('MURMUR_AUTH_MIDDLEWARE', 'web'))), fn (string $middleware): bool => $middleware !== '')),
     ],
 
@@ -127,7 +128,7 @@ return [
         'stream' => (string) env('MURMUR_REDIS_STREAM', 'murmur:events'),
         /** Seconds allowed for a Redis query outside the blocking live read. Increase this for slower Redis round trips. */
         'query_timeout' => (float) env('MURMUR_REDIS_QUERY_TIMEOUT', 5.0),
-        /** Milliseconds Redis waits for new events during a live read. Lower this to check the reader more often. */
+        /** Milliseconds Redis waits for new events during a live read. A stalled reader is replaced 5 seconds after this wait. */
         'block_ms' => (int) env('MURMUR_REDIS_BLOCK_MS', 5000),
     ],
 ];

@@ -41,8 +41,15 @@ class ServeCommand extends Command
             return self::FAILURE;
         }
 
-        $loop = Loop::get();
         $channel = config('murmur.server.log_channel');
+
+        if ($channel !== null && config("logging.channels.{$channel}") === null) {
+            $this->error("Log channel [{$channel}] is not defined.");
+
+            return self::FAILURE;
+        }
+
+        $loop = Loop::get();
         $server = new Server($config, $log, $loop, $channel === null ? null : Log::channel($channel));
         $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];
         $shuttingDown = false;
@@ -106,7 +113,7 @@ class ServeCommand extends Command
             requestTimeoutSeconds: (float) config('murmur.server.request_timeout'),
             maxReplayEvents: (int) config('murmur.server.max_replay_events'),
             shutdownGraceSeconds: (float) config('murmur.server.shutdown_grace'),
-            metricsEnabled: config('murmur.server.metrics.enabled'),
+            metricsEnabled: (bool) config('murmur.server.metrics.enabled'),
             metricsToken: config('murmur.server.metrics.token'),
         );
     }

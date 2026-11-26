@@ -39,14 +39,14 @@ class MurmurServiceProvider extends ServiceProvider
 
         $config = $this->app['config'];
         $defaults = require __DIR__.'/../config/murmur.php';
-        $overrides = $config->get('murmur', []);
+        $overrides = (array) $config->get('murmur', []);
         $merged = array_replace($defaults, $overrides);
 
         foreach (['server', 'http', 'auth', 'redis'] as $group) {
-            $merged[$group] = array_replace($defaults[$group], $overrides[$group] ?? []);
+            $merged[$group] = array_replace($defaults[$group], (array) ($overrides[$group] ?? []));
         }
 
-        $merged['server']['metrics'] = array_replace($defaults['server']['metrics'], $overrides['server']['metrics'] ?? []);
+        $merged['server']['metrics'] = array_replace($defaults['server']['metrics'], (array) ($overrides['server']['metrics'] ?? []));
 
         $config->set('murmur', $merged);
     }

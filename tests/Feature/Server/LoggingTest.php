@@ -130,3 +130,31 @@ it('still listens and drains when lifecycle logging fails', function () {
 
     expect(file_get_contents($this->errorLog))->toContain('Murmur graceful shutdown finished.');
 });
+
+it('keeps the hooks of a server that is still listening when another one closes', function () {
+    $first = new Server(new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort()), new MemoryEventLog, logger: $this->logger);
+    $second = new Server(new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort()), new MemoryEventLog);
+    $error = new RuntimeException('Still owned.');
+
+    try {
+        await($first->listen());
+        await($second->listen());
+        $second->close();
+        ErrorReporter::report($error);
+
+        expect($this->logger->entries)->toContain(['error', 'RuntimeException: Still owned.', ['exception' => $error]]);
+        expect(collect($first->metrics()->snapshot())->firstWhere('name', 'murmur_errors_total')['value'])->toBe(1);
+    } finally {
+        $first->close();
+        $second->close();
+    }
+});
+
+it('does not let a throwing error counter interrupt a report', function () {
+    ErrorReporter::logUsing($this->logger);
+    ErrorReporter::countUsing(fn () => throw new RuntimeException('Counter failed.'));
+
+    ErrorReporter::report(new RuntimeException('Reported anyway.'));
+
+    expect(array_column($this->logger->entries, 1))->toBe(['RuntimeException: Reported anyway.']);
+});

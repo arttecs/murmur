@@ -46,7 +46,9 @@ class MetricsHandler
         $headers = ['Cache-Control' => 'no-store'];
 
         if (stripos($request->getHeaderLine('Accept'), 'application/json') !== false) {
-            return new Response(200, $headers + ['Content-Type' => 'application/json'], json_encode(['metrics' => $metrics], JSON_THROW_ON_ERROR));
+            $samples = array_map(fn (array $sample): array => array_replace($sample, ['labels' => (object) $sample['labels']]), $metrics);
+
+            return new Response(200, $headers + ['Content-Type' => 'application/json'], json_encode(['metrics' => $samples], JSON_THROW_ON_ERROR));
         }
 
         return new Response(200, $headers + ['Content-Type' => 'text/plain; version=0.0.4; charset=utf-8'], $this->prometheus($metrics));

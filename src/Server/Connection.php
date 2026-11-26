@@ -122,6 +122,7 @@ class Connection
 
         $this->closed = true;
         $this->metrics?->increment('murmur_connections_closed_total');
+
         try {
             $this->stream->close();
         } finally {

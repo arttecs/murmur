@@ -47,6 +47,7 @@ it('returns the metrics snapshot as json when requested', function () {
     expect($response->getHeaderLine('Content-Type'))->toBe('application/json');
     expect($response->getHeaderLine('Cache-Control'))->toBe('no-store');
     expect(json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR))->toBe(['metrics' => $metrics->snapshot()]);
+    expect((string) $response->getBody())->toContain('"labels":{}')->not->toContain('"labels":[]');
 });
 
 it('requires the configured bearer token', function (?string $authorization, int $status) {

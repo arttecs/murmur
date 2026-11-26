@@ -18,9 +18,9 @@ use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Http\Client\Factory;
+use Illuminate\Http\Client\HttpClientException;
 use InvalidArgumentException;
 use stdClass;
-use Throwable;
 
 /**
  * Publish events, create streams and issue subscription tokens.
@@ -179,8 +179,8 @@ class MurmurManager
             $response = $request->get(rtrim($this->config->get('murmur.publish_url'), '/').'/metrics');
             $status = $response->status();
             $body = $status === 200 ? $response->body() : '';
-        } catch (Throwable) {
-            throw new MetricsUnavailable('The metrics request to the Murmur server failed.');
+        } catch (HttpClientException $exception) {
+            throw new MetricsUnavailable('The metrics request to the Murmur server failed.', previous: $exception);
         }
 
         if ($status !== 200) {

@@ -47,9 +47,9 @@ it('tracks events, connections, output bytes and gauges for a listening server',
         'murmur_connections' => 0,
         'murmur_sockets' => 0,
         'murmur_topics' => 0,
-        'murmur_memory_bytes' => memory_get_usage(true),
-        'murmur_memory_peak_bytes' => memory_get_peak_usage(true),
     ]);
+    expect($initial['murmur_memory_bytes'])->toBeInt()->toBeGreaterThan(0);
+    expect($initial['murmur_memory_peak_bytes'])->toBeGreaterThanOrEqual($initial['murmur_memory_bytes']);
 
     $reader = SseReader::open($h->url('/sse?topics=news,weather'));
     expect($reader->next()['retry'])->toBe('3000');
