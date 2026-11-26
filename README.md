@@ -23,7 +23,7 @@ Start the server from your Laravel application directory.
 php artisan murmur:serve
 ```
 
-The default address is `http://127.0.0.1:8080`. To override the bind address for a single invocation, use `--host` and `--port`. Update `MURMUR_PUBLIC_URL` when the public address changes. Update `MURMUR_PUBLISH_URL` when the address Laravel uses for HTTP publishing or metrics changes.
+The default address is `http://127.0.0.1:8080`. To override the bind address for a single invocation, use `--host` and `--port`. Update `MURMUR_PUBLIC_URL` when the public address changes. Update `MURMUR_PUBLISH_URL` when the address Laravel uses for HTTP publishing changes.
 
 ```sh
 php artisan murmur:serve --host=127.0.0.1 --port=8081
@@ -199,7 +199,7 @@ MURMUR_PUBLIC_URL=https://events.example.com
 
 Configure the Laravel connection named by `MURMUR_REDIS_CONNECTION` to reach the same Redis instance and database. Laravel appends events to the stream using that connection. Both sides use `database.redis.options.prefix` followed by `murmur.redis.stream` as the stream key. Keep both settings identical in the app and on every node, and enter the stream name without the prefix in `murmur.redis.stream`. The app uses `murmur.server.log_size` to trim the stream. Each Murmur node uses Redis stream metadata to detect whether a reconnecting subscriber's cursor predates the retained history.
 
-Run `php artisan murmur:serve` on each node and route `/sse` through a load balancer with response buffering disabled. With the Redis driver, a node starts listening only after it can reach Redis and resolve its starting cursor. It logs one message while waiting for Redis. A node listens on `127.0.0.1` by default, so set `MURMUR_HOST` to an address the load balancer can reach. Set `MURMUR_PUBLIC_URL` to the load balancer's public base URL. Each node reads the same stream, so a reconnect can resume on any node while its cursor is retained. The Redis driver disables the server's `POST /publish` endpoint. Laravel still uses `MURMUR_PUBLISH_URL` to read metrics.
+Run `php artisan murmur:serve` on each node and route `/sse` through a load balancer with response buffering disabled. With the Redis driver, a node starts listening only after it can reach Redis and resolve its starting cursor. It logs one message while waiting for Redis. A node listens on `127.0.0.1` by default, so set `MURMUR_HOST` to an address the load balancer can reach. Set `MURMUR_PUBLIC_URL` to the load balancer's public base URL. Each node reads the same stream, so a reconnect can resume on any node while its cursor is retained. The Redis driver disables the server's `POST /publish` endpoint.
 
 Replay history is one global log shared by all topics. Redis trims it approximately to `murmur.server.log_size` entries. During a Redis outage, each server retries its stream read one second after a failure. Murmur logs when the reader loses its connection and when it recovers. If Redis trimmed events during the outage, Murmur sends a `murmur.gap` event to connected subscribers before it resumes delivering retained events. The check errs towards signalling: a subscriber may receive `murmur.gap` when the only trimmed entries were ones it had already received. Replay queries share one Redis connection and each has a 5 second deadline by default, so a Redis slower than that fails the replays in flight and those subscribers reconnect.
 
