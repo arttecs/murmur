@@ -77,7 +77,7 @@ Pass these options to `new Murmur(options)`.
 
 For each private channel that needs a token, the client sends a JSON `POST` to `authEndpoint` with a body such as `{ "channel_name": "private-orders.42" }`. Once the shared connection ID is known, the body also includes `socket_id`. Up to four requests run concurrently per connection attempt. A change that replaces a pending attempt or closes the client aborts its outstanding requests. By default the client uses `credentials: 'include'`, the `Accept: application/json` and `Content-Type: application/json` headers, and the URL-decoded `XSRF-TOKEN` cookie as `X-XSRF-TOKEN` when the cookie is readable. For Laravel session authentication, make the session and CSRF cookies available and configure CORS if the endpoint is cross-origin.
 
-`auth.headers` accepts a `Record<string, string>` or a function that returns one synchronously or asynchronously. The client calls the function for each token request and merges the headers over the defaults case-insensitively. A supplied `X-XSRF-TOKEN` takes precedence over the cookie. `auth.credentials` is a Fetch `RequestCredentials` value and defaults to `'include'`. Use `withCredentials` to configure credentials on the SSE connections.
+`auth.headers` accepts a `Record<string, string>` or a function that returns one synchronously or asynchronously. The client calls the function for each token request and merges the headers over the defaults case-insensitively. A supplied `X-XSRF-TOKEN` takes precedence over the cookie. `auth.credentials` is a Fetch `RequestCredentials` value and defaults to `'include'`. Setting `credentials: 'omit'` skips reading the `XSRF-TOKEN` cookie. Use `withCredentials` to configure credentials on the SSE connections.
 
 For an API that uses bearer tokens, read the current access token when authorization runs.
 
@@ -124,7 +124,7 @@ const murmur = new Murmur({
 })
 ```
 
-The server defaults to 50 topics per connection and has an 8 KiB limit for the request line and headers. With one default JWT per topic, the server accepted about 46 four-digit order channels or 32 UUID order channels with lean headers. With a 1 KiB cookie, those counts were about 40 and 28. The client enforces a 6 KiB request-target budget to reserve room for headers, so its effective counts can be lower. If the URL exceeds that budget, the client emits `error` and waits for a subscription change. For pages with many private channels, configure a custom `authorizer` that returns one multi-topic token. [Protocol request budget](../docs/protocol.md#request-head-budget)
+The server defaults to 50 topics per connection and has an 8 KiB limit for the request line and headers. The client limits the UTF-8 byte length of the path and query to 6 KiB to reserve room for headers. With one default-shaped HS256 JWT per topic and a 10-digit Unix expiry, the first request to `/sse` fits 35 four-digit order topics like `private-orders.0042`, 24 UUID order topics like `private-orders.00000000-0000-4000-8000-000000000042`, or 40 short topics like `private-a`. These counts use distinct topics of each example's length, the client's URL encoding, and a cursorless request with no connection ID or `fresh` parameter. Extra query parameters and reconnect metadata take up part of the same budget. If the URL exceeds that budget, the client emits `error` and waits for a subscription change. For pages with many private channels, configure a custom `authorizer` that returns one multi-topic token.
 
 ## Streams
 

@@ -412,6 +412,76 @@ it('reports connection transitions using Echo status names and unsubscribes', as
   expect(status).toHaveBeenCalledTimes(5)
 })
 
+it('reports disconnected when every private channel is denied and connects on reauthorization', async () => {
+  const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: nowSeconds() + 900 }))
+    .mockResolvedValueOnce(new Response(null, { status: 403 }))
+    .mockResolvedValueOnce(new Response(null, { status: 419 }))
+  const instance = echo({ fetch })
+  const m = connectorOf(instance).murmur
+  const connected = vi.fn()
+  const disconnected = vi.fn()
+  const onStatus = vi.fn()
+  m.on('connected', connected)
+  m.on('disconnected', disconnected)
+  connectorOf(instance).onConnectionChange(onStatus)
+  instance.private('orders')
+  instance.private('alerts')
+  await wait(100)
+
+  expect(instance.connectionStatus()).toBe('disconnected')
+  expect(m.stats()).toMatchObject({ connected: false, channels: 2, connections: 0, disconnections: 0 })
+  expect(connected).not.toHaveBeenCalled()
+  expect(disconnected).not.toHaveBeenCalled()
+  expect(FakeEventSource.instances).toHaveLength(0)
+  expect(vi.getTimerCount()).toBe(0)
+
+  m.reauthorize('orders')
+  const source = await connection()
+  expect(instance.connectionStatus()).toBe('connecting')
+  source.dispatchEvent(new Event('open'))
+  expect(instance.connectionStatus()).toBe('connected')
+  expect(connected).toHaveBeenCalledExactlyOnceWith()
+
+  m.leave('orders')
+  await flush()
+  expect(instance.connectionStatus()).toBe('disconnected')
+  expect(m.stats().connected).toBe(false)
+  expect(disconnected).not.toHaveBeenCalled()
+  expect(onStatus.mock.calls).toEqual([
+    ['connecting'], ['disconnected'], ['connecting'], ['connected'], ['connecting'], ['disconnected'],
+  ])
+})
+
+it('reports failed when the subscription exceeds the URL budget and recovers when it fits', async () => {
+  const fetch = authFetch({ token: 'x'.repeat(7000), expires_at: nowSeconds() + 900 })
+  const instance = echo({ fetch })
+  const m = connectorOf(instance).murmur
+  const error = vi.fn()
+  const disconnected = vi.fn()
+  m.on('error', error)
+  m.on('disconnected', disconnected)
+  instance.channel('news')
+  instance.private('orders')
+  await wait(100)
+
+  expect(instance.connectionStatus()).toBe('failed')
+  expect(m.stats()).toMatchObject({ connected: false, connections: 0, disconnections: 0 })
+  expect(error).toHaveBeenCalledExactlyOnceWith(expect.any(Error))
+  expect(disconnected).not.toHaveBeenCalled()
+  expect(FakeEventSource.instances).toHaveLength(0)
+  expect(vi.getTimerCount()).toBe(0)
+
+  instance.leaveChannel('private-orders')
+  const source = await connection()
+  expect(instance.connectionStatus()).toBe('connecting')
+  source.dispatchEvent(new Event('open'))
+  expect(instance.connectionStatus()).toBe('connected')
+  instance.leaveChannel('news')
+  expect(instance.connectionStatus()).toBe('disconnected')
+  expect(m.stats().connected).toBe(false)
+  expect(disconnected).not.toHaveBeenCalled()
+})
+
 it('requires a non-empty SSE URL', () => {
   expect(() => new Echo({ broadcaster: MurmurConnector })).toThrow(/Murmur.*url/)
   expect(() => echo({ url: '' })).toThrow(/Murmur.*url/)

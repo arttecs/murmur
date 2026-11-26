@@ -282,6 +282,11 @@ export class MurmurConnector {
     })
     this.active = true
 
+    this.client.onConnectionPreparation(state => {
+      if (this.active) {
+        this.setStatus(state)
+      }
+    })
     this.client.on('connected', () => this.setStatus('connected'))
     this.client.on('disconnected', () => {
       for (const channel of Object.values(this.channels)) {
@@ -350,7 +355,6 @@ export class MurmurConnector {
     delete this.channels[name]
     const isPrivate = channel instanceof MurmurEchoPrivateChannel
     this.client.leaveSubscription(isPrivate ? name.slice(privatePrefix.length) : name, isPrivate)
-    this.setStatus(Object.keys(this.channels).length === 0 ? 'disconnected' : 'connecting')
   }
 
   /** Returns the server-issued ID or an empty value for Echo's request interceptors. */

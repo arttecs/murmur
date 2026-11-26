@@ -948,7 +948,7 @@ it.each([
   await flush()
 
   expect(constructorArgs.mock.calls).toEqual([
-    ['https://app.test/sse?topics=news&fresh=news', ...expected],
+    ['https://app.test/sse?topics=news', ...expected],
     ['https://app.test/sse?topics=alerts', ...expected],
   ])
 })
@@ -1443,30 +1443,35 @@ it('reports a protocol mismatch once and continues delivering on repeated connec
   expect(m.socketId()).toBe(id)
 })
 
-it('keeps a first join fresh until an unnumbered attach marker acknowledges it', async () => {
+it('omits fresh without a cursor but keeps a first join pending until attachment', async () => {
   const m = client({ retryMs: 10, url: 'https://app.test/sse?fresh=obsolete' })
-  m.channel('news')
+  m.channel('news').listen('.updated', () => {})
   await flush()
   const first = FakeEventSource.instances[0]
   assert.isDefined(first)
-  expect(new URL(first.url).searchParams.get('fresh')).toBe('news')
+  expect(new URL(first.url).searchParams.has('fresh')).toBe(false)
   first.fail()
 
   await wait(10)
   const retry = FakeEventSource.instances[1]
   assert.isDefined(retry)
-  expect(new URL(retry.url).searchParams.get('fresh')).toBe('news')
-  expect(m.stats().lastEventId).toBeUndefined()
-  retry.emit('murmur.attached', {}, '')
+  expect(new URL(retry.url).searchParams.has('fresh')).toBe(false)
   expect(m.stats().lastEventId).toBeUndefined()
   retry.dispatchEvent(new Event('open'))
+  retry.emit('updated', { topic: 'news', data: 1 }, '3-0')
   retry.fail()
 
   await wait(10)
-  const attached = FakeEventSource.instances[2]
-  assert.isDefined(attached)
-  expect(new URL(attached.url).searchParams.has('fresh')).toBe(false)
-  expect(new URL(attached.url).searchParams.has('lastEventId')).toBe(false)
+  const pending = FakeEventSource.instances[2]
+  assert.isDefined(pending)
+  expect(new URL(pending.url).searchParams.get('fresh')).toBe('news')
+  pending.emit('murmur.attached', {}, '')
+  expect(m.stats().lastEventId).toBe('3-0')
+  m.channel('alerts')
+  await flush()
+  const next = FakeEventSource.instances[3]
+  assert.isDefined(next)
+  expect(new URL(next.url).searchParams.get('fresh')).toBe('alerts')
 })
 
 it('closes a failed source and rebuilds fresh, token and cursor after replay or attachment', async () => {

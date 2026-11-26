@@ -115,6 +115,9 @@ type ClientEventArgs = {
 /** The names of events emitted by the client. */
 type ClientEvent = keyof ClientEventArgs
 
+/** A state reached while preparing a shared connection. */
+type ConnectionPreparation = 'connecting' | 'disconnected' | 'failed'
+
 /** A joined channel and its registered event callbacks. */
 type Subscription = {
   /** The subscription exposed to the application. */
@@ -188,6 +191,9 @@ export class Murmur {
     unauthorized: new Set(),
     error: new Set(),
   }
+
+  /** Observers of shared connection preparation. */
+  protected readonly preparationListeners = new Set<(state: ConnectionPreparation) => void>()
 
   /** The transport for the shared event stream. */
   protected readonly transport: Transport
@@ -383,6 +389,17 @@ export class Murmur {
     }
   }
 
+  /**
+   * Registers a connector observer for deliberate connection changes and terminal preparation states.
+   *
+   * @internal
+   */
+  public onConnectionPreparation(listener: (state: ConnectionPreparation) => void): void {
+    if (!this.closed) {
+      this.preparationListeners.add(listener)
+    }
+  }
+
   /** Returns the server-issued ID used for Laravel sender exclusion. */
   public socketId(): string | undefined {
     return this.connectionId
@@ -419,6 +436,8 @@ export class Murmur {
     this.cachedTokens.clear()
     this.deniedTopics.clear()
     this.updateEvents()
+    this.reportPreparation('disconnected')
+    this.preparationListeners.clear()
   }
 
   /** Creates a subscription or returns the existing channel for the same name and kind. */
@@ -443,6 +462,7 @@ export class Murmur {
     if (this.channels.size === 0) {
       this.attemptSubscriptions = []
       this.transport.close()
+      this.reportPreparation('disconnected')
       return
     }
     if (this.connectionQueued) {
@@ -454,6 +474,7 @@ export class Murmur {
       this.connectionQueued = false
       if (!this.closed && this.channels.size > 0) {
         this.transport.connect()
+        this.reportPreparation('connecting')
       }
     })
   }
@@ -478,6 +499,7 @@ export class Murmur {
 
     const topics = requested.filter(topic => !this.deniedTopics.has(topic))
     if (topics.length === 0) {
+      this.reportPreparation('disconnected')
       return
     }
 
@@ -502,13 +524,16 @@ export class Murmur {
       url.searchParams.set('connection', this.connectionId)
     }
     const subscriptions = [...this.channels.values()].filter(({ channel }) => !this.deniedTopics.has(channel.name))
-    const attached = new Set(subscriptions.filter(({ pending }) => !pending).map(({ channel }) => channel.name))
-    const fresh = topics.filter(topic => !attached.has(topic))
     url.searchParams.delete('fresh')
-    if (fresh.length > 0) {
-      url.searchParams.set('fresh', fresh.join(','))
+    if (lastEventId !== undefined) {
+      const attached = new Set(subscriptions.filter(({ pending }) => !pending).map(({ channel }) => channel.name))
+      const fresh = topics.filter(topic => !attached.has(topic))
+      if (fresh.length > 0) {
+        url.searchParams.set('fresh', fresh.join(','))
+      }
     }
     if (new TextEncoder().encode(url.pathname + url.search).length > requestTargetBudget) {
+      this.reportPreparation('failed')
       this.emit('error', new Error(
         `Murmur subscription URL exceeds the request budget with ${privateTopics.length} private channels requested. Use a multi-topic token for large private subscriptions or reduce the topic list.`,
       ))
@@ -516,6 +541,13 @@ export class Murmur {
     }
     this.attemptSubscriptions = subscriptions
     return url.href
+  }
+
+  /** Reports a shared connection preparation state to the connector. */
+  protected reportPreparation(state: ConnectionPreparation): void {
+    for (const listener of this.preparationListeners) {
+      invokeListener(listener, state)
+    }
   }
 
   /** Reuses valid credentials and authorizes missing private topics. */
