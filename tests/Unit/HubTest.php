@@ -157,7 +157,7 @@ it('replaces the topics of a connection that attaches again', function () {
     expect($hub->connectionCount())->toBe(1);
 });
 
-it('closes every connection', function () {
+it('closes every connection with the shutdown reason', function () {
     $hub = new Hub;
     [$a] = fakeConnection();
     [$b] = fakeConnection();
@@ -165,6 +165,8 @@ it('closes every connection', function () {
     $hub->attach($b, ['other']);
     $hub->closeAll();
 
+    $a->onClose(fn (string $reason) => expect($reason)->toBe('shutdown'));
+    $b->onClose(fn (string $reason) => expect($reason)->toBe('shutdown'));
     expect($a->isClosed())->toBeTrue();
     expect($b->isClosed())->toBeTrue();
     expect($hub->connectionCount())->toBe(0);
@@ -187,6 +189,7 @@ it('closes a failed connection, reports its error and continues fan-out', functi
 
         expect($failing->isClosed())->toBeTrue();
         expect($hub->connectionCount())->toBe(1);
+        $failing->onClose(fn (string $reason) => expect($reason)->toBe('error'));
         expect($output())->toContain("event: updated\n");
         expect(file_get_contents($errorLog))->toContain('The subscriber write failed.');
     } finally {

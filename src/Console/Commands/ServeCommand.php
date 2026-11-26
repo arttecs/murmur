@@ -3,6 +3,7 @@
 namespace Arttecs\Murmur\Console\Commands;
 
 use Arttecs\Murmur\Contracts\EventLog;
+use Arttecs\Murmur\Metrics\Snapshot;
 use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\Server\LifecycleRecorder;
 use Arttecs\Murmur\Server\LoopBackend;
@@ -171,13 +172,19 @@ class ServeCommand extends Command
 
     /**
      * Resolve the same node name for metrics and lifecycle records.
+     *
+     * @throws InvalidArgumentException
      */
     protected function workerNode(int $port): string
     {
         $node = config('murmur.metrics.node');
 
         if ($node !== null && (! is_string($node) || trim($node) !== '')) {
-            return is_string($node) ? $node : '';
+            if (! Snapshot::validNode($node)) {
+                throw new InvalidArgumentException('Murmur MURMUR_NODE is invalid. Use 1 to 128 ASCII letters, digits, dots, underscores, colons, or hyphens.');
+            }
+
+            return $node;
         }
 
         $host = gethostname();

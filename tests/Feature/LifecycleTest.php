@@ -7,6 +7,7 @@ use React\Http\Browser;
 use React\Socket\SocketServer;
 
 use function React\Async\await;
+use function React\Async\delay;
 
 it('dispatches accepted connections in order outside the server with the exact close reason', function (string $reason) {
     if ($reason === 'shutdown' && ! extension_loaded('pcntl')) {
@@ -168,7 +169,10 @@ it('rejects invalid lifecycle settings before binding the port', function (array
     [['murmur.lifecycle.batch' => 1001], 'lifecycle.batch must not exceed lifecycle.buffer'],
     [['murmur.lifecycle.interval' => INF], 'lifecycle.interval must be a positive, finite number'],
     [['murmur.lifecycle.interval' => 0], 'lifecycle.interval must be a positive, finite number'],
-    [['murmur.metrics.node' => "invalid\n"], 'valid worker node name'],
+    [['murmur.lifecycle.timeout' => 0], 'lifecycle.timeout must be a positive, finite number'],
+    [['murmur.lifecycle.timeout' => '1e400'], 'lifecycle.timeout must be a positive, finite number'],
+    [['murmur.lifecycle.timeout' => 'invalid'], 'lifecycle.timeout must be a positive, finite number'],
+    [['murmur.metrics.node' => "invalid\n"], 'MURMUR_NODE is invalid'],
 ]);
 
 it('sends every final batch for connections closed together on shutdown', function () {
@@ -321,3 +325,41 @@ it('flushes every shutdown close with the default spread or counts undelivered r
     '500 healthy streams' => [500, ''],
     '150 streams with a blocked listener' => [150, 'slow-shutdown'],
 ])->skip(! extension_loaded('pcntl'), 'Signal-driven shutdown requires ext-pcntl.');
+
+it('uses the lifecycle deadline independently of the metrics timeout', function (string $store) {
+    $port = ServerHarness::availablePort();
+    $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-');
+    $process = workerServingProcess($port, [
+        'MURMUR_METRICS_STORE' => $store,
+        'MURMUR_METRICS_TIMEOUT' => '10',
+        'MURMUR_TEST_METRICS_FILE' => $file,
+        'MURMUR_LIFECYCLE_EVENTS' => 'true',
+        'MURMUR_LIFECYCLE_TIMEOUT' => '0.1',
+        'MURMUR_LIFECYCLE_INTERVAL' => '0.01',
+        'MURMUR_TEST_LIFECYCLE_FILE' => $file,
+        'MURMUR_TEST_LIFECYCLE_MODE' => 'gate',
+    ]);
+
+    try {
+        $process->start();
+        waitForMetricsCondition(fn () => str_contains($process->getOutput(), 'Murmur is listening'), $process);
+        $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
+        $reader->start();
+        $reader->close();
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'waiting')) === 1, $process);
+        $snapshots = count(metricsTrace($file, 'saved'));
+
+        delay(0.3);
+        expect(substr_count($process->getErrorOutput(), 'Murmur lifecycle recorder timed out.'))->toBe(1)
+            ->and(metricsTrace($file, 'closed'))->toBe([])
+            ->and(metricsTrace($file, 'saved'))->toHaveCount($snapshots);
+
+        touch($file.'.release');
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'closed')) === 1, $process);
+    } finally {
+        touch($file.'.release');
+        $process->stop(2);
+        unlink($file.'.release');
+        unlink($file);
+    }
+})->with(['without metrics' => [''], 'with metrics' => ['fake']]);

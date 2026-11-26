@@ -8,6 +8,8 @@ use Arttecs\Murmur\Events\ConnectionOpened;
 use Arttecs\Murmur\Facades\Murmur;
 use Arttecs\Murmur\Server\Server;
 use Illuminate\Contracts\Debug\ExceptionHandler;
+use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
@@ -101,7 +103,41 @@ class MetricsTestServiceProvider extends ServiceProvider
             file_put_contents($file, json_encode(['pid' => getmypid(), ...$fields], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION)."\n", FILE_APPEND | LOCK_EX);
         };
 
-        $this->app['events']->listen([ConnectionOpened::class, ConnectionClosed::class], function (ConnectionOpened|ConnectionClosed $event) use ($record, $mode): void {
+        if ($mode === 'hygiene') {
+            $this->app->scoped('murmur-test-scope', fn () => (object) ['uses' => 0]);
+            config(['logging.default' => 'null']);
+            $channelContext = [];
+            $this->app['events']->listen(MessageLogged::class, function (MessageLogged $event) use (&$channelContext): void {
+                if ($event->message === 'lifecycle context probe') {
+                    $channelContext = $event->context;
+                }
+            });
+            $this->app['events']->listen(ConnectionOpened::class, function () use ($record, &$channelContext): void {
+                Log::info('lifecycle context probe');
+                $record(['phase' => 'hygiene', 'state' => [
+                    'uses' => app('murmur-test-scope')->uses++,
+                    'shared' => Log::sharedContext(),
+                    'channel' => $channelContext,
+                    'context' => Context::all(),
+                    'hidden' => Context::allHidden(),
+                ]]);
+                Log::shareContext(['shared' => 'value']);
+                Log::withContext(['local' => 'value']);
+                Context::add('public', 'value');
+                Context::addHidden('hidden', 'value');
+            });
+        }
+
+        $this->app['events']->listen([ConnectionOpened::class, ConnectionClosed::class], function (ConnectionOpened|ConnectionClosed $event) use ($record, $mode, $file): void {
+            if ($mode === 'gate' && $event instanceof ConnectionOpened) {
+                $record(['phase' => 'waiting']);
+
+                while (! is_file($file.'.release')) {
+                    clearstatcache(true, $file.'.release');
+                    usleep(10_000);
+                }
+            }
+
             if ($mode === 'slow-shutdown' && $event instanceof ConnectionClosed) {
                 pcntl_signal(SIGTERM, SIG_IGN);
                 $record(['phase' => 'waiting']);

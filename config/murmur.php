@@ -1,13 +1,13 @@
 <?php
 
-$metricSetting = function (string $name, mixed $default = null): mixed {
+$setting = function (string $name, mixed $default = null): mixed {
     $value = env($name);
 
     return $value === null || (is_string($value) && trim($value) === '') ? $default : $value;
 };
 
-$metricDuration = function (string $name, int|float $default) use ($metricSetting): mixed {
-    $value = $metricSetting($name, $default);
+$durationSetting = function (string $name, int|float $default) use ($setting): mixed {
+    $value = $setting($name, $default);
 
     return is_numeric($value) ? $value + 0 : $value;
 };
@@ -64,12 +64,12 @@ return [
         'signature_tolerance' => (int) env('MURMUR_SIGNATURE_TOLERANCE', 60),
         /** Event loop delay in milliseconds above which the server warns. */
         'loop_lag_threshold_ms' => (int) env('MURMUR_LOOP_LAG_THRESHOLD_MS', 100),
-        /** Seconds to drain connections on shutdown before closing the remaining sockets. */
+        /** Seconds to drain connections and flush lifecycle batches from the start of shutdown. */
         'shutdown_grace' => (float) env('MURMUR_SHUTDOWN_GRACE', 5.0),
         /** Seconds over which to end open streams. Set to 0 to end them together. */
         'shutdown_spread' => (float) env('MURMUR_SHUTDOWN_SPREAD', 2.0),
         /**
-         * Laravel channel for server errors and lifecycle messages. The
+         * Laravel channel for server errors and startup or shutdown messages. The
          * server writes from inside the event loop. Choose a fast local
          * channel such as stderr, a file, or syslog that makes no network requests.
          * Listeners of Laravel's MessageLogged event run inside the loop too.
@@ -134,13 +134,15 @@ return [
      */
     'lifecycle' => [
         /** Whether to notify Laravel listeners of open and closed SSE connections. */
-        'enabled' => env('MURMUR_LIFECYCLE_EVENTS', false),
+        'enabled' => $setting('MURMUR_LIFECYCLE_EVENTS', false),
         /** Maximum number of records waiting to be sent to the worker. */
-        'buffer' => env('MURMUR_LIFECYCLE_BUFFER', 1000),
+        'buffer' => $setting('MURMUR_LIFECYCLE_BUFFER', 1000),
         /** Maximum number of records sent in one worker message. */
-        'batch' => env('MURMUR_LIFECYCLE_BATCH', 100),
-        /** Seconds between attempts to send a lifecycle batch. */
-        'interval' => env('MURMUR_LIFECYCLE_INTERVAL', 1.0),
+        'batch' => $setting('MURMUR_LIFECYCLE_BATCH', 100),
+        /** Seconds between flush ticks. Full batches can also follow an acknowledgement. */
+        'interval' => $setting('MURMUR_LIFECYCLE_INTERVAL', 1.0),
+        /** Seconds to wait before reporting a late lifecycle acknowledgement. The worker slot stays occupied. */
+        'timeout' => $durationSetting('MURMUR_LIFECYCLE_TIMEOUT', 10.0),
     ],
 
     /**
@@ -149,37 +151,37 @@ return [
      */
     'metrics' => [
         /** Metrics store name: database, redis, cache, or a registered custom store. */
-        'store' => $metricSetting('MURMUR_METRICS_STORE'),
-        /** Seconds between recording attempts. Skip attempts while a write is pending. */
-        'interval' => $metricDuration('MURMUR_METRICS_INTERVAL', 15.0),
+        'store' => $setting('MURMUR_METRICS_STORE'),
+        /** Seconds between snapshot ticks. Busy ticks coalesce with lifecycle delivery enabled and are otherwise skipped. */
+        'interval' => $durationSetting('MURMUR_METRICS_INTERVAL', 15.0),
         /** Age in seconds at which readers consider the snapshot stale. Must exceed the interval. */
-        'ttl' => $metricDuration('MURMUR_METRICS_TTL', 60),
-        /** Seconds to wait for an acknowledgement before reporting a timeout. */
-        'timeout' => $metricDuration('MURMUR_METRICS_TIMEOUT', 10.0),
-        /** Stable server identifier. Defaults to the hostname and listening port. */
-        'node' => $metricSetting('MURMUR_NODE'),
+        'ttl' => $durationSetting('MURMUR_METRICS_TTL', 60),
+        /** Seconds to wait before reporting a late metrics acknowledgement. The worker slot stays occupied. */
+        'timeout' => $durationSetting('MURMUR_METRICS_TIMEOUT', 10.0),
+        /** Identifier shared by metrics snapshots and lifecycle events. Defaults to the hostname and listening port. */
+        'node' => $setting('MURMUR_NODE'),
         /** Comma-separated metric names to record. Leave empty to record all metrics. */
-        'only' => array_values(array_filter(array_map(trim(...), explode(',', (string) $metricSetting('MURMUR_METRICS_ONLY', ''))), fn (string $name): bool => $name !== '')),
+        'only' => array_values(array_filter(array_map(trim(...), explode(',', (string) $setting('MURMUR_METRICS_ONLY', ''))), fn (string $name): bool => $name !== '')),
         /** Database store settings. */
         'database' => [
             /** Name of the database connection, or null for the application default. */
-            'connection' => $metricSetting('MURMUR_METRICS_DB_CONNECTION'),
+            'connection' => $setting('MURMUR_METRICS_DB_CONNECTION'),
             /** Table to create and use for metrics. */
-            'table' => $metricSetting('MURMUR_METRICS_DB_TABLE', 'murmur_metrics'),
+            'table' => $setting('MURMUR_METRICS_DB_TABLE', 'murmur_metrics'),
         ],
         /** Redis store settings. */
         'redis' => [
             /** Laravel Redis connection to use. */
-            'connection' => $metricSetting('MURMUR_METRICS_REDIS_CONNECTION', 'default'),
+            'connection' => $setting('MURMUR_METRICS_REDIS_CONNECTION', 'default'),
             /** Hash key before Laravel applies the Redis prefix. */
-            'key' => $metricSetting('MURMUR_METRICS_REDIS_KEY', 'murmur:metrics'),
+            'key' => $setting('MURMUR_METRICS_REDIS_KEY', 'murmur:metrics'),
         ],
         /** Cache store settings. */
         'cache' => [
             /** Name of the Laravel cache store, or null for the application default. */
-            'store' => $metricSetting('MURMUR_METRICS_CACHE_STORE'),
+            'store' => $setting('MURMUR_METRICS_CACHE_STORE'),
             /** Prefix for the cache entries holding snapshots and their index. */
-            'prefix' => $metricSetting('MURMUR_METRICS_CACHE_PREFIX', 'murmur:metrics:'),
+            'prefix' => $setting('MURMUR_METRICS_CACHE_PREFIX', 'murmur:metrics:'),
         ],
     ],
 ];

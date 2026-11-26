@@ -9,6 +9,7 @@ it('closes a connection whose client stopped reading', function () {
     $connection = new Connection($stream, maxBufferBytes: 10);
     $connection->send(str_repeat('x', 11));
     expect($connection->isClosed())->toBeTrue();
+    $connection->onClose(fn (string $reason) => expect($reason)->toBe('slow_consumer'));
 });
 
 it('runs close listeners once', function () {
@@ -65,4 +66,17 @@ it('calls a close listener immediately when already closed', function () {
     });
 
     expect($calls)->toBe(1);
+});
+
+it('keeps the stream error as the close reason', function () {
+    [$connection, , $stream] = fakeConnection();
+    $reasons = [];
+    $connection->onClose(function (string $reason) use (&$reasons): void {
+        $reasons[] = $reason;
+    });
+
+    $stream->emit('error', [new RuntimeException('Stream failed.')]);
+    $stream->close();
+
+    expect($reasons)->toBe(['error']);
 });

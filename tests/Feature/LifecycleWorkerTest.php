@@ -206,3 +206,52 @@ it('validates decoded lifecycle topic UTF-8 and byte length', function (string $
         unlink($file);
     }
 })->with('wire topic boundaries');
+
+it('drops and reports an unencodable lifecycle record while retaining the rest of the batch', function () {
+    $errors = 0;
+    $counter = function () use (&$errors): void {
+        $errors++;
+    };
+    $logger = new NullLogger;
+    ErrorReporter::countUsing($counter);
+    ErrorReporter::logUsing($logger);
+    $recorder = new LifecycleRecorder(3);
+    $record = [
+        'connectionId' => str_repeat('a', 32),
+        'topics' => ['news'],
+        'occurredAt' => 123,
+    ];
+    $recorder->enqueue($record);
+    $recorder->enqueue($record + ['reason' => 'error', 'durationSeconds' => INF]);
+    $recorder->enqueue(['occurredAt' => 124] + $record);
+
+    try {
+        [$payload, $sent, $dropped] = $recorder->batch('edge', 3, Worker::MAX_LINE_BYTES);
+
+        expect($sent)->toBe(2)
+            ->and($dropped)->toBe(1)
+            ->and($errors)->toBe(1)
+            ->and(array_column(json_decode($payload, true, flags: JSON_THROW_ON_ERROR)['records'], 'occurredAt'))->toBe([123, 124])
+            ->and($recorder->pending())->toBeFalse();
+    } finally {
+        ErrorReporter::forget($counter, $logger);
+    }
+});
+
+it('clears scoped instances and both forms of logging context between lifecycle messages', function () {
+    $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-worker-');
+
+    try {
+        $line = lifecycleWorkerLine([lifecycleWorkerRecord()]);
+        $process = lifecycleWorkerProcess($file, $line.$line, ['MURMUR_TEST_LIFECYCLE_MODE' => 'hygiene']);
+
+        expect($process->getExitCode())->toBe(0, $process->getErrorOutput())
+            ->and($process->getOutput())->toBe("ok\nok\n")
+            ->and(array_map(fn (object $entry): array => (array) $entry->state, metricsTrace($file, 'hygiene')))->toBe([
+                ['uses' => 0, 'shared' => [], 'channel' => [], 'context' => [], 'hidden' => []],
+                ['uses' => 0, 'shared' => [], 'channel' => [], 'context' => [], 'hidden' => []],
+            ]);
+    } finally {
+        unlink($file);
+    }
+});

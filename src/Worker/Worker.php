@@ -249,8 +249,6 @@ class Worker
 
     /**
      * Hand one bounded batch to the worker and count its records.
-     *
-     * @throws \JsonException
      */
     protected function sendLifecycle(): void
     {
@@ -260,7 +258,7 @@ class Worker
 
         if ($sent > 0) {
             $this->pendingLifecycle = $sent;
-            $this->send('lifecycle', $payload, $this->config?->timeout ?? 10.0);
+            $this->send('lifecycle', $payload, $this->lifecycle->timeout);
             $this->metrics?->increment('murmur_lifecycle_sent_total', $sent);
         }
     }
@@ -501,7 +499,7 @@ class Worker
     }
 
     /**
-     * Cancel the timeout for the current snapshot.
+     * Cancel the timeout for the current message.
      */
     protected function cancelDeadline(): void
     {

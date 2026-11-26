@@ -2,7 +2,9 @@
 
 namespace Arttecs\Murmur\Server;
 
+use RuntimeException;
 use SplQueue;
+use Throwable;
 
 /**
  * Buffer connection lifecycle records in order until the worker can accept them.
@@ -60,21 +62,36 @@ class LifecycleRecorder
      * Take an ordered batch within the worker's count and byte limits.
      *
      * @return array{string, int, int} The encoded batch, record count, and drop count.
-     *
-     * @throws \JsonException
      */
     public function batch(string $node, int $limit, int $maxBytes): array
     {
-        $prefix = '{"type":"lifecycle","node":'.json_encode($node, JSON_THROW_ON_ERROR).',"records":[';
+        $encodedNode = json_encode($node);
+
+        if ($encodedNode === false) {
+            ErrorReporter::report(new RuntimeException('Murmur could not encode the lifecycle batch node.'));
+
+            return ['', 0, $this->stop()];
+        }
+
+        $prefix = '{"type":"lifecycle","node":'.$encodedNode.',"records":[';
         $suffix = ']}';
         $bytes = strlen($prefix) + strlen($suffix);
         $encoded = [];
         $dropped = 0;
 
         while ($this->pending() && count($encoded) + $dropped < $limit) {
-            $record = $this->records->bottom();
-            $record['topics'] = array_map(base64_encode(...), $record['topics']);
-            $json = json_encode($record, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+            try {
+                $record = $this->records->bottom();
+                $record['topics'] = array_map(base64_encode(...), $record['topics']);
+                $json = json_encode($record, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+            } catch (Throwable) {
+                $this->records->dequeue();
+                $dropped++;
+                ErrorReporter::report(new RuntimeException('Murmur could not encode a lifecycle record.'));
+
+                continue;
+            }
+
             $size = strlen($json) + (int) ($encoded !== []);
 
             if ($bytes + $size > $maxBytes) {

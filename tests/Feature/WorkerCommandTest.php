@@ -130,7 +130,7 @@ it('refuses invalid store configuration at startup before reading stdin', functi
         ->and($process->getOutput())->toBe('')
         ->and($process->getErrorOutput())->toBe($message."\n");
 })->with([
-    [null, 'No Murmur metrics store is configured.'],
+    [null, 'Murmur worker requires a metrics store or lifecycle events.'],
     ['unknown', 'Murmur metrics store configuration is invalid.'],
 ]);
 

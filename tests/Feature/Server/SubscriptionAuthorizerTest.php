@@ -4,6 +4,7 @@ use Arttecs\Murmur\Exceptions\InvalidToken;
 use Arttecs\Murmur\Server\Auth\Grant;
 use Arttecs\Murmur\Server\Http\SseHandler;
 use Arttecs\Murmur\Server\Hub;
+use Arttecs\Murmur\Server\LifecycleRecorder;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\ServerConfig;
 use Arttecs\Murmur\Tests\Support\CallbackSubscriptionAuthorizer;
@@ -197,3 +198,29 @@ it('cancels pending authorization when the client closes the socket first', func
         $client->close();
     }
 });
+
+it('queues no events when the grant is denied or the client closes during authorization', function (bool $disconnect, int $status) {
+    $pending = new Deferred;
+    $recorder = new LifecycleRecorder(10);
+    $handler = new SseHandler(
+        new ServerConfig(str_repeat('x', 32)),
+        new MemoryEventLog,
+        new Hub(lifecycle: $recorder),
+        Loop::get(),
+        new CallbackSubscriptionAuthorizer(fn () => $pending->promise()),
+        fn () => true,
+    );
+    $writable = true;
+    $client = $this->createStub(ConnectionInterface::class);
+    $client->method('isWritable')->willReturnCallback(function () use (&$writable): bool {
+        return $writable;
+    });
+    $request = (new ServerRequest('GET', '/sse'))->withQueryParams(['topics' => 'private-a']);
+
+    $response = $handler($request, $client);
+    $writable = ! $disconnect;
+    $pending->resolve(new Grant([$disconnect ? 'private-a' : 'private-b'], time() + 30));
+
+    expect(await($response)->getStatusCode())->toBe($status)
+        ->and($recorder->pending())->toBeFalse();
+})->with(['denied' => [false, 403], 'client gone' => [true, 503]]);

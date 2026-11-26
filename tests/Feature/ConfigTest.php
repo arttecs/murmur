@@ -52,7 +52,7 @@ class ConfigTest extends TestCase
         (new MurmurServiceProvider($this->app))->register();
 
         $this->assertSame([], config('murmur.server.allowed_origins'));
-        $this->assertSame(['enabled' => false, 'buffer' => 1000, 'batch' => 100, 'interval' => 1.0], config('murmur.lifecycle'));
+        $this->assertSame(['enabled' => false, 'buffer' => 1000, 'batch' => 100, 'interval' => 1.0, 'timeout' => 10.0], config('murmur.lifecycle'));
         $this->assertSame('app-events', config('murmur.redis.stream'));
         $this->assertSame(5.0, config('murmur.server.shutdown_grace'));
         $this->assertSame(2.0, config('murmur.server.shutdown_spread'));
@@ -75,6 +75,12 @@ class ConfigTest extends TestCase
             ['MURMUR_LIFECYCLE_BUFFER', '10', 'lifecycle.buffer', '10'],
             ['MURMUR_LIFECYCLE_BATCH', '2', 'lifecycle.batch', '2'],
             ['MURMUR_LIFECYCLE_INTERVAL', '0.25', 'lifecycle.interval', '0.25'],
+            ['MURMUR_LIFECYCLE_TIMEOUT', '0.5', 'lifecycle.timeout', 0.5],
+            ['MURMUR_LIFECYCLE_EVENTS', ' ', 'lifecycle.enabled', false],
+            ['MURMUR_LIFECYCLE_BUFFER', ' ', 'lifecycle.buffer', 1000],
+            ['MURMUR_LIFECYCLE_BATCH', ' ', 'lifecycle.batch', 100],
+            ['MURMUR_LIFECYCLE_INTERVAL', ' ', 'lifecycle.interval', 1.0],
+            ['MURMUR_LIFECYCLE_TIMEOUT', ' ', 'lifecycle.timeout', 10.0],
             ['MURMUR_DRIVER', 'custom', 'driver', 'custom'],
             ['MURMUR_SECRET', 'different-secret-with-at-least-32-bytes', 'secret', 'different-secret-with-at-least-32-bytes'],
             ['MURMUR_HOST', '0.0.0.0', 'server.host', '0.0.0.0'],

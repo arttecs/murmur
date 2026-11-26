@@ -14,7 +14,9 @@ use Arttecs\Murmur\Worker\LifecycleConfig;
 use Arttecs\Murmur\Worker\Worker;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Events\Dispatcher;
+use Illuminate\Log\Context\Repository as ContextRepository;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Facade;
 use InvalidArgumentException;
 use stdClass;
 use Throwable;
@@ -27,7 +29,7 @@ use Throwable;
 class WorkerCommand extends Command
 {
     /**
-     * The command name used by the server's recorder.
+     * The command name used to launch the worker.
      */
     protected $signature = 'murmur:worker';
 
@@ -70,7 +72,7 @@ class WorkerCommand extends Command
             }
 
             if ($store === null && $lifecycle === null) {
-                return $this->failure('No Murmur metrics store is configured.');
+                return $this->failure('Murmur worker requires a metrics store or lifecycle events.');
             }
 
             $this->clearQueryLogs();
@@ -128,7 +130,7 @@ class WorkerCommand extends Command
 
             return false;
         } finally {
-            $this->clearQueryLogs();
+            $this->resetMessageState();
         }
     }
 
@@ -247,6 +249,38 @@ class WorkerCommand extends Command
         }
 
         return new ConnectionClosed($id, $node, $topics, $occurredAt, (float) $duration, $reason);
+    }
+
+    /**
+     * Reset per-message database logs, logging context, and container scope.
+     */
+    protected function resetMessageState(): void
+    {
+        $this->clearQueryLogs();
+        $app = app();
+
+        if ($app->resolved('log')) {
+            $log = $app->make('log');
+
+            if (method_exists($log, 'flushSharedContext')) {
+                $log->flushSharedContext();
+            }
+
+            if (method_exists($log, 'withoutContext')) {
+                $log->withoutContext();
+            }
+        }
+
+        if ($app->resolved(ContextRepository::class)) {
+            $context = $app->make(ContextRepository::class);
+
+            if (method_exists($context, 'flush')) {
+                $context->flush();
+            }
+        }
+
+        $app->forgetScopedInstances();
+        Facade::clearResolvedInstances();
     }
 
     /**
