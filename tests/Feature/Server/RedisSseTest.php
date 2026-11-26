@@ -97,6 +97,46 @@ it('sends a gap to an already connected subscriber after redis trims unread even
     }
 });
 
+it('checks for trimming before delivering a backlog on a connected redis reader', function (bool $trimmed) {
+    [$log, $key] = redisLog(maxLength: 2);
+    $client = $this->redisFixtures[$key]['client'];
+    $readerId = redisReaderId($log);
+    $h = ServerHarness::start(['heartbeatSeconds' => 0.2], $log);
+    $path = $h->url('/sse?topics=news');
+    $r = SseReader::open($path);
+    $r->start();
+    waitForRedisReader($client, $readerId);
+
+    await($client->multi());
+
+    if ($trimmed) {
+        await($client->xadd($key, 'MAXLEN', '=', 2, '*', 'topic', 'news', 'name', 'discarded', 'data', 'null'));
+    }
+
+    foreach (['first', 'second'] as $name) {
+        await($client->xadd($key, 'MAXLEN', '=', 2, '*', 'topic', 'news', 'name', $name, 'data', 'null'));
+    }
+
+    [$first, $second] = array_slice(await($client->exec()), -2);
+    $frame = $r->next();
+
+    if ($trimmed) {
+        expect($frame)->toMatchArray(['event' => 'murmur.gap', 'data' => '{}', 'id' => null]);
+        $frame = $r->next();
+    }
+
+    expect($frame)->toMatchArray(['event' => 'first', 'id' => $first]);
+    expect($r->next())->toMatchArray(['event' => 'second', 'id' => $second]);
+    waitForRedisReader($client, $readerId);
+    $heartbeat = $r->next();
+    expect($heartbeat)->toMatchArray(['event' => 'murmur.heartbeat', 'id' => $second]);
+    $r->close();
+
+    $resumed = SseReader::open($path, ['Last-Event-ID' => $heartbeat['id']]);
+    $resumed->start(replaying: true);
+    expect($resumed->attached()['id'])->toBe($second);
+})->with(['trimmed' => [true], 'retained' => [false]]);
+
 it('does not repeat an event that the replay already delivered', function () {
     $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
     $previous = ini_set('error_log', $errorLog);

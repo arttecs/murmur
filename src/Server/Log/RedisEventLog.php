@@ -87,7 +87,7 @@ class RedisEventLog implements EventLog
     protected array $listeners = [];
 
     /**
-     * The listeners notified when history is lost during reader recovery.
+     * The listeners notified when the reader loses history.
      *
      * @var list<callable(): void>
      */
@@ -106,7 +106,7 @@ class RedisEventLog implements EventLog
     public function __construct(
         protected string $redisUrl,
         protected string $streamKey,
-        int $maxLength = 10000,
+        protected int $maxLength = 10000,
         ?LoopInterface $loop = null,
         protected int $maxPayloadBytes = 65536,
         protected float $queryTimeoutSeconds = 5.0,
@@ -196,7 +196,7 @@ class RedisEventLog implements EventLog
      *
      * @return PromiseInterface<bool>
      */
-    protected function hasGap(?EventId $after, Client $client): PromiseInterface
+    protected function hasGap(?EventId $after, Client $client, bool $allowMissing = true): PromiseInterface
     {
         return $this->query($client, 'xinfo', 'STREAM', $this->streamKey)->then(function (array $fields) use ($after): bool {
             $info = array_column(array_chunk($fields, 2), 1, 0);
@@ -209,8 +209,8 @@ class RedisEventLog implements EventLog
             $first = EventId::tryParse($firstEntry[0]);
 
             return $first === null || ($after !== null && $info['entries-added'] > $info['length'] && $after->compare($first) < 0);
-        }, function (Throwable $error): bool {
-            if ($error instanceof ErrorReply && $error->getMessage() === 'ERR no such key') {
+        }, function (Throwable $error) use ($allowMissing): bool {
+            if ($allowMissing && $error instanceof ErrorReply && $error->getMessage() === 'ERR no such key') {
                 return false;
             }
 
@@ -330,6 +330,9 @@ class RedisEventLog implements EventLog
 
     /**
      * Resolve the starting cursor or read new stream entries from the current cursor.
+     *
+     * If MAXLEN trimming passed the cursor, every retained entry is newer
+     * than the cursor and XREAD returns at least the configured length.
      */
     protected function read(): void
     {
@@ -353,33 +356,61 @@ class RedisEventLog implements EventLog
 
         $this->reader->xread('BLOCK', $this->blockMs, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
             $this->cancelReadDeadline();
-            $this->reportReaderRecovery();
+            $entries = $streams[0][1] ?? [];
 
-            try {
-                foreach ($streams[0][1] ?? [] as $entry) {
-                    $this->cursor = $entry[0];
-                    $event = $this->decode($entry);
+            if (count($entries) < $this->maxLength) {
+                $this->deliver($entries);
 
-                    if ($event === null) {
-                        continue;
+                return;
+            }
+
+            $this->hasGap(EventId::tryParse($this->cursor), $this->reader, allowMissing: false)->then(function (bool $gap) use ($entries): void {
+                if ($gap && ! $this->readerGapReported) {
+                    $this->notifyGapListeners();
+                }
+
+                $this->deliver($entries);
+            }, $this->retryRead(...));
+        }, $this->retryRead(...));
+    }
+
+    /**
+     * Deliver a verified batch in stream order and resume reading.
+     *
+     * @param  list<array{string, list<string>}>  $entries
+     */
+    protected function deliver(array $entries): void
+    {
+        if ($this->closed) {
+            return;
+        }
+
+        $this->reportReaderRecovery();
+
+        try {
+            foreach ($entries as $entry) {
+                $this->cursor = $entry[0];
+                $event = $this->decode($entry);
+
+                if ($event === null) {
+                    continue;
+                }
+
+                foreach ($this->listeners as $listener) {
+                    try {
+                        $listener($event);
+                    } catch (Throwable $error) {
+                        ErrorReporter::report($error);
                     }
 
-                    foreach ($this->listeners as $listener) {
-                        try {
-                            $listener($event);
-                        } catch (Throwable $error) {
-                            ErrorReporter::report($error);
-                        }
-
-                        if ($this->closed) {
-                            return;
-                        }
+                    if ($this->closed) {
+                        return;
                     }
                 }
-            } finally {
-                $this->read();
             }
-        }, $this->retryRead(...));
+        } finally {
+            $this->read();
+        }
     }
 
     /**

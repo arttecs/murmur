@@ -1,5 +1,6 @@
 <?php
 
+use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
@@ -194,6 +195,87 @@ it('retries an unanswered initial cursor query on a fresh redis connection', fun
         unlink($errorLog);
     }
 });
+
+it('retries from the previous cursor if a live trim check fails', function (bool $stalled) {
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
+    $socket = new SocketServer('127.0.0.1:0');
+    $log = new RedisEventLog(str_replace('tcp://', 'redis://', $socket->getAddress()), 'test', maxLength: 1, queryTimeoutSeconds: 0.05);
+    $clients = [];
+    $reads = [];
+    $checks = 0;
+    $seen = [];
+    $delivered = new Deferred;
+    $factory = new ProtocolFactory;
+    $serializer = $factory->createSerializer();
+    $entry = fn (string $id, string $name): array => [$id, ['topic', 'news', 'name', $name, 'data', 'null']];
+
+    $socket->on('connection', function (ConnectionInterface $client) use (&$clients, &$reads, &$checks, $factory, $serializer, $entry, $stalled): void {
+        $clients[] = $client;
+        $parser = $factory->createRequestParser();
+
+        $client->on('data', function (string $data) use ($parser, $client, &$reads, &$checks, $serializer, $entry, $stalled): void {
+            foreach ($parser->pushIncoming($data) as $message) {
+                $arguments = $message->getValueNative();
+
+                switch (strtoupper($arguments[0])) {
+                    case 'XREVRANGE':
+                        $client->write($serializer->getReplyMessage([$entry('1-0', 'before')]));
+                        break;
+                    case 'XREAD':
+                        $reads[] = $arguments[5];
+
+                        if (count($reads) === 1) {
+                            $client->write($serializer->getReplyMessage([['test', [$entry('2-0', 'unverified'), $entry('3-0', 'unverified')]]]));
+                        } elseif (count($reads) === 2) {
+                            $client->write($serializer->getReplyMessage([['test', [$entry('4-0', 'retained')]]]));
+                        }
+                        break;
+                    case 'XINFO':
+                        if (++$checks === 1) {
+                            if (! $stalled) {
+                                $client->write("-ERR trim check failed\r\n");
+                            }
+
+                            break;
+                        }
+
+                        $client->write($serializer->getReplyMessage(['length', 1, 'entries-added', 4, 'first-entry', $entry('4-0', 'retained')]));
+                        break;
+                }
+            }
+        });
+    });
+
+    try {
+        $log->onGap(function () use (&$seen): void {
+            $seen[] = 'gap';
+        });
+        $log->subscribe(function (Event $event) use (&$seen, $delivered): void {
+            $seen[] = $event->name;
+
+            if ($event->name === 'retained') {
+                $delivered->resolve(null);
+            }
+        });
+
+        await(timeout($delivered->promise(), 3.0));
+
+        expect($seen)->toBe(['gap', 'retained']);
+        expect(array_slice($reads, 0, 2))->toBe(['1-0', '1-0']);
+        expect($clients)->toHaveCount($stalled ? 2 : 1);
+    } finally {
+        $log->close();
+        $socket->close();
+
+        foreach ($clients as $client) {
+            $client->close();
+        }
+
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
+})->with(['error reply' => [false], 'deadline' => [true]]);
 
 it('rejects invalid redis reader timing settings', function (string $setting, int|float $value) {
     expect(fn () => new RedisEventLog('redis://127.0.0.1:6379', 'test', ...[$setting => $value]))
