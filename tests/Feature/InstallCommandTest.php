@@ -203,5 +203,5 @@ it('prints one development port hint when adding a loopback origin', function (s
     ['HTTP://Localhost:80/path', 'http://localhost'],
     ['http://127.0.0.2:5173', 'http://127.0.0.2:5173'],
     ['https://[::1]:443', 'https://[::1]'],
-    ['http://[0:0:0:0:0:0:0:1]', 'http://[0:0:0:0:0:0:0:1]'],
+    ['http://[0:0:0:0:0:0:0:1]', 'http://[::1]'],
 ]);

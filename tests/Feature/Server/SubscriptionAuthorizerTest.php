@@ -94,6 +94,23 @@ it('reports an unexpected authorizer error and answers 500 without stopping the 
     }
 })->with([false, true]);
 
+it('answers 500 when a custom authorizer constructs an invalid grant', function () {
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
+
+    try {
+        $authorizer = new CallbackSubscriptionAuthorizer(fn (): PromiseInterface => resolve(new Grant([], 0)));
+        $h = ServerHarness::start(authorizer: $authorizer);
+        $response = SseReader::open($h->url('/sse?topics=private-a&token=opaque'));
+
+        expect($response->status())->toBe(500);
+        expect($h->metrics()->value('murmur_errors_total'))->toBe(1);
+    } finally {
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
+});
+
 it('bounds unsettled authorization by the request deadline and ignores a late grant', function () {
     $pending = new Deferred;
     $calls = 0;

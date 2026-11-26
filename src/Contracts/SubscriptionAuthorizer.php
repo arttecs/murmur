@@ -18,6 +18,7 @@ interface SubscriptionAuthorizer
      * no token was supplied, up to max_topics_per_connection calls per request.
      * Tokens must not contain commas. This method runs in the event loop.
      * Use non-blocking I/O and cache or bound the work per request.
+     * Constructing an invalid Grant throws, and the server responds with HTTP 500.
      *
      * @param  list<string>  $topics
      * @return PromiseInterface<Grant>

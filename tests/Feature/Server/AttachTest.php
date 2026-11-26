@@ -213,6 +213,28 @@ it('resumes a newly joined topic from the acknowledged join after disconnecting'
     expect($resumed->next()['id'])->toBe($live);
 })->with(['memory', 'redis']);
 
+it('repeats a below-floor resume gap on an empty memory log until it can supply a numbered marker', function () {
+    $log = new MemoryEventLog(ids: new EventIdGenerator(fn (): int => 10));
+    $h = ServerHarness::start(log: $log);
+    $path = $h->url('/sse?topics=news');
+
+    foreach ([null, null, '10-1'] as $tail) {
+        if ($tail !== null) {
+            $log->append(new Event('other', 'first-in-new-log'));
+        }
+
+        $stale = SseReader::open($path, ['Last-Event-ID' => '9-0']);
+        $stale->start(replaying: true);
+        expect($stale->next()['event'])->toBe('murmur.gap');
+        expect($stale->attached()['id'])->toBe($tail);
+        $stale->close();
+    }
+
+    $resumed = SseReader::open($path, ['Last-Event-ID' => '10-1']);
+    $resumed->start(replaying: true);
+    expect($resumed->attached()['id'])->toBe('10-1');
+});
+
 it('resumes a quiet subscription without a gap after unrelated traffic trims its previous cursor', function (string $driver) {
     [$log, $publish] = attachTestLog($driver, capacity: 2);
     $h = ServerHarness::start(['heartbeatSeconds' => 0.2], $log);

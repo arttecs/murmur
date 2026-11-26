@@ -355,3 +355,18 @@ it('matches the browser origin when the allowlist spells its default port explic
     expect($reader->status())->toBe(200);
     expect($reader->header('Access-Control-Allow-Origin'))->toBe($origin);
 })->with([['https://app.test', 443], ['http://app.test', 80]]);
+
+it('matches equivalent numeric ports and IPv6 literals while echoing the request origin', function (string $configured, string $origin) {
+    $h = ServerHarness::start(['allowedOrigins' => [$configured]]);
+    $reader = SseReader::open($h->url('/sse?topics=news'), ['Origin' => $origin]);
+
+    expect($reader->status())->toBe(200);
+    expect($reader->header('Access-Control-Allow-Origin'))->toBe($origin);
+})->with([
+    ['https://app.test:08443', 'https://app.test:8443'],
+    ['https://app.test:8443', 'https://app.test:08443'],
+    ['https://app.test:00443', 'https://app.test'],
+    ['https://[0:0:0:0:0:0:0:1]:08443', 'https://[::1]:8443'],
+    ['https://[2001:db8::1]', 'https://[2001:0DB8:0:0:0:0:0:1]'],
+    ['https://[::ffff:192.0.2.1]', 'https://[::ffff:c000:201]'],
+]);

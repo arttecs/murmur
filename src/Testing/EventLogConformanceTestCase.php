@@ -127,11 +127,13 @@ abstract class EventLogConformanceTestCase extends TestCase
         $empty = $this->await($this->log->since($cursor, [], 10));
         self::assertNull($empty->tail);
         self::assertSame([], $empty->events);
+        self::assertFalse($empty->gap);
 
         $id = $this->append($append, new Event('news', 'first'));
         $sample = $this->await($this->log->since($cursor, [], 10));
         self::assertEquals($id, $sample->tail);
         self::assertSame([], $sample->events);
+        self::assertFalse($sample->gap);
     }
 
     /**

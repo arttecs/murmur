@@ -51,7 +51,7 @@ Send an authenticated JSON request to `POST /broadcasting/auth` with `{"channel_
 
 Request a token for each private topic and send the tokens as one comma-separated, URL-encoded `token` query parameter on `/sse`. One expired token anywhere in the list fails the whole request with 401, even if other tokens grant all requested topics. Drop a channel's token when you leave it and refresh before the earliest expiry of the tokens you still send.
 
-The 8 KiB request-head limit often takes effect before the default `server.max_topics_per_connection` limit of 50. With one JWT per channel and lean headers, 19-byte topics such as `private-orders.0042` produced 149-byte JWTs and fit 46 channels. UUID order topics produced 192-byte JWTs and fit 32. At the 200-byte topic limit, 391-byte JWTs fit 13 channels. Fifty channels fit in the test with 9-byte topics and 136-byte JWTs. Headers such as cookies reduce these counts. To fit more topics, authorize them in your own Laravel endpoint and return one token minted with `Murmur::token(['private-orders.42', 'private-orders.43'])`. See the [wire protocol measurements](docs/protocol.md#request-head-budget).
+The 8 KiB request-head limit often takes effect before the default `server.max_topics_per_connection` limit of 50. With one JWT per channel and Chrome-style request headers, the server accepted 49 short 9-byte topics, 43 four-digit order topics, 30 UUID order topics, or 12 topics at the 200-byte limit. Longer headers and cookies reduce these counts. To fit more topics, authorize them in your own Laravel endpoint and return one token minted with `Murmur::token(['private-orders.42', 'private-orders.43'])`. See the [wire protocol measurements](docs/protocol.md#request-head-budget).
 
 Use Laravel's `broadcast($event)->toOthers()` to skip the sending subscription. Send the ID from the `murmur.connected` event in the `X-Socket-ID` header on the Laravel request that triggers the broadcast. Pass the same ID as `connection` on reconnect to keep the exclusion in replay. For a direct publication, pass the ID as the fourth argument to `Murmur::publish()`.
 
@@ -79,9 +79,9 @@ Use a distinct topic for each stream run. Reusing a topic can replay the previou
 
 Use `@arttecs/murmur` to subscribe to channels and consume streams in the browser. See the [JavaScript client README](js/README.md) for installation and usage.
 
-The SSE server sends `retry:` and `murmur.connected` before any events. Replay and some live events on a cursorless connection can arrive before `murmur.attached`. The attach marker has `data: {}` and carries the sampled log tail as its ID when one is known. A numbered marker updates the cursor, even when it corrects a cursor ahead of the log. Wait for the marker before fetching initial state or invoking subscribed callbacks.
+The SSE server sends `retry:` and `murmur.connected` before any events. Replay and some live events on a cursorless connection can arrive before `murmur.attached`. The attach marker has `data: {}` and typically carries the sampled log tail as its ID. A numbered marker updates the cursor, even when it corrects a cursor ahead of the log. Wait for the marker before fetching initial state or invoking subscribed callbacks.
 
-When adding topics, include them as a comma-separated `fresh` query value on the request that adds them. Fresh topics start after the sampled tail and existing topics replay from the cursor. Once you receive `murmur.attached` or a later numbered event on that connection, reconnect with the latest cursor and omit the acknowledged topics from `fresh`. If the stream drops before the marker arrives, send the unacknowledged topics in `fresh` again. The server evaluates `fresh` per request, so a client that uses it must build its URL for each attempt and take over reconnection from native `EventSource`. See the [replay protocol](docs/protocol.md#replay).
+When adding topics, include them as a comma-separated `fresh` query value on the request that adds them. Fresh topics start after the sampled tail and existing topics replay from the cursor. Once you receive `murmur.attached` on that connection, reconnect with the latest cursor if available and omit the acknowledged topics from `fresh`. If the stream drops before the marker arrives, send the unacknowledged topics in `fresh` again. The server evaluates `fresh` per request, so a client that uses it must build its URL for each attempt and take over reconnection from native `EventSource`. See the [replay protocol](docs/protocol.md#replay).
 
 ## Migrating from Laravel Reverb
 
@@ -240,7 +240,7 @@ For a metrics store, extend `Testing\MetricsStoreConformanceTestCase` and implem
 
 ## Deployment
 
-Run Murmur behind a reverse proxy. The default empty origin allowlist serves requests that omit the `Origin` header, including typical same-origin EventSource requests. To serve a browser application from another origin, set `MURMUR_ALLOWED_ORIGINS` to its exact scheme, host, and non-default port, with no trailing slash. Requests with an unlisted origin receive 403. Use `*` only when every origin should be allowed.
+Run Murmur behind a reverse proxy. The default empty origin allowlist serves requests that omit the `Origin` header, including typical same-origin EventSource requests. To serve a browser application from another origin, set `MURMUR_ALLOWED_ORIGINS` to its scheme, host, and non-default port, with no trailing slash. The server canonicalizes numeric ports and bracketed IPv6 literals, so `[::1]` and `[0:0:0:0:0:0:0:1]` match. Requests with an unlisted origin receive 403. Use `*` only when every origin should be allowed.
 
 Keep `POST /publish` on a trusted network. A signed request is replayable within the default 60-second timestamp tolerance.
 

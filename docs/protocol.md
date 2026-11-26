@@ -28,7 +28,7 @@ A topic is 1–200 bytes and cannot contain a comma or ASCII whitespace. Topic n
 
 | Status | Meaning |
 | --- | --- |
-| 200 | The subscription succeeded. The response remains open for SSE frames. |
+| 200 | The server accepted the request and opened an SSE response. `murmur.attached` confirms that the initial tail sample and any replay have finished. |
 | 400 | The topic list is missing, malformed, or over its entry limit, the connection ID is malformed, the token list is invalid, or `fresh` contains an invalid or unsubscribed topic. |
 | 401 | The authorizer rejected a credential, for example because a required token is missing or a supplied token is malformed, expired, or has an invalid signature. |
 | 403 | The `Origin` header is disallowed, or the granted topics fail to cover at least one requested private topic. |
@@ -70,7 +70,7 @@ data: {}
 
 ```
 
-Treat `murmur.heartbeat` as a control frame. Advance the stored replay cursor when its ID is newer and keep it out of application event callbacks. An idle subscription can receive the same heartbeat ID more than once. The server uses the latest dispatched ID even when the Redis reader is behind the stream tail. When the server has yet to dispatch a numbered event, the subscription is still held, or its cursor is already ahead of the latest dispatched ID, the heartbeat uses a `: ping\n\n` comment with no cursor update. Heartbeat bytes count toward `murmur_bytes_sent_total`. The heartbeat itself adds nothing to `murmur_events_sent_total`.
+Treat `murmur.heartbeat` as a control frame. Advance the stored replay cursor when its ID is newer and keep it out of application event callbacks. An idle subscription can receive the same heartbeat ID more than once. The server uses the latest dispatched ID even when the Redis reader is behind the stream tail. When the server has yet to dispatch a numbered event, the subscription is still held, or its cursor is already ahead of the latest dispatched ID, the heartbeat uses a `: ping\n\n` comment with no cursor update. A subscription that is still held queues these comments until release. Heartbeat bytes count toward `murmur_bytes_sent_total`. The heartbeat itself adds nothing to `murmur_events_sent_total`.
 
 IDs use `<milliseconds>-<sequence>`. A received cursor must contain 1–18 decimal digits per component. Compare the two components numerically, milliseconds first. IDs increase strictly within one event log across all topics. Redis nodes serving the same stream share its IDs and order. In-memory logs have their own order and lose their history on restart.
 
@@ -78,7 +78,7 @@ IDs use `<milliseconds>-<sequence>`. A received cursor must contain 1–18 decim
 
 For a reconnect, send the latest ID received as the `Last-Event-ID` HTTP header or the `lastEventId` query parameter. When both are valid, the header wins. Invalid cursors are ignored.
 
-Without a valid cursor, the subscription takes effect when the server attaches it for live delivery, before `murmur.attached`. Events dispatched to the subscription during the tail sample can arrive before the marker. Publications after `murmur.connected` can still precede attachment or reach the Redis reader after the marker has advanced past them, so events published between the two frames may or may not arrive. Once the client receives `murmur.attached`, it can rely on matching events published afterward being delivered while the subscription stays active, subject to sender exclusion and any signalled loss of live history. Wait for `murmur.attached` before fetching initial state or invoking subscribed callbacks.
+Without a valid cursor, the subscription takes effect when the server attaches it for live delivery. The server attaches it before sending `murmur.connected` and can deliver events dispatched during the tail sample before `murmur.attached`. Events published between receipt of the two frames may or may not arrive. For example, a Redis reader can dispatch an event after the marker has advanced past it. Once the client receives `murmur.attached`, it can rely on matching events published afterward being delivered while the subscription stays active, subject to sender exclusion and any signalled loss of live history. Wait for `murmur.attached` before fetching initial state or invoking subscribed callbacks.
 
 Replay sends retained matching events with IDs strictly greater than the cursor and at or before the sampled tail, in log order. When `fresh` is present, every entry must also appear in `topics`. Fresh topics deliver only events strictly after the sampled tail. With a cursor, the other topics replay from it. Every connection samples the tail, including one without a cursor or with only fresh topics. Redis uses one tail read within the existing query deadline, with no history lookup when there are no topics to replay. A failed tail sample closes the stream through the same path as a failed replay. The initial `murmur.connected` may arrive while the sample is pending.
 
@@ -91,9 +91,11 @@ data: {}
 
 ```
 
-The marker's ID is the sampled tail or the highest ID already written on this connection, whichever is greater. This also applies after a gap and when the requested cursor was ahead of the tail. The marker omits `id:` when the server has neither position, for example on an empty log. An unnumbered marker acknowledges attachment without supplying a resume ID. Treat it as a control frame. Its bytes count toward `murmur_bytes_sent_total`, and the event and replay counters count only published events. A numbered marker replaces the stored cursor even if it is lower than the one sent. The server withholds subsequent numbered events at or before the marker's ID, including entries arriving late from the Redis reader.
+The marker's ID is the sampled tail or the highest ID already written on this connection, whichever is greater. This also applies after a gap and when the requested cursor was ahead of the tail. Treat it as a control frame and process it before applying any ID de-duplication. A numbered marker resets the client's newest ID even if it equals the last replayed ID or is lower than the cursor sent on the request. The server withholds subsequent numbered events at or before the marker's ID, including entries arriving late from the Redis reader. The marker's bytes count toward `murmur_bytes_sent_total`, and the event and replay counters count only published events.
 
-Include a newly added topic in `fresh` on the attempt that adds it. Once `murmur.attached` or any later numbered event arrives on that connection, omit that topic from `fresh` on reconnect and send the latest cursor. When a cursor is available, ordinary replay then starts at the acknowledged join or later. If the stream drops before the marker arrives, send `fresh` again for the unacknowledged topic. Numbered replay events received before the marker do not acknowledge the join. The server evaluates `fresh` per request, so clients that use it must build a new URL per attempt instead of letting native `EventSource` retry the same URL.
+The marker omits `id:` when the server has neither position, for example on an empty log. An unnumbered marker acknowledges attachment without changing the client's cursor. A client that connects without a cursor on an empty log has no resume point until it receives a numbered frame.
+
+Include a newly added topic in `fresh` on the attempt that adds it. Once `murmur.attached` arrives on that connection, omit that topic from `fresh` on reconnect and send the latest cursor, if available. When a cursor is available, ordinary replay then starts at the acknowledged join or later. If the stream drops before the marker arrives, send `fresh` again for the unacknowledged topic. Numbered events received before the marker do not acknowledge the join. The server evaluates `fresh` per request, so clients that use it must build a new URL per attempt instead of letting native `EventSource` retry the same URL.
 
 Live events arriving during replay are held for release around the attach marker. The server drops duplicate or older event IDs once it has written a frame with the same or a newer ID. The connection closes before the attach marker if the tail sample or replay query fails or the held live data exceeds `server.max_buffer_bytes`. If the stream ends before the marker, a client that rebuilds its subscription URL should wait for the `retry:` delay it received or use its own backoff. The server also closes a stream whose output exceeds the byte limit under backpressure. The default byte limit is 1,048,576.
 
@@ -106,6 +108,7 @@ data: {}
 ```
 
 - With an in-memory log, a cursor older than log creation or the last evicted event signals a gap. With Redis, a cursor older than the first retained entry signals a gap if Redis reports trimmed history. An unparseable first retained Redis ID also signals a gap.
+- After a restart, while the in-memory log is empty, a request that asks to replay from a cursor below the new log's floor receives `murmur.gap` followed by an unnumbered attach marker. Reconnecting with that same cursor repeats the gap because there is still no resume ID to replace it. Once any event is stored, the marker can supply a new cursor even if that event belongs to another topic.
 - A trim gap may be followed by matching retained events. A tail-only sample does not check for trimmed history. A gap indicates that the log cannot guarantee complete history. The log may report a trim gap even if the trimmed entries belonged only to fresh topics. Clients that need a complete view should refresh it from the application.
 - If replay would exceed `server.max_replay_events` events eligible for delivery (1000 by default) or the encoded replay frames for this recipient would exceed half of `server.max_buffer_bytes`, the server sends the gap and discards the replay batch. It sends the attach marker before continuing with held and live events.
 - If the Redis reader loses its connection and discovers history was trimmed past its cursor, the server sends a gap to existing subscribers before resuming live delivery.
@@ -137,20 +140,22 @@ For several private topics, make one authorization request per topic and send th
 
 ### Request head budget
 
-The topic and token lists each have a default cap of 50 entries, and the 8 KiB limit applies to the entire request line and headers. The byte limit often takes effect before the count limit when sending one JWT per channel. These measurements use Murmur's default HS256 tokens, URL-encoded lists, both `connection` and `lastEventId`, and `Host`, `Accept`, and `Origin` headers. Each count is the most channels that the server accepted for that setup with the default count limit.
+The topic and token lists each have a default cap of 50 entries, and the 8 KiB limit applies to the entire request line and headers. The byte limit often takes effect before the count limit when sending one JWT per channel. These measurements use one default HS256 token per channel, URL-encoded lists, a 32-character `connection` and an 18-character `lastEventId` in the URL, with no `fresh` parameter or `Last-Event-ID` header. Each count is the most channels the server accepted over HTTP/1.1 for that setup with the default count limit.
 
-| Example wire topic | Topic bytes | JWT bytes | Channels with lean headers | Channels with a 1 KiB cookie value |
-| --- | ---: | ---: | ---: | ---: |
-| `private-a` | 9 | 136 | 50 | 46 |
-| `private-orders.0042` | 19 | 149 | 46 | 40 |
-| `private-orders.00000000-0000-4000-8000-000000000042` | 51 | 192 | 32 | 28 |
-| 200-byte ASCII topic | 200 | 391 | 13 | 11 |
+| Example wire topic | Topic bytes | JWT bytes | Lean headers | Chrome-style headers | Lean headers with a 1 KiB cookie value |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `private-a` | 9 | 136 | 50 | 49 | 46 |
+| `private-orders.0042` | 19 | 149 | 45 | 43 | 40 |
+| `private-orders.00000000-0000-4000-8000-000000000042` | 51 | 192 | 32 | 30 | 27 |
+| 200-byte ASCII topic | 200 | 391 | 13 | 12 | 11 |
+
+Lean requests used `Host: events.example.test`, `Accept: text/event-stream` and `Origin: https://app.example.test`. The Chrome-style requests modeled a cross-origin, same-site EventSource on macOS. They added `Connection`, `Cache-Control`, `User-Agent`, `Sec-CH-UA`, `Sec-CH-UA-Mobile`, `Sec-CH-UA-Platform`, `Sec-Fetch-Site`, `Sec-Fetch-Mode`, `Sec-Fetch-Dest`, `Referer`, `Accept-Encoding` and `Accept-Language`, for 580 bytes of header lines with CRLF endings and no cookie.
 
 Allow room for the browser's actual headers and for longer encoded topic names. A single multi-topic token reduces the request size by sharing the JWT header, signature, and expiry across the authorized topics.
 
 ### CORS
 
-The default `server.allowed_origins` list is empty. The subscription handler serves requests without an `Origin` header and omits `Access-Control-Allow-Origin`. A request with an `Origin` header receives 403 unless its origin is allowed. Configure complete origins (`scheme://host[:port]`) without paths, trailing slashes, queries, or fragments. Matching is case-insensitive for the scheme and host. Explicit HTTP port 80 and HTTPS port 443 are equivalent to an omitted port. Other ports match exactly. The handler echoes an allowed request's `Origin` value. A list containing `*` allows every origin and returns `Access-Control-Allow-Origin: *`. The SSE server adds `Vary: Origin` to routed responses whenever the list excludes `*`.
+The default `server.allowed_origins` list is empty. The subscription handler serves requests without an `Origin` header and omits `Access-Control-Allow-Origin`. A request with an `Origin` header receives 403 unless its origin is allowed. Configure complete origins (`scheme://host[:port]`) without paths, trailing slashes, queries, or fragments. Matching is case-insensitive for the scheme and host, compares ports numerically, and accepts equivalent spellings of bracketed IPv6 literals. Explicit HTTP port 80 and HTTPS port 443 are equivalent to an omitted port. The handler echoes an allowed request's `Origin` value. A list containing `*` allows every origin and returns `Access-Control-Allow-Origin: *`. The SSE server adds `Vary: Origin` to routed responses whenever the list excludes `*`.
 
 Murmur's SSE server does not emit `Access-Control-Allow-Credentials` or implement OPTIONS preflights. A reverse proxy can provide those headers or handle OPTIONS for cross-origin clients that require them. CORS on the Laravel authorization route is controlled by the Laravel application.
 

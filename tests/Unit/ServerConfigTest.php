@@ -35,8 +35,8 @@ it('normalizes explicit default ports to browser origins while retaining non-def
     $config = new ServerConfig(str_repeat('x', 32), allowedOrigins: [
         'HTTPS://App.test:443',
         'http://app.test:80',
-        'http://app.test:443',
-        'https://[::1]:443',
+        'http://app.test:00443',
+        'https://[0:0:0:0:0:0:0:1]:0443',
     ]);
 
     expect($config->allowedOrigins)->toBe([

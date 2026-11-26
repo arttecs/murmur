@@ -10,26 +10,40 @@ namespace Arttecs\Murmur\Server\Http;
 class Origin
 {
     /**
-     * Validate an origin and normalize its scheme, host, and default HTTP port.
+     * Validate an origin and canonicalize its scheme, host, and port.
      */
     public static function normalize(string $origin): ?string
     {
         $pattern = '/\A([a-z][a-z0-9+.-]*):\/\/(\[[a-f0-9:.]+\]|[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.?)(?::([0-9]+))?\z/i';
 
-        if (preg_match($pattern, $origin, $parts) !== 1
-            || (isset($parts[3]) && (int) $parts[3] > 65535)
-            || ($parts[2][0] === '[' && filter_var(substr($parts[2], 1, -1), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === false)) {
+        if (preg_match($pattern, $origin, $parts) !== 1) {
             return null;
         }
 
         $scheme = strtolower($parts[1]);
-        $port = $parts[3] ?? null;
+        $host = strtolower($parts[2]);
+        $port = isset($parts[3]) ? (int) $parts[3] : null;
+
+        if ($port !== null && $port > 65535) {
+            return null;
+        }
+
+        if ($host[0] === '[') {
+            $address = inet_pton(substr($host, 1, -1));
+
+            if ($address === false || strlen($address) !== 16) {
+                return null;
+            }
+
+            $host = '['.inet_ntop($address).']';
+        }
+
         $defaultPort = match ($scheme) {
             'http' => 80,
             'https' => 443,
             default => null,
         };
 
-        return $scheme.'://'.strtolower($parts[2]).($port === null || (int) $port === $defaultPort ? '' : ':'.$port);
+        return $scheme.'://'.$host.($port === null || $port === $defaultPort ? '' : ':'.$port);
     }
 }
