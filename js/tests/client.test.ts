@@ -807,3 +807,199 @@ it.each([
     ['https://app.test/sse?topics=alerts', ...expected],
   ])
 })
+
+it('returns a fresh plain statistics snapshot with empty initial values', () => {
+  const m = client()
+  const initial = {
+    connected: false, connections: 0, disconnections: 0, events: 0, gaps: 0,
+    tokenRequests: 0, tokenFailures: 0, channels: 0, streams: 0,
+    lastEventId: undefined, lastEventAt: undefined,
+  }
+  const snapshot = m.stats()
+
+  expect(Object.getPrototypeOf(snapshot)).toBe(Object.prototype)
+  expect(snapshot).toStrictEqual(initial)
+  snapshot.events = 100
+  expect(m.stats()).not.toBe(snapshot)
+  expect(m.stats()).toStrictEqual(initial)
+})
+
+it('tracks opens and failures across retries and deliberate channel reconnects', async () => {
+  const m = client({ retryMs: 10 })
+  m.channel('news')
+  m.channel('news')
+  await flush()
+  const first = FakeEventSource.instances[0]
+  assert.isDefined(first)
+  expect(m.stats()).toMatchObject({ connected: false, channels: 1, connections: 0, disconnections: 0 })
+
+  first.fail()
+  expect(m.stats()).toMatchObject({ connected: false, channels: 1, connections: 0, disconnections: 1 })
+  await wait(10)
+  const second = FakeEventSource.instances[1]
+  assert.isDefined(second)
+  second.dispatchEvent(new Event('open'))
+  expect(m.stats()).toMatchObject({ connected: true, channels: 1, connections: 1, disconnections: 1 })
+
+  m.channel('alerts')
+  await flush()
+  expect(m.stats()).toMatchObject({ connected: false, channels: 2, connections: 1, disconnections: 1 })
+  const third = FakeEventSource.instances[2]
+  assert.isDefined(third)
+  third.dispatchEvent(new Event('open'))
+  expect(m.stats()).toMatchObject({ connected: true, channels: 2, connections: 2, disconnections: 1 })
+
+  m.leave('alerts')
+  await flush()
+  const fourth = FakeEventSource.instances[3]
+  assert.isDefined(fourth)
+  fourth.dispatchEvent(new Event('open'))
+  expect(m.stats()).toMatchObject({ connected: true, channels: 1, connections: 3, disconnections: 1 })
+
+  fourth.fail()
+  expect(m.stats()).toMatchObject({ connected: false, connections: 3, disconnections: 2 })
+  await wait(10)
+  const last = FakeEventSource.instances[4]
+  assert.isDefined(last)
+  last.dispatchEvent(new Event('open'))
+  expect(m.stats()).toMatchObject({ connected: true, connections: 4, disconnections: 2 })
+
+  m.leave('news')
+  expect(m.stats()).toMatchObject({ connected: false, channels: 0, connections: 4, disconnections: 2 })
+})
+
+it('counts shared data once per dispatch and records gaps, cursor and receive time separately', async () => {
+  vi.setSystemTime(1_000)
+  const m = client()
+  const listener = vi.fn()
+  const otherListener = vi.fn()
+  m.channel('news').listen('.updated', listener).listen('.updated', otherListener)
+  m.channel('alerts')
+  await flush()
+  const source = FakeEventSource.instances[0]
+  assert.isDefined(source)
+  source.dispatchEvent(new Event('open'))
+  source.emit('ignored', { topic: 'news', data: 0 }, '1-0')
+  source.emit('updated', { data: 0 }, '2-0')
+  expect(m.stats()).toMatchObject({ events: 0, gaps: 0, lastEventAt: undefined, lastEventId: '2-0' })
+
+  source.emit('updated', { topic: 'news', data: 1 }, '3-0')
+  expect(listener).toHaveBeenCalledExactlyOnceWith(1)
+  expect(otherListener).toHaveBeenCalledExactlyOnceWith(1)
+  expect(m.stats()).toMatchObject({ events: 1, gaps: 0, lastEventAt: 1_000, lastEventId: '3-0' })
+
+  vi.setSystemTime(2_000)
+  source.emit('murmur.gap', {}, '4-0')
+  expect(m.stats()).toMatchObject({ events: 1, gaps: 1, lastEventAt: 1_000, lastEventId: '3-0' })
+
+  source.emit('updated', { topic: 'alerts', data: 2 }, '')
+  expect(listener).toHaveBeenCalledTimes(1)
+  expect(otherListener).toHaveBeenCalledTimes(1)
+  expect(m.stats()).toMatchObject({ events: 2, gaps: 1, lastEventAt: 2_000, lastEventId: '3-0' })
+})
+
+it('counts active streams without including their traffic or failures in shared statistics', async () => {
+  const m = client({ streamMaxFailures: 1 })
+  const firstStream = m.stream('https://app.test/sse?topics=news').on('updated', () => {})
+  m.stream('https://app.test/sse?topics=alerts')
+  const explicitlyClosed = m.stream('https://app.test/sse?topics=other')
+  expect(m.stats().streams).toBe(3)
+  await flush()
+  const first = FakeEventSource.instances[0]
+  const second = FakeEventSource.instances[1]
+  assert.isDefined(first)
+  assert.isDefined(second)
+
+  first.dispatchEvent(new Event('open'))
+  first.emit('updated', { topic: 'news', data: 1 }, '1-0')
+  first.emit('murmur.gap', {}, '2-0')
+  first.emit('murmur.end', {}, '3-0')
+  expect(m.stats().streams).toBe(2)
+  firstStream.close()
+  expect(m.stats().streams).toBe(2)
+
+  second.fail()
+  expect(m.stats().streams).toBe(1)
+  explicitlyClosed.close()
+  expect(m.stats()).toStrictEqual({
+    connected: false, connections: 0, disconnections: 0, events: 0, gaps: 0,
+    tokenRequests: 0, tokenFailures: 0, channels: 0, streams: 0,
+    lastEventId: undefined, lastEventAt: undefined,
+  })
+})
+
+it('counts built-in token failures and successful attempts while skipping cache hits', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>()
+    .mockResolvedValueOnce(new Response(null, { status: 403 }))
+    .mockResolvedValueOnce(Response.json({ token: 'jwt', expires_at: nowSeconds() + 900 }))
+  const m = client({ fetch, retryMs: 10 })
+  const unauthorized = vi.fn(() => m.stats())
+  m.on('unauthorized', unauthorized)
+  m.private('orders')
+  await flush()
+
+  expect(unauthorized.mock.results[0]?.value).toMatchObject({ tokenRequests: 1, tokenFailures: 1 })
+  expect(m.stats()).toMatchObject({ tokenRequests: 1, tokenFailures: 1, disconnections: 1 })
+  await wait(10)
+  const source = FakeEventSource.instances[0]
+  assert.isDefined(source)
+  source.dispatchEvent(new Event('open'))
+  expect(m.stats()).toMatchObject({ tokenRequests: 2, tokenFailures: 1, disconnections: 1 })
+
+  m.channel('news')
+  await flush()
+  expect(FakeEventSource.instances).toHaveLength(2)
+  expect(m.stats()).toMatchObject({ tokenRequests: 2, tokenFailures: 1, disconnections: 1 })
+})
+
+it('counts rejected and invalid authorizer results before a successful retry', async () => {
+  const authorizer = vi.fn<Authorizer>()
+    .mockRejectedValueOnce(new Error('Unavailable'))
+    .mockResolvedValueOnce({ token: 'bad', expires_at: NaN })
+    .mockResolvedValueOnce({ token: 'jwt', expires_at: nowSeconds() + 900 })
+  const m = client({ authorizer, retryMs: 10, retryJitter: 0 })
+  m.private('orders')
+  await flush()
+  expect(m.stats()).toMatchObject({ tokenRequests: 1, tokenFailures: 1, disconnections: 1 })
+
+  await wait(10)
+  expect(m.stats()).toMatchObject({ tokenRequests: 2, tokenFailures: 2, disconnections: 2 })
+  await wait(20)
+  expect(m.stats()).toMatchObject({ tokenRequests: 3, tokenFailures: 2, disconnections: 2 })
+  expect(FakeEventSource.instances).toHaveLength(1)
+})
+
+it('keeps the final statistics after close while clearing live state', async () => {
+  let rejectToken: ((error: unknown) => void) | undefined
+  const authorizer: Authorizer = () => new Promise((_resolve, reject) => { rejectToken = reject })
+  const m = client({ authorizer })
+  m.channel('news').listen('.updated', () => {})
+  m.stream('https://app.test/sse?topics=alerts')
+  await flush()
+  const shared = FakeEventSource.instances[1]
+  assert.isDefined(shared)
+  shared.dispatchEvent(new Event('open'))
+  shared.emit('updated', { topic: 'news', data: 1 }, '1-0')
+  const lastEventAt = m.stats().lastEventAt
+
+  m.private('orders')
+  await flush()
+  expect(m.stats()).toMatchObject({ channels: 2, streams: 1, tokenRequests: 1, tokenFailures: 0 })
+  m.close()
+  const final = m.stats()
+  expect(final).toStrictEqual({
+    connected: false, connections: 1, disconnections: 0, events: 1, gaps: 0,
+    tokenRequests: 1, tokenFailures: 0, channels: 0, streams: 0,
+    lastEventId: '1-0', lastEventAt,
+  })
+
+  rejectToken?.({ status: 403 })
+  shared.dispatchEvent(new Event('open'))
+  shared.dispatchEvent(new Event('error'))
+  shared.dispatchEvent(new MessageEvent('updated', { data: '{"topic":"news","data":2}', lastEventId: '2-0' }))
+  m.channel('late')
+  m.stream('https://app.test/sse?topics=late')
+  m.close()
+  await wait(3000)
+  expect(m.stats()).toStrictEqual(final)
+})

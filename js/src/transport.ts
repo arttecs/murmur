@@ -2,6 +2,8 @@
 type Connection = {
   /** The active event source. */
   source: EventSource
+  /** Whether the source has opened. */
+  opened: boolean
   /** Handles a successful connection. */
   open: (event: Event) => void
   /** Handles a failed connection. */
@@ -70,6 +72,16 @@ export class Transport {
     protected readonly onStatus: (event: 'connected' | 'disconnected', failures: number) => void,
     protected readonly onUnopenedError?: (url: string) => void,
   ) {}
+
+  /** Reports whether the active source has opened. */
+  public get connected(): boolean {
+    return this.connection?.opened ?? false
+  }
+
+  /** Returns the cursor used when opening the next source. */
+  public get replayCursor(): string | undefined {
+    return this.lastEventId
+  }
 
   /** Replaces the active connection with a new attempt. */
   public connect(): void {
@@ -156,19 +168,19 @@ export class Transport {
 
   /** Binds listeners to the active source, including polyfills without currentTarget. */
   protected attach(source: EventSource, url: string): void {
-    let opened = false
     const connection: Connection = {
       source,
+      opened: false,
       open: event => {
         if (this.connection === connection && !isMessage(event)) {
-          opened = true
+          connection.opened = true
           this.resetFailures()
           this.onStatus('connected', 0)
         }
       },
       error: event => {
         if (this.connection === connection && !isMessage(event)) {
-          if (!opened) {
+          if (!connection.opened) {
             this.onUnopenedError?.(url)
           }
           this.handleFailure()

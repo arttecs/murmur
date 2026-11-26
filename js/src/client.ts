@@ -54,11 +54,51 @@ export interface MurmurOptions extends Partial<RetryOptions> {
   withCredentials?: boolean
 }
 
+/** A point-in-time snapshot of the client and its shared connection. */
+export interface MurmurStats {
+  /** Whether the shared connection is currently open. */
+  connected: boolean
+
+  /** The number of times the shared connection opened. */
+  connections: number
+
+  /** The number of failed shared connection attempts and unexpected drops. */
+  disconnections: number
+
+  /** The number of data events passed to the shared channel dispatch. */
+  events: number
+
+  /** The number of gap signals received on the shared connection. */
+  gaps: number
+
+  /** The number of token authorization attempts, excluding cache hits. */
+  tokenRequests: number
+
+  /** The number of token authorization attempts that failed before cancellation. */
+  tokenFailures: number
+
+  /** The number of currently joined channels. */
+  channels: number
+
+  /** The number of independent streams that have not closed. */
+  streams: number
+
+  /** The current replay cursor of the shared connection. */
+  lastEventId: string | undefined
+
+  /** The Unix time in milliseconds of the last data event passed to dispatch. */
+  lastEventAt: number | undefined
+}
+
 /** The arguments delivered to listeners for each client event. */
 type ClientEventArgs = {
+  /** Delivers a replay gap notification. */
   gap: []
+  /** Reports a shared connection that opened. */
   connected: []
+  /** Reports a failed or dropped shared connection. */
   disconnected: []
+  /** Reports the status of a denied authorization attempt. */
   unauthorized: [status: number]
 }
 
@@ -93,6 +133,14 @@ function validateFailureLimit(value: number, option: 'streamMaxFailures' | 'maxF
   }
 }
 
+/** Carries the HTTP status of an unsuccessful built-in authorization response. */
+class AuthorizationResponseError extends Error {
+  /** Records the status of the response. */
+  public constructor(public readonly status: number) {
+    super('Murmur authorization failed')
+  }
+}
+
 /** Multiplexes channel subscriptions and opens independent streams. */
 export class Murmur {
   /** The joined channels and their callbacks, indexed by subscription name and kind. */
@@ -113,6 +161,19 @@ export class Murmur {
 
   /** The active streams created by this client. */
   protected readonly streams = new Set<MurmurStream>()
+
+  /** The cumulative counters reported by stats(). */
+  protected readonly counts = {
+    connections: 0,
+    disconnections: 0,
+    events: 0,
+    gaps: 0,
+    tokenRequests: 0,
+    tokenFailures: 0,
+  }
+
+  /** The time the last valid shared data event was received. */
+  protected lastEventAt?: number
 
   /** The client's retry settings, also used as the defaults for streams. */
   protected readonly retryOptions: RetryOptions
@@ -155,7 +216,14 @@ export class Murmur {
       this.retryOptions,
       (signal, lastEventId) => this.connectionUrl(signal, lastEventId),
       (event, data) => this.receive(event, data),
-      event => this.emit(event),
+      event => {
+        if (event === 'connected') {
+          this.counts.connections++
+        } else {
+          this.counts.disconnections++
+        }
+        this.emit(event)
+      },
       url => {
         if (this.cachedToken && new URL(url).searchParams.get('token') === this.cachedToken.token) {
           this.cachedToken = undefined
@@ -219,6 +287,18 @@ export class Murmur {
     }
     return () => {
       listeners.delete(listener)
+    }
+  }
+
+  /** Returns a fresh snapshot of shared connection activity and active subscriptions. */
+  public stats(): MurmurStats {
+    return {
+      ...this.counts,
+      connected: this.transport.connected,
+      channels: this.channels.size,
+      streams: this.streams.size,
+      lastEventId: this.transport.replayCursor,
+      lastEventAt: this.lastEventAt,
     }
   }
 
@@ -312,36 +392,39 @@ export class Murmur {
       return cached.token
     }
 
-    const body = await this.requestToken(channels, signal)
-    if (
-      body === null || typeof body !== 'object' ||
-      !('token' in body) || typeof body.token !== 'string' ||
-      !('expires_at' in body) || typeof body.expires_at !== 'number' || !Number.isFinite(body.expires_at)
-    ) {
-      throw new Error('Invalid Murmur authorization response')
-    }
-
-    if (!signal.aborted) {
-      this.cachedToken = { topics, token: body.token, expiresAt: body.expires_at }
-    }
-    return body.token
-  }
-
-  /** Requests an authorization response from the provider or the built-in endpoint. */
-  protected async requestToken(channels: string[], signal: AbortSignal): Promise<unknown> {
     const { authorizer } = this.options
-    if (authorizer) {
-      try {
-        return await authorizer(channels, signal)
-      } catch (error) {
-        if (!signal.aborted && error !== null && typeof error === 'object' &&
-          'status' in error && typeof error.status === 'number' && error.status >= 400 && error.status < 500) {
+    this.counts.tokenRequests++
+    try {
+      const body: unknown = authorizer
+        ? await authorizer(channels, signal)
+        : await this.requestToken(channels, signal)
+      if (
+        body === null || typeof body !== 'object' ||
+        !('token' in body) || typeof body.token !== 'string' ||
+        !('expires_at' in body) || typeof body.expires_at !== 'number' || !Number.isFinite(body.expires_at)
+      ) {
+        throw new Error('Invalid Murmur authorization response')
+      }
+
+      if (!signal.aborted) {
+        this.cachedToken = { topics, token: body.token, expiresAt: body.expires_at }
+      }
+      return body.token
+    } catch (error) {
+      if (!signal.aborted) {
+        this.counts.tokenFailures++
+        if ((authorizer || error instanceof AuthorizationResponseError) &&
+          error !== null && typeof error === 'object' && 'status' in error &&
+          typeof error.status === 'number' && error.status >= 400 && error.status < 500) {
           this.emit('unauthorized', error.status)
         }
-        throw error
       }
+      throw error
     }
+  }
 
+  /** Requests an authorization response from the built-in endpoint. */
+  protected async requestToken(channels: string[], signal: AbortSignal): Promise<unknown> {
     const { auth, authEndpoint } = this.options
     const supplied = typeof auth?.headers === 'function' ? await auth.headers() : auth?.headers
     signal.throwIfAborted()
@@ -375,10 +458,7 @@ export class Murmur {
       signal,
     })
     if (!response.ok) {
-      if (!signal.aborted && response.status >= 400 && response.status < 500) {
-        this.emit('unauthorized', response.status)
-      }
-      throw new Error('Murmur authorization failed')
+      throw new AuthorizationResponseError(response.status)
     }
 
     return response.json()
@@ -387,6 +467,7 @@ export class Murmur {
   /** Dispatches a stream event to its channel or emits a gap notification. */
   protected receive(event: string, data: string): void {
     if (event === 'murmur.gap') {
+      this.counts.gaps++
       this.emit('gap')
       return
     }
@@ -396,6 +477,8 @@ export class Murmur {
       return
     }
 
+    this.counts.events++
+    this.lastEventAt = Date.now()
     const { topic, data: payload } = envelope
     const subscriptions = [this.channels.get('public:' + topic)]
     if (topic.startsWith(privatePrefix)) {

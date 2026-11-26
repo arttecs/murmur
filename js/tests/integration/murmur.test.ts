@@ -5,7 +5,12 @@ import { Murmur, type MurmurOptions } from '../../src/index'
 import { close, listen, publish, startMurmur, tokenFor } from './server'
 
 /** A request made by the real EventSource and the server's response status. */
-type Attempt = { url: URL; status?: number }
+type Attempt = {
+  /** The address the client requested. */
+  url: URL
+  /** The status returned by the server. */
+  status?: number
+}
 
 /** The server shared by the integration cases. */
 let murmur: Awaited<ReturnType<typeof startMurmur>>
@@ -208,7 +213,7 @@ describe('Murmur client and PHP server', () => {
     }
 
     await vi.waitFor(() => expect(connected).toHaveBeenCalledTimes(2), waitOptions)
-    await publish(murmur.address, topic, 'updated', { phase: 'live again' })
+    const lastId = await publish(murmur.address, topic, 'updated', { phase: 'live again' })
     await vi.waitFor(() => expect(received).toHaveBeenLastCalledWith({ phase: 'live again' }), waitOptions)
 
     expect(received.mock.calls).toEqual([[{ phase: 'initial' }], [{ phase: 'missed' }], [{ phase: 'live again' }]])
@@ -217,6 +222,7 @@ describe('Murmur client and PHP server', () => {
     expect(attempts.map(attempt => attempt.status)).toEqual([200, 200])
     expect(attempts[1]?.url.searchParams.get('token')).not.toBe(attempts[0]?.url.searchParams.get('token'))
     expect(attempts[1]?.url.searchParams.get('lastEventId')).toBe(firstId)
+    expect(m.stats()).toMatchObject({ connections: 2, events: 3, lastEventId: lastId })
   })
 
   it('reports a gap when the stream cursor predates the log', async () => {
