@@ -51,3 +51,15 @@ it('rejects an oversized chunked publish before the body ends', function () {
         $body->close();
     }
 });
+
+it('rejects reserved event names other than the stream end marker', function (string $event, int $status) {
+    $h = ServerHarness::start();
+    $response = $h->publish('news', $event);
+
+    expect($response->getStatusCode())->toBe($status);
+})->with([
+    ['murmur.gap', 422],
+    ['murmur.anything', 422],
+    ['murmur.end', 202],
+    ['murmurs.fine', 202],
+]);

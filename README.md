@@ -383,7 +383,7 @@ php artisan murmur:forget-metrics
 | `murmur_replayed_events_total` | counter | — | Event frames written from replay. |
 | `murmur_gaps_total` | counter | — | Murmur gap frames written to connections. |
 | `murmur_publish_requests_total` | counter | `status` | HTTP publish responses by status. |
-| `murmur_event_loop_lag_exceeded_total` | counter | — | One-second timer measurements above `server.loop_lag_threshold_ms`. |
+| `murmur_event_loop_lag_exceeded_total` | counter | — | Lag measurements, taken every 100 ms, above `server.loop_lag_threshold_ms`. |
 | `murmur_errors_total` | counter | — | Errors reported, including rate-limited reports. |
 | `murmur_connections` | gauge | — | Open SSE connections. |
 | `murmur_sockets` | gauge | — | Accepted TCP sockets currently open. |
@@ -391,7 +391,7 @@ php artisan murmur:forget-metrics
 | `murmur_uptime_seconds` | gauge | — | Seconds since the server started listening. |
 | `murmur_memory_bytes` | gauge | — | Bytes of memory allocated by PHP. |
 | `murmur_memory_peak_bytes` | gauge | — | Peak bytes of memory allocated by PHP. |
-| `murmur_event_loop_lag_seconds` | gauge | — | Most recent event loop timer delay in seconds, or zero before the first measurement. The timer fires once per second, so a short block is seen only when it overlaps a tick. |
+| `murmur_event_loop_lag_seconds` | gauge | — | Largest event loop timer delay in seconds over the last ten measurements, taken every 100 ms, or zero before the first ten. |
 
 ## Logging
 

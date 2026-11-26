@@ -101,7 +101,7 @@ class PublishHandler
 
         if (! $payload instanceof stdClass
             || ! is_string($payload->topic ?? null) || ! Topic::isValid($payload->topic)
-            || ! is_string($payload->event ?? null) || ! Event::isValidName($payload->event)) {
+            || ! is_string($payload->event ?? null) || ! Event::isPublishableName($payload->event)) {
             return new Response(422);
         }
 

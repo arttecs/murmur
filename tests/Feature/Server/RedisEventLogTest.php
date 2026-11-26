@@ -114,6 +114,7 @@ it('skips malformed entries and delivers valid entries that follow them', functi
     await($client->xadd($key, '*', 'topic', 'news', 'name', 'invalid-json', 'data', '{'));
     await($client->xadd($key, '*', 'topic', 'invalid topic', 'name', 'updated', 'data', 'null'));
     await($client->xadd($key, '*', 'topic', 'news', 'name', "invalid\nname", 'data', 'null'));
+    await($client->xadd($key, '*', 'topic', 'news', 'name', 'murmur.gap', 'data', 'null'));
     $id = xadd($key, 'news', 'valid');
 
     await(timeout($delivered->promise(), 2.0));

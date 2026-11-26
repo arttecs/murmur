@@ -163,7 +163,7 @@ it('does not let a throwing error counter interrupt a report', function () {
 it('measures blocked loop ticks and warns once while counting each breach', function () {
     $loop = new StreamSelectLoop;
     $server = new Server(
-        new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 10),
+        new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 80),
         new MemoryEventLog,
         $loop,
         $this->logger,
@@ -171,9 +171,9 @@ it('measures blocked loop ticks and warns once while counting each breach', func
 
     try {
         await($server->listen());
-        $loop->addTimer(0.9, fn () => usleep(180_000));
-        $loop->addTimer(1.98, fn () => usleep(180_000));
-        $loop->addTimer(2.4, $loop->stop(...));
+        $loop->addTimer(0.25, fn () => usleep(180_000));
+        $loop->addTimer(0.75, fn () => usleep(180_000));
+        $loop->addTimer(1.9, $loop->stop(...));
         $loop->run();
 
         expect($server->metrics()->value('murmur_event_loop_lag_seconds'))->toBeFloat()->toBeGreaterThan(0.01);
@@ -217,7 +217,7 @@ it('does not warn below the threshold and cancels lag measurement on close', fun
 it('reports a blocked loop through the PHP error log without a logger', function () {
     $loop = new StreamSelectLoop;
     $server = new Server(
-        new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 10),
+        new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 80),
         new MemoryEventLog,
         $loop,
     );

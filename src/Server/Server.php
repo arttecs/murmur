@@ -38,6 +38,21 @@ class Server
     public const PROTOCOL = 1;
 
     /**
+     * The seconds between event loop lag measurements.
+     */
+    protected const LAG_INTERVAL = 0.1;
+
+    /**
+     * The number of lag measurements summarized by the lag gauge.
+     */
+    protected const LAG_WINDOW_TICKS = 10;
+
+    /**
+     * The shortest interval in seconds between batches of streams ended during shutdown.
+     */
+    protected const DRAIN_INTERVAL = 0.01;
+
+    /**
      * The loop used for HTTP and connection timers.
      */
     protected LoopInterface $loop;
@@ -94,7 +109,7 @@ class Server
     protected ?TimerInterface $lagTimer = null;
 
     /**
-     * The most recent event loop lag measurement in seconds.
+     * The largest event loop lag in seconds seen during the last completed measurement window.
      */
     protected float $loopLag = 0.0;
 
@@ -116,11 +131,9 @@ class Server
     protected ?TimerInterface $shutdownDeadline = null;
 
     /**
-     * The timers for ending individual streams during shutdown.
-     *
-     * @var array<int, TimerInterface>
+     * The timer that ends streams in batches during shutdown.
      */
-    protected array $streamEndTimers = [];
+    protected ?TimerInterface $streamEndTimer = null;
 
     /**
      * The error counter installed on the reporter while listening.
@@ -153,7 +166,7 @@ class Server
         $this->metrics->gauge('murmur_uptime_seconds', 'Seconds since the server started listening.', fn (): float => $this->startedAt === null ? 0.0 : (hrtime(true) - $this->startedAt) / 1_000_000_000);
         $this->metrics->gauge('murmur_memory_bytes', 'Bytes of memory allocated by PHP.', fn (): int => memory_get_usage(true));
         $this->metrics->gauge('murmur_memory_peak_bytes', 'Peak bytes of memory allocated by PHP.', fn (): int => memory_get_peak_usage(true));
-        $this->metrics->gauge('murmur_event_loop_lag_seconds', 'Seconds the last event loop timer tick was late.', fn (): float => $this->loopLag);
+        $this->metrics->gauge('murmur_event_loop_lag_seconds', 'Largest event loop timer delay in seconds during the last second.', fn (): float => $this->loopLag);
     }
 
     /**
@@ -264,13 +277,22 @@ class Server
 
         $this->heartbeat = $this->loop->addPeriodicTimer($this->config->heartbeatSeconds, $this->hub->heartbeat(...));
         $previousTick = hrtime(true);
-        $this->lagTimer = $this->loop->addPeriodicTimer(1.0, function () use (&$previousTick): void {
+        $ticks = 0;
+        $worst = 0.0;
+        $this->lagTimer = $this->loop->addPeriodicTimer(static::LAG_INTERVAL, function () use (&$previousTick, &$ticks, &$worst): void {
             $now = hrtime(true);
-            $this->loopLag = max(0.0, ($now - $previousTick) / 1_000_000_000 - 1.0);
+            $lag = max(0.0, ($now - $previousTick) / 1_000_000_000 - static::LAG_INTERVAL);
             $previousTick = $now;
+            $worst = max($worst, $lag);
 
-            if ($this->loopLag * 1000 > $this->config->loopLagThresholdMs) {
-                $this->reportLoopLag($now);
+            if (++$ticks === static::LAG_WINDOW_TICKS) {
+                $this->loopLag = $worst;
+                $ticks = 0;
+                $worst = 0.0;
+            }
+
+            if ($lag * 1000 > $this->config->loopLagThresholdMs) {
+                $this->reportLoopLag($now, $lag);
             }
         });
         $this->logInfo('Murmur is listening on '.$this->address());
@@ -279,7 +301,7 @@ class Server
     /**
      * Count a lag threshold breach and report it at most once per ten seconds.
      */
-    protected function reportLoopLag(int|float $now): void
+    protected function reportLoopLag(int|float $now, float $lag): void
     {
         $this->metrics->increment('murmur_event_loop_lag_exceeded_total');
 
@@ -288,7 +310,7 @@ class Server
         }
 
         $this->lastLagWarningAt = $now;
-        $message = sprintf('Murmur event loop lag exceeded the threshold: %.2F ms.', $this->loopLag * 1000);
+        $message = sprintf('Murmur event loop lag exceeded the threshold: %.2F ms.', $lag * 1000);
 
         if ($this->logger !== null) {
             try {
@@ -447,27 +469,36 @@ class Server
     }
 
     /**
-     * Schedule stream endings at equal intervals over the spread, in connection order.
+     * End streams at an even pace over the spread, in connection order, using a single timer.
      */
     protected function drainStreams(float $spreadSeconds): void
     {
         $connections = $this->hub->connections();
-        $step = $spreadSeconds / max(1, count($connections) - 1);
+        $last = count($connections) - 1;
 
-        foreach ($connections as $index => $connection) {
-            if ($index === 0 || $step === 0.0) {
-                $this->endStream($connection);
+        if ($last < 1 || $spreadSeconds <= 0.0) {
+            array_map($this->endStream(...), $connections);
 
-                continue;
-            }
-
-            if (! $this->closed && ! $connection->isClosed()) {
-                $this->streamEndTimers[$index] = $this->loop->addTimer($step * $index, function () use ($index, $connection): void {
-                    unset($this->streamEndTimers[$index]);
-                    $this->endStream($connection);
-                });
-            }
+            return;
         }
+
+        $this->endStream($connections[0]);
+        $ended = 1;
+        $startedAt = hrtime(true);
+        $interval = max($spreadSeconds / $last, static::DRAIN_INTERVAL);
+        $this->streamEndTimer = $this->loop->addPeriodicTimer($interval, function () use ($connections, $last, $spreadSeconds, $startedAt, &$ended): void {
+            $elapsed = (hrtime(true) - $startedAt) / 1_000_000_000;
+            $due = min($last, (int) floor($elapsed / $spreadSeconds * $last)) + 1;
+
+            while ($ended < $due) {
+                $this->endStream($connections[$ended++]);
+            }
+
+            if ($ended > $last && $this->streamEndTimer !== null) {
+                $this->loop->cancelTimer($this->streamEndTimer);
+                $this->streamEndTimer = null;
+            }
+        });
     }
 
     /**
@@ -523,11 +554,10 @@ class Server
             $this->shutdownDeadline = null;
         }
 
-        foreach ($this->streamEndTimers as $timer) {
-            $this->loop->cancelTimer($timer);
+        if ($this->streamEndTimer !== null) {
+            $this->loop->cancelTimer($this->streamEndTimer);
+            $this->streamEndTimer = null;
         }
-
-        $this->streamEndTimers = [];
 
         try {
             $this->log->close();

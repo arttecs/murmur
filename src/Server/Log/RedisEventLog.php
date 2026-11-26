@@ -467,7 +467,7 @@ class RedisEventLog implements EventLog
             $values[$fields[$offset]] = $fields[$offset + 1];
         }
 
-        if ($id === null || ! isset($values['topic'], $values['name'], $values['data']) || strlen($values['data']) > $this->maxPayloadBytes) {
+        if ($id === null || ! isset($values['topic'], $values['name'], $values['data']) || strlen($values['data']) > $this->maxPayloadBytes || ! Event::isPublishableName($values['name'])) {
             return null;
         }
 

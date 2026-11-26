@@ -44,4 +44,14 @@ class Event
     {
         return preg_match('/\A[^\r\n]{1,200}\z/', $name) === 1;
     }
+
+    /**
+     * Determine if a publisher may send the given event name.
+     *
+     * Names starting with "murmur." are reserved for the server, except the stream end marker.
+     */
+    public static function isPublishableName(string $name): bool
+    {
+        return self::isValidName($name) && (! str_starts_with($name, 'murmur.') || $name === 'murmur.end');
+    }
 }

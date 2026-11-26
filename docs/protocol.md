@@ -68,7 +68,7 @@ data: {}
 - If replay would exceed `server.max_replay_events` matching events (1000 by default) or the encoded replay frames would exceed half of `server.max_buffer_bytes`, the server sends the gap and discards the replay batch. It continues with held and live events.
 - If the Redis reader loses its connection and discovers history was trimmed past its cursor, the server sends a gap to existing subscribers before resuming live delivery.
 
-The `murmur.` event namespace is reserved. `murmur.end` is published by Laravel's `Stream::close()` with a regular event ID and an envelope containing the stream topic and `"data":null`. A stream client can stop consuming that stream upon receiving the marker. The SSE server delivers the marker as an event and leaves the HTTP connection open. The Laravel broadcast and direct publish APIs reject application event names starting with `murmur.`. A trusted HTTP or Redis publisher must also leave those names to the protocol.
+The `murmur.` event namespace is reserved. `murmur.end` is published by Laravel's `Stream::close()` with a regular event ID and an envelope containing the stream topic and `"data":null`. A stream client can stop consuming that stream upon receiving the marker. The SSE server delivers the marker as an event and leaves the HTTP connection open. The Laravel broadcast and direct publish APIs reject application event names starting with `murmur.`. The server enforces the reservation on both publishing paths: `POST /publish` answers 422 for any `murmur.` name other than `murmur.end`, and the Redis reader skips such stream entries, in live delivery and in replay.
 
 ### Private topics
 
@@ -116,7 +116,7 @@ The raw body may be at most `server.max_payload_bytes` bytes, 65536 by default, 
 | 202 | Accepted. The JSON response is `{"id":"<assigned ID>"}`. |
 | 401 | Missing or invalid signing headers, timestamp outside the tolerance, or incorrect signature. |
 | 413 | Body above the byte limit. |
-| 422 | A malformed body, including invalid JSON, topic, or event name. |
+| 422 | A malformed body, including invalid JSON, topic, or event name, or a reserved `murmur.` event name other than `murmur.end`. |
 | 404 | HTTP publishing is unavailable on this server, including with the Redis driver. |
 
 A route failure can return 500. Publish error responses have empty bodies at the Murmur route level. The HTTP parser and intermediaries may produce their own responses.
