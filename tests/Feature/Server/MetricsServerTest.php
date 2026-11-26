@@ -228,8 +228,10 @@ it('serves the metrics route with the configured access controls and formats', f
         expect((string) $response->getBody())->toContain('murmur_uptime_seconds');
     }
 })->with([
-    'open prometheus' => [[], [], 200, 'text/plain; version=0.0.4; charset=utf-8'],
-    'protected json' => [['metricsToken' => 'scrape-secret'], ['Authorization' => 'Bearer scrape-secret', 'Accept' => 'application/json'], 200, 'application/json'],
-    'missing token' => [['metricsToken' => 'scrape-secret'], [], 401, ''],
-    'disabled' => [['metricsEnabled' => false], [], 404, ''],
+    'closed without a token' => [[], [], 404, ''],
+    'protected prometheus' => [['metricsToken' => 'scrape-secret-token'], ['Authorization' => 'Bearer scrape-secret-token'], 200, 'text/plain; version=0.0.4; charset=utf-8'],
+    'wrong token' => [['metricsToken' => 'scrape-secret-token'], ['Authorization' => 'Bearer scrape-secret-tokem'], 401, ''],
+    'protected json' => [['metricsToken' => 'scrape-secret-token'], ['Authorization' => 'Bearer scrape-secret-token', 'Accept' => 'application/json'], 200, 'application/json'],
+    'missing token' => [['metricsToken' => 'scrape-secret-token'], [], 401, ''],
+    'disabled' => [['metricsEnabled' => false, 'metricsToken' => 'scrape-secret-token'], ['Authorization' => 'Bearer scrape-secret-token'], 404, ''],
 ]);

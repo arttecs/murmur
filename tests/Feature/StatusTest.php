@@ -10,6 +10,10 @@ use Symfony\Component\Process\Process;
 
 use function React\Async\delay;
 
+beforeEach(function () {
+    config(['murmur.server.metrics.token' => 'scrape-secret-token']);
+});
+
 /**
  * Return a realistic response with unlabeled and labeled metrics.
  */
@@ -21,7 +25,8 @@ function statusSamples(): array
     ];
 }
 
-it('fetches a metrics list using the configured URL, timeouts and optional bearer token', function (?string $token) {
+it('fetches a metrics list using the configured URL, timeouts and bearer token', function () {
+    $token = 'scrape-secret-token';
     config([
         'murmur.secret' => null,
         'murmur.publish_url' => 'http://murmur.test/',
@@ -41,20 +46,28 @@ it('fetches a metrics list using the configured URL, timeouts and optional beare
     Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
         && $request->url() === 'http://murmur.test/metrics'
         && $request->hasHeader('Accept', 'application/json')
-        && ($token === null ? ! $request->hasHeader('Authorization') : $request->hasHeader('Authorization', 'Bearer '.$token)));
-})->with([null, 'scrape-secret']);
+        && $request->hasHeader('Authorization', 'Bearer '.$token));
+});
+
+it('refuses to request metrics without a configured token', function () {
+    config(['murmur.server.metrics.token' => null]);
+    Http::fake();
+
+    expect(fn () => Murmur::metrics())->toThrow(MetricsUnavailable::class, 'MURMUR_METRICS_TOKEN');
+    Http::assertNothingSent();
+});
 
 it('treats every non-200 response as unavailable without including the token', function (int $status) {
-    config(['murmur.server.metrics.token' => 'scrape-secret']);
-    Http::fake(['*' => Http::response('scrape-secret', $status)]);
+    config(['murmur.server.metrics.token' => 'scrape-secret-token']);
+    Http::fake(['*' => Http::response('scrape-secret-token', $status)]);
 
     expect(fn () => Murmur::metrics())
         ->toThrow(MetricsUnavailable::class, "The Murmur server returned HTTP status {$status} for the metrics request.");
 })->with([401, 204, 302]);
 
 it('reports a failed metrics connection without exposing the transport message', function () {
-    config(['murmur.server.metrics.token' => 'scrape-secret']);
-    Http::fake(fn () => throw new ConnectionException('Connection refused with scrape-secret'));
+    config(['murmur.server.metrics.token' => 'scrape-secret-token']);
+    Http::fake(fn () => throw new ConnectionException('Connection refused with scrape-secret-token'));
 
     expect(fn () => Murmur::metrics())
         ->toThrow(MetricsUnavailable::class, 'The metrics request to the Murmur server failed.');
@@ -105,7 +118,7 @@ it('fetches protected metrics from a listening murmur serve process', function (
     $port = ServerHarness::availablePort();
     $address = "http://127.0.0.1:{$port}";
     $root = dirname(__DIR__, 2);
-    $token = 'test-scrape-token';
+    $token = 'test-scrape-token-value';
     $server = new Process([PHP_BINARY, $root.'/vendor/bin/testbench', 'murmur:serve', "--port={$port}"], $root, [
         'MURMUR_HOST' => '127.0.0.1',
         'MURMUR_SECRET' => config('murmur.secret'),

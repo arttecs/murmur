@@ -56,14 +56,14 @@ return [
          */
         'log_channel' => ((string) env('MURMUR_LOG_CHANNEL', '')) ?: null,
         /**
-         * Per-process metrics at GET /metrics. Set a bearer token before
-         * exposing the endpoint outside a trusted network.
+         * Per-process metrics at GET /metrics. The endpoint is served only
+         * when a bearer token is set, and every request must present it.
          */
         'metrics' => [
-            /** Whether to serve the metrics endpoint. Disable this if you do not scrape the process. */
+            /** Whether to serve the metrics endpoint once a token is set. Disable this to keep it off regardless of the token. */
             'enabled' => filter_var(env('MURMUR_METRICS_ENABLED', true), FILTER_VALIDATE_BOOL),
-            /** Bearer token required for metrics requests. Leave null to allow unauthenticated scrapes. */
-            'token' => ($metricsToken = env('MURMUR_METRICS_TOKEN')) === null ? null : (string) $metricsToken,
+            /** Bearer token of at least 16 bytes required for metrics requests. Leave null to keep the endpoint off. */
+            'token' => ((string) env('MURMUR_METRICS_TOKEN', '')) ?: null,
         ],
     ],
 

@@ -17,8 +17,8 @@ it('renders exact prometheus text with escaped label values and one declaration 
             ];
         }
     };
-    $handler = new MetricsHandler(new ServerConfig('test-secret-with-at-least-32-bytes'), $metrics);
-    $response = $handler(new ServerRequest('GET', '/metrics'));
+    $handler = new MetricsHandler(new ServerConfig('test-secret-with-at-least-32-bytes', metricsToken: 'metrics-secret-token'), $metrics);
+    $response = $handler(new ServerRequest('GET', '/metrics', ['Authorization' => 'Bearer metrics-secret-token']));
     $expected = implode("\n", [
         '# HELP murmur_test_total Test counter.',
         '# TYPE murmur_test_total counter',
@@ -39,9 +39,9 @@ it('renders exact prometheus text with escaped label values and one declaration 
 it('returns the metrics snapshot as json when requested', function () {
     $metrics = new Metrics;
     $metrics->gauge('murmur_foo', 'Test gauge.', fn (): int => 2);
-    $handler = new MetricsHandler(new ServerConfig('test-secret-with-at-least-32-bytes'), $metrics);
+    $handler = new MetricsHandler(new ServerConfig('test-secret-with-at-least-32-bytes', metricsToken: 'metrics-secret-token'), $metrics);
 
-    $response = $handler(new ServerRequest('GET', '/metrics', ['Accept' => 'text/plain, application/json;q=0.5']));
+    $response = $handler(new ServerRequest('GET', '/metrics', ['Accept' => 'text/plain, application/json;q=0.5', 'Authorization' => 'Bearer metrics-secret-token']));
 
     expect($response->getStatusCode())->toBe(200);
     expect($response->getHeaderLine('Content-Type'))->toBe('application/json');
@@ -51,7 +51,7 @@ it('returns the metrics snapshot as json when requested', function () {
 });
 
 it('requires the configured bearer token', function (?string $authorization, int $status) {
-    $handler = new MetricsHandler(new ServerConfig('test-secret-with-at-least-32-bytes', metricsToken: 'metrics-secret'), new Metrics);
+    $handler = new MetricsHandler(new ServerConfig('test-secret-with-at-least-32-bytes', metricsToken: 'metrics-secret-token'), new Metrics);
     $headers = $authorization === null ? [] : ['Authorization' => $authorization];
 
     $response = $handler(new ServerRequest('GET', '/metrics', $headers));
@@ -61,15 +61,34 @@ it('requires the configured bearer token', function (?string $authorization, int
 })->with([
     [null, 401],
     ['Bearer wrong-secret', 401],
-    ['Basic metrics-secret', 401],
-    ['Bearer metrics-secret', 200],
-    ['bearer metrics-secret', 200],
+    ['Basic metrics-secret-token', 401],
+    ['Bearer metrics-secret-token', 200],
+    ['bearer metrics-secret-token', 200],
 ]);
 
 it('hides the metrics route when disabled', function () {
-    $handler = new MetricsHandler(new ServerConfig('test-secret-with-at-least-32-bytes', metricsEnabled: false, metricsToken: 'metrics-secret'), new Metrics);
+    $handler = new MetricsHandler(new ServerConfig('test-secret-with-at-least-32-bytes', metricsEnabled: false, metricsToken: 'metrics-secret-token'), new Metrics);
 
-    expect($handler(new ServerRequest('GET', '/metrics'))->getStatusCode())->toBe(404);
+    expect($handler(new ServerRequest('GET', '/metrics', ['Authorization' => 'Bearer metrics-secret-token']))->getStatusCode())->toBe(404);
+});
+
+it('hides the metrics route until a token is configured', function (array $headers) {
+    $handler = new MetricsHandler(new ServerConfig('test-secret-with-at-least-32-bytes'), new Metrics);
+
+    expect($handler(new ServerRequest('GET', '/metrics', $headers))->getStatusCode())->toBe(404);
+})->with([
+    'no header' => [[]],
+    'empty bearer' => [['Authorization' => 'Bearer ']],
+    'any bearer' => [['Authorization' => 'Bearer anything-at-all-here']],
+]);
+
+it('rejects a metrics token shorter than 16 bytes', function (string $token) {
+    expect(fn () => new ServerConfig('test-secret-with-at-least-32-bytes', metricsToken: $token))
+        ->toThrow(InvalidArgumentException::class, 'metricsToken');
+})->with(['', 'short', str_repeat('a', 15)]);
+
+it('accepts a 16-byte metrics token', function () {
+    expect((new ServerConfig('test-secret-with-at-least-32-bytes', metricsToken: str_repeat('a', 16)))->metricsToken)->toBe(str_repeat('a', 16));
 });
 
 it('rejects an empty configured metrics token', function () {

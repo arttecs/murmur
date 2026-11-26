@@ -31,14 +31,15 @@ class MetricsHandler
      */
     public function __invoke(ServerRequestInterface $request): ResponseInterface
     {
-        if (! $this->config->metricsEnabled) {
+        $token = $this->config->metricsToken;
+
+        if (! $this->config->metricsEnabled || $token === null) {
             return new Response(404);
         }
 
         $authorization = $request->getHeaderLine('Authorization');
-        $token = $this->config->metricsToken;
 
-        if ($token !== null && (strncasecmp($authorization, 'Bearer ', 7) !== 0 || ! hash_equals($token, substr($authorization, 7)))) {
+        if (strncasecmp($authorization, 'Bearer ', 7) !== 0 || ! hash_equals($token, substr($authorization, 7))) {
             return new Response(401, ['WWW-Authenticate' => 'Bearer']);
         }
 

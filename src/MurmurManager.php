@@ -165,16 +165,19 @@ class MurmurManager
      */
     public function metrics(): array
     {
+        $token = $this->config->get('murmur.server.metrics.token');
+
+        if ($token === null) {
+            throw new MetricsUnavailable('Set MURMUR_METRICS_TOKEN in Laravel and on the server to read metrics.');
+        }
+
         try {
             $request = $this->app->make(Factory::class)
                 ->acceptJson()
                 ->timeout($this->config->get('murmur.http.timeout'))
                 ->connectTimeout($this->config->get('murmur.http.connect_timeout'))
-                ->withoutRedirecting();
-
-            if (($token = $this->config->get('murmur.server.metrics.token')) !== null) {
-                $request->withToken($token);
-            }
+                ->withoutRedirecting()
+                ->withToken($token);
 
             $response = $request->get(rtrim($this->config->get('murmur.publish_url'), '/').'/metrics');
             $status = $response->status();

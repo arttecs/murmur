@@ -62,8 +62,8 @@ readonly class ServerConfig
             }
         }
 
-        if ($metricsToken === '') {
-            throw new InvalidArgumentException('The metricsToken setting must not be empty.');
+        if ($metricsToken !== null && strlen($metricsToken) < 16) {
+            throw new InvalidArgumentException('The metricsToken setting must be at least 16 bytes long.');
         }
 
         if ($maxSockets < $maxConnections) {
