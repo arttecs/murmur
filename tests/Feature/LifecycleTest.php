@@ -37,7 +37,7 @@ it('dispatches accepted connections in order outside the server with the exact c
         expect(SseReader::open($root.'/sse?topics=private-rejected')->status())->toBe(401);
         expect(SseReader::open($root.'/sse?topics=a%20b')->status())->toBe(400);
 
-        $topics = $reason === 'expired' ? ['news', 'private-news'] : ['news', "binary-\xff"];
+        $topics = $reason === 'expired' ? ['news', 'private-news'] : ['news', 'notícias-界-😀'];
         $expiry = time() + 2;
         $query = ['topics' => implode(',', [...$topics, 'news']), 'connection' => $id];
         if ($reason === 'expired') {
@@ -232,6 +232,41 @@ it('keeps serving and sends subsequent batches after a lifecycle listener fails'
         expect(metricsTrace($file, 'closed')[0]->reason)->toBe('client');
     } finally {
         $reader?->close();
+        $process->stop(2);
+        unlink($file);
+    }
+});
+
+it('forwards listener output to server stderr without consuming acknowledgement slots', function () {
+    $port = ServerHarness::availablePort();
+    $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-');
+    $process = workerServingProcess($port, [
+        'MURMUR_LIFECYCLE_EVENTS' => 'true',
+        'MURMUR_LIFECYCLE_INTERVAL' => '0.01',
+        'MURMUR_LIFECYCLE_BATCH' => '1',
+        'MURMUR_TEST_LIFECYCLE_FILE' => $file,
+        'MURMUR_TEST_LIFECYCLE_MODE' => 'noisy',
+        'MURMUR_TEST_METRICS_FILE' => $file,
+        'MURMUR_METRICS_ONLY' => 'murmur_errors_total',
+    ]);
+
+    try {
+        $process->start();
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 1, $process);
+        $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
+        $reader->start();
+        $reader->close();
+
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'closed')) === 1, $process);
+        $snapshots = count(metricsTrace($file, 'saved'));
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) > $snapshots, $process);
+
+        expect($process->getErrorOutput())->toContain('listener echo', 'listener dump', 'listener without newline')
+            ->not->toContain('acknowledgement');
+        expect($process->getOutput())->not->toContain('listener echo', 'listener dump', 'listener without newline');
+        expect(array_map(fn ($entry) => $entry->samples[0]->value, metricsTrace($file, 'saved')))
+            ->each->toBe(0);
+    } finally {
         $process->stop(2);
         unlink($file);
     }

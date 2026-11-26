@@ -94,6 +94,12 @@ class MetricsTestServiceProvider extends ServiceProvider
             $fields['topics'] = array_map(base64_encode(...), $event->topics);
             $record(['phase' => $event instanceof ConnectionOpened ? 'opened' : 'closed', ...$fields]);
 
+            if ($mode === 'noisy') {
+                echo "listener echo\n";
+                dump('listener dump');
+                fwrite(STDOUT, 'listener without newline');
+            }
+
             if ($mode === 'fail-first' && $event instanceof ConnectionOpened) {
                 throw new RuntimeException('The lifecycle listener failed.');
             }

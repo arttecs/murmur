@@ -29,6 +29,11 @@ class Worker
     public const MAX_LINE_BYTES = 1_048_576;
 
     /**
+     * The descriptor reserved for worker acknowledgements.
+     */
+    public const ACK_DESCRIPTOR = 3;
+
+    /**
      * The Unix signal that forces a worker to exit.
      */
     protected const KILL_SIGNAL = 9;
@@ -145,7 +150,7 @@ class Worker
      */
     public function launch(): void
     {
-        $process = new Process('exec '.$this->command, null, null, [['pipe', 'r'], ['pipe', 'w'], STDERR]);
+        $process = new Process('exec '.$this->command, null, null, [['pipe', 'r'], STDERR, STDERR, static::ACK_DESCRIPTOR => ['pipe', 'w']]);
 
         try {
             $process->start($this->loop, 0.01);
@@ -155,7 +160,7 @@ class Worker
 
         $this->process = $process;
         $process->on('exit', $this->exited(...));
-        $process->stdout->on('data', $this->receive(...));
+        $process->pipes[static::ACK_DESCRIPTOR]->on('data', $this->receive(...));
         $process->stdin->on('drain', function (): void {
             $this->backpressured = false;
         });
@@ -399,8 +404,7 @@ class Worker
     /**
      * Release the write slot for any line that answers a delivered message.
      *
-     * A line that is not an acknowledgement counts as a failed write, so output
-     * mixed into the reply cannot leave the slot pending forever.
+     * A malformed line counts as a failed write and releases a delivered message's slot.
      */
     protected function acknowledge(string $reply): void
     {
@@ -489,7 +493,7 @@ class Worker
         $process = $this->process;
         $this->shutdownTimer = $this->loop->addTimer(0.2, function () use ($process): void {
             $process->terminate(static::KILL_SIGNAL);
-            $process->stdout->close();
+            $process->pipes[static::ACK_DESCRIPTOR]->close();
         });
         $process->terminate();
     }

@@ -46,8 +46,13 @@ class WorkerCommand extends Command
      */
     public function handle(MurmurManager $manager, Dispatcher $events): int
     {
+        $ack = @fopen('php://fd/'.Worker::ACK_DESCRIPTOR, 'w');
+
+        if ($ack === false || ((fstat($ack)['mode'] ?? 0) & 0170000) !== 0010000) {
+            return $this->failure('Murmur worker requires an acknowledgement pipe on descriptor 3.');
+        }
+
         $this->watchParent();
-        ob_start(static fn (): string => '', 8192);
 
         try {
             try {
@@ -79,7 +84,7 @@ class WorkerCommand extends Command
                     $saved = false;
                 }
 
-                if (@fwrite(STDOUT, $saved ? "ok\n" : "error\n") === false || ! @fflush(STDOUT)) {
+                if (@fwrite($ack, $saved ? "ok\n" : "error\n") === false || ! @fflush($ack)) {
                     break;
                 }
             }
@@ -88,7 +93,7 @@ class WorkerCommand extends Command
                 pcntl_alarm(0);
             }
 
-            ob_end_clean();
+            fclose($ack);
         }
 
         return self::SUCCESS;

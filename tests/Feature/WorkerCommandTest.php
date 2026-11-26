@@ -4,7 +4,8 @@ use Symfony\Component\Process\Process;
 
 function recordMetricsInput(string|iterable $input, ?string $store, string $file, string $mode = ''): Process
 {
-    $process = new Process([PHP_BINARY, '-d', 'memory_limit=32M', dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:worker'], env: [
+    $command = [PHP_BINARY, '-d', 'memory_limit=32M', dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:worker'];
+    $process = Process::fromShellCommandLine('exec '.implode(' ', array_map(escapeshellarg(...), $command)).' 3>&1 1>&2', env: [
         'MURMUR_METRICS_STORE' => $store ?? '',
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => $mode,
@@ -179,7 +180,7 @@ it('keeps writing when its parent is the init process', function () {
     $line = json_encode(metricsRecordPayload(), JSON_THROW_ON_ERROR);
     $writer = implode(' ', array_map(escapeshellarg(...), [PHP_BINARY, dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:worker']));
     $feed = 'printf "%s\n" "$LINE"; sleep 2; printf "%s\n" "$LINE"';
-    $process = Process::fromShellCommandLine("( ( {$feed} ) | {$writer} > /dev/null 2>&1 & )", env: [
+    $process = Process::fromShellCommandLine("( ( {$feed} ) | {$writer} 3>&1 > /dev/null 2>&1 | cat > /dev/null & )", env: [
         'LINE' => $line,
         'MURMUR_METRICS_STORE' => 'fake',
         'MURMUR_TEST_METRICS_FILE' => $file,
@@ -195,3 +196,15 @@ it('keeps writing when its parent is the init process', function () {
         unlink($file);
     }
 })->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'The parent check requires ext-pcntl and ext-posix.');
+
+it('refuses to run without a dedicated acknowledgement pipe', function () {
+    $command = [PHP_BINARY, dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:worker'];
+    $process = Process::fromShellCommandLine('exec '.implode(' ', array_map(escapeshellarg(...), $command)).' 3>&-', env: [
+        'MURMUR_LIFECYCLE_EVENTS' => 'true',
+    ]);
+    $process->run();
+
+    expect($process->getExitCode())->toBe(1)
+        ->and($process->getOutput())->toBe('')
+        ->and($process->getErrorOutput())->toBe("Murmur worker requires an acknowledgement pipe on descriptor 3.\n");
+});

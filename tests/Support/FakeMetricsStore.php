@@ -28,7 +28,9 @@ class FakeMetricsStore implements MetricsStore
         }
 
         if ($this->mode === 'noisy' && $first) {
-            $chunk = str_repeat('sensitive writer output ', 2048);
+            echo "store echo\n";
+            dump('store dump');
+            $chunk = str_repeat('store output ', 2048);
             for ($i = 0; $i < 32; $i++) {
                 fwrite(STDOUT, $chunk);
             }

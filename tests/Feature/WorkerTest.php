@@ -138,7 +138,7 @@ it('reports failed acknowledgements and keeps recording with the same writer', f
     }
 });
 
-it('discards writer output, passes its diagnostics through, and accepts the next acknowledgement', function () {
+it('forwards noisy store output and diagnostics to stderr without acknowledgement errors', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
     $process = workerServingProcess(ServerHarness::availablePort(), [
         'MURMUR_TEST_METRICS_FILE' => $file,
@@ -151,9 +151,9 @@ it('discards writer output, passes its diagnostics through, and accepts the next
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 2, $process);
         [$first, $second] = metricsTrace($file, 'saved');
 
-        expect($process->getErrorOutput())->toContain('invalid acknowledgement')->toContain('writer diagnostic line')->not->toContain('sensitive writer output');
-        expect($process->getOutput())->not->toContain('sensitive writer output');
-        expect($second->samples[0]->value)->toBeGreaterThanOrEqual(1);
+        expect($process->getErrorOutput())->toContain('store output', 'writer diagnostic line', 'store echo', 'store dump')->not->toContain('invalid acknowledgement');
+        expect($process->getOutput())->not->toContain('store output');
+        expect($second->samples[0]->value)->toBe(0);
         expect($second->pid)->toBe($first->pid);
     } finally {
         $process->stop(2);
@@ -161,7 +161,7 @@ it('discards writer output, passes its diagnostics through, and accepts the next
     }
 });
 
-it('keeps recording after output without a line break is mixed into an acknowledgement', function () {
+it('keeps recording when a store writes output without a line break', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
     $process = workerServingProcess(ServerHarness::availablePort(), [
         'MURMUR_TEST_METRICS_FILE' => $file,
@@ -174,7 +174,8 @@ it('keeps recording after output without a line break is mixed into an acknowled
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 3, $process);
         $saved = metricsTrace($file, 'saved');
 
-        expect($process->getErrorOutput())->toContain('invalid acknowledgement')->not->toContain('direct noise');
+        expect($process->getErrorOutput())->toContain('direct noise')->not->toContain('invalid acknowledgement');
+        expect($saved[2]->samples[0]->value)->toBe(0);
         expect($saved[2]->pid)->toBe($saved[0]->pid);
     } finally {
         $process->stop(2);
@@ -185,7 +186,7 @@ it('keeps recording after output without a line break is mixed into an acknowled
 it('does not queue more snapshots while the writer input pipe is blocked', function () {
     config(['murmur.metrics.store' => 'cache', 'murmur.metrics.interval' => 0.02, 'murmur.metrics.timeout' => 0.4]);
     $loop = Loop::get();
-    $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg('fwrite(STDOUT, "ok\n"); sleep(10);');
+    $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg('fwrite(fopen("php://fd/3", "w"), "ok\n"); sleep(10);');
     $writer = new Worker($loop, Murmur::metricsConfiguration(), 'test-node', $command);
     $metrics = new Metrics;
     $snapshots = 0;
@@ -410,4 +411,42 @@ it('refuses to serve when the Artisan entry point cannot be resolved', function 
     expect($process->getExitCode())->toBe(1);
     expect($process->getOutput())->not->toContain('Murmur is listening');
     expect($process->getOutput().$process->getErrorOutput())->toMatch('/\A[^\r\n]*could not locate the Artisan entry point[^\r\n]*\n\z/');
+});
+
+it('recovers after an overlong line written to the acknowledgement pipe', function () {
+    config(['murmur.metrics.store' => 'cache', 'murmur.metrics.interval' => 0.02]);
+    $code = <<<'PHP'
+        $ack = fopen('php://fd/3', 'w');
+        fgets(STDIN);
+        fwrite($ack, str_repeat('x', 131072)."\n");
+        while (fgets(STDIN) !== false) {
+            fwrite($ack, "ok\n");
+        }
+        PHP;
+    $worker = new Worker(Loop::get(), Murmur::metricsConfiguration(), 'test-node', escapeshellarg(PHP_BINARY).' -r '.escapeshellarg($code));
+    $metrics = new Metrics;
+    $snapshots = 0;
+    $metrics->gauge('murmur_uptime_seconds', 'Snapshot number', function () use (&$snapshots): int {
+        return ++$snapshots;
+    });
+    $errors = 0;
+    $counter = function () use (&$errors): void {
+        $errors++;
+    };
+    $logger = new NullLogger;
+    ErrorReporter::countUsing($counter);
+    ErrorReporter::logUsing($logger);
+
+    try {
+        $worker->launch();
+        $worker->start($metrics);
+        waitForMetricsCondition(function () use (&$snapshots): bool {
+            return $snapshots >= 3;
+        });
+
+        expect($errors)->toBe(1);
+    } finally {
+        await($worker->stop());
+        ErrorReporter::forget($counter, $logger);
+    }
 });

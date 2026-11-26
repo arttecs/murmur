@@ -28,7 +28,8 @@ function lifecycleWorkerLine(array $records, array $fields = []): string
 
 function lifecycleWorkerProcess(string $file, string|iterable $input, array $env = []): Process
 {
-    $process = new Process([PHP_BINARY, '-d', 'memory_limit=32M', dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:worker'], env: $env + [
+    $command = [PHP_BINARY, '-d', 'memory_limit=32M', dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:worker'];
+    $process = Process::fromShellCommandLine('exec '.implode(' ', array_map(escapeshellarg(...), $command)).' 3>&1 1>&2', env: $env + [
         'MURMUR_METRICS_STORE' => '',
         'MURMUR_LIFECYCLE_EVENTS' => 'true',
         'MURMUR_LIFECYCLE_BATCH' => '2',
@@ -112,7 +113,7 @@ it('flushes on its interval and caps ordered batches by count and by encoded siz
         'murmur.lifecycle.batch' => $large ? 400 : 2,
         'murmur.lifecycle.interval' => 0.2,
     ]);
-    $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg('while ($line = fgets(STDIN)) { file_put_contents($argv[1], $line, FILE_APPEND | LOCK_EX); fwrite(STDOUT, "ok\n"); }').' '.escapeshellarg($file);
+    $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg('$ack = fopen("php://fd/3", "w"); while ($line = fgets(STDIN)) { file_put_contents($argv[1], $line, FILE_APPEND | LOCK_EX); fwrite($ack, "ok\n"); }').' '.escapeshellarg($file);
     $worker = new Worker($loop, null, 'edge', $command, LifecycleConfig::from(config()), $recorder);
     $metrics = new Metrics;
     $total = $large ? 260 : 5;
