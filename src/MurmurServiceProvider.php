@@ -4,6 +4,7 @@ namespace Arttecs\Murmur;
 
 use Arttecs\Murmur\Broadcasting\MurmurBroadcaster;
 use Arttecs\Murmur\Console\Commands\ForgetMetricsCommand;
+use Arttecs\Murmur\Console\Commands\InstallCommand;
 use Arttecs\Murmur\Console\Commands\RecordMetricsCommand;
 use Arttecs\Murmur\Console\Commands\ServeCommand;
 use Arttecs\Murmur\Console\Commands\StatusCommand;
@@ -24,6 +25,12 @@ class MurmurServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeMurmurConfig();
+
+        $config = $this->app['config'];
+
+        if (! $config->has('broadcasting.connections.murmur')) {
+            $config->set('broadcasting.connections.murmur', ['driver' => 'murmur']);
+        }
 
         $this->app->singleton(Publisher::class, fn (Application $app): Publisher => $app->make(MurmurManager::class)->publisher());
 
@@ -85,7 +92,7 @@ class MurmurServiceProvider extends ServiceProvider
                 __DIR__.'/../database/migrations/2026_11_23_000000_create_murmur_metrics_table.php' => $this->app->databasePath('migrations/2026_11_23_000000_create_murmur_metrics_table.php'),
             ], 'murmur-migrations');
 
-            $this->commands([ServeCommand::class, RecordMetricsCommand::class, StatusCommand::class, ForgetMetricsCommand::class]);
+            $this->commands([InstallCommand::class, ServeCommand::class, RecordMetricsCommand::class, StatusCommand::class, ForgetMetricsCommand::class]);
         }
     }
 }
