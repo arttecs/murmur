@@ -1,6 +1,8 @@
 import { createServer, type Server as HttpServer } from 'node:http'
 import { EventSource } from 'eventsource'
+import Echo from 'laravel-echo'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { MurmurConnector } from '../../src/echo'
 import { Murmur, type MurmurOptions } from '../../src/index'
 import { close, listen, publish, startMurmur, tokenFor } from './server'
 
@@ -223,6 +225,60 @@ describe('Murmur client and PHP server', () => {
     expect(attempts[1]?.url.searchParams.get('token')).not.toBe(attempts[0]?.url.searchParams.get('token'))
     expect(attempts[1]?.url.searchParams.get('lastEventId')).toBe(firstId)
     expect(m.stats()).toMatchObject({ connections: 2, events: 3, lastEventId: lastId })
+  })
+
+  it('delivers private broadcasts through Echo after the SSE request is interrupted', async () => {
+    const topic = 'private-echo-orders.42'
+    const { endpoint, requests } = await startAuth(channels => tokenFor(channels, 60))
+    const connections: AbortController[] = []
+
+    /** Uses real HTTP with a signal that can interrupt the current response. */
+    class InterruptibleEventSource extends EventSource {
+      /** Opens an SSE connection that the test can interrupt. */
+      public constructor(url: string | URL, init?: EventSourceInit) {
+        const interrupt = new AbortController()
+        connections.push(interrupt)
+        super(url, {
+          ...init,
+          fetch: (url, request) => {
+            const signal = request?.signal
+              ? AbortSignal.any([request.signal, interrupt.signal])
+              : interrupt.signal
+            return fetch(url, { ...request, signal })
+          },
+        })
+      }
+    }
+
+    const echo = new Echo({
+      broadcaster: MurmurConnector,
+      url: `${murmur.address}/sse`,
+      authEndpoint: endpoint,
+      EventSource: InterruptibleEventSource,
+      retryMs: 20,
+    })
+    const subscribed = vi.fn()
+    const received = vi.fn<(payload: unknown) => void>()
+    try {
+      echo.private('echo-orders.42').listen('OrderShipped', received).subscribed(subscribed)
+      await vi.waitFor(() => expect(subscribed).toHaveBeenCalledExactlyOnceWith(), waitOptions)
+      await publish(murmur.address, topic, 'App\\Events\\OrderShipped', { order: 42, phase: 'first' })
+      await vi.waitFor(() => expect(received).toHaveBeenCalledExactlyOnceWith({ order: 42, phase: 'first' }), waitOptions)
+
+      expect(connections).toHaveLength(1)
+      connections[0]?.abort(new Error('SSE connection interrupted'))
+      await vi.waitFor(() => expect(subscribed).toHaveBeenCalledTimes(2), waitOptions)
+      await publish(murmur.address, topic, 'App\\Events\\OrderShipped', { order: 42, phase: 'second' })
+      await vi.waitFor(() => expect(received.mock.calls).toEqual([
+        [{ order: 42, phase: 'first' }],
+        [{ order: 42, phase: 'second' }],
+      ]), waitOptions)
+
+      expect(connections).toHaveLength(2)
+      expect(requests).toEqual([{ channels: [topic] }])
+    } finally {
+      echo.disconnect()
+    }
   })
 
   it('reports a gap when the stream cursor predates the log', async () => {
