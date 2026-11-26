@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Facade;
  * @method static void extend(string $driver, \Closure $publisher, \Closure $eventLog)
  * @method static void extendMetrics(string $store, \Closure $factory)
  * @method static \Arttecs\Murmur\Contracts\MetricsStore|null metricsStore()
+ * @method static array<string, array{recorded_at: int, samples: list<array>}> metrics()
+ * @method static array<string, int|float> metricTotals()
  * @method static void publish(string $topic, string $event, mixed $data = null)
  * @method static \Arttecs\Murmur\Stream stream(string $topic)
  * @method static string token(array<string> $topics, ?int $ttl = null)

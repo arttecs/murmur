@@ -250,3 +250,19 @@ function runPublishProcess(array $arguments): Process
 
     return $process;
 }
+
+/**
+ * Wait for a metrics write or subprocess state without blocking the test loop.
+ */
+function waitForMetricsCondition(Closure $condition, ?Process $process = null): void
+{
+    $deadline = hrtime(true) + 4_000_000_000;
+
+    while (! $condition()) {
+        if (hrtime(true) >= $deadline || ($process !== null && ! $process->isRunning())) {
+            test()->fail('Metrics condition did not complete. '.$process?->getOutput().$process?->getErrorOutput());
+        }
+
+        delay(0.01);
+    }
+}

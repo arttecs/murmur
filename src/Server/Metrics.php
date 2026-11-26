@@ -167,16 +167,26 @@ class Metrics
                 $lines[] = "# TYPE {$name} {$type}";
             }
 
-            $pairs = [];
-
-            foreach ($labels as $label => $text) {
-                $pairs[] = $label.'="'.strtr($text, ['\\' => '\\\\', '"' => '\"', "\n" => '\n']).'"';
-            }
-
-            $labelSet = $pairs === [] ? '' : '{'.implode(',', $pairs).'}';
-            $lines[] = "{$name}{$labelSet} {$value}";
+            $lines[] = static::seriesName($name, $labels)." {$value}";
         }
 
         return implode("\n", $lines)."\n";
+    }
+
+    /**
+     * Format a series name and its sorted label set for Prometheus exposition.
+     *
+     * @param  array<string, string>  $labels
+     */
+    public static function seriesName(string $name, array $labels): string
+    {
+        ksort($labels, SORT_STRING);
+        $pairs = [];
+
+        foreach ($labels as $label => $text) {
+            $pairs[] = $label.'="'.strtr($text, ['\\' => '\\\\', '"' => '\"', "\n" => '\n']).'"';
+        }
+
+        return $pairs === [] ? $name : $name.'{'.implode(',', $pairs).'}';
     }
 }

@@ -13,7 +13,6 @@ use React\Socket\SocketServer;
 use Symfony\Component\Process\Process;
 
 use function React\Async\await;
-use function React\Async\delay;
 
 function metricsServingProcess(int $port, array $env): Process
 {
@@ -35,19 +34,6 @@ function metricsTrace(string $file, ?string $phase = null): array
     $entries = array_filter(array_map(json_decode(...), file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)));
 
     return array_values(array_filter($entries, fn (object $entry): bool => $phase === null || $entry->phase === $phase));
-}
-
-function waitForMetricsCondition(Closure $condition, ?Process $process = null): void
-{
-    $deadline = hrtime(true) + 4_000_000_000;
-
-    while (! $condition()) {
-        if (hrtime(true) >= $deadline || ($process !== null && ! $process->isRunning())) {
-            test()->fail('Metrics condition did not complete. '.$process?->getOutput().$process?->getErrorOutput());
-        }
-
-        delay(0.01);
-    }
 }
 
 it('writes immediately after listening, then records a filtered snapshot on the interval', function () {

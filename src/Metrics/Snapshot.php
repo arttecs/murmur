@@ -2,6 +2,7 @@
 
 namespace Arttecs\Murmur\Metrics;
 
+use Arttecs\Murmur\Server\Metrics;
 use stdClass;
 
 /**
@@ -97,5 +98,29 @@ class Snapshot
     public static function encode(int $recordedAt, array $samples): string
     {
         return json_encode(['recorded_at' => $recordedAt, 'samples' => static::encodeSamples($samples)], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+    }
+
+    /**
+     * Sum all series across the given snapshots, excluding uptime.
+     *
+     * @param  array<array-key, SnapshotData>  $nodes
+     * @return array<string, int|float>
+     */
+    public static function totals(array $nodes): array
+    {
+        $totals = [];
+
+        foreach ($nodes as $snapshot) {
+            foreach ($snapshot['samples'] as $sample) {
+                if ($sample['name'] === 'murmur_uptime_seconds') {
+                    continue;
+                }
+
+                $series = Metrics::seriesName($sample['name'], $sample['labels']);
+                $totals[$series] = ($totals[$series] ?? 0) + $sample['value'];
+            }
+        }
+
+        return $totals;
     }
 }

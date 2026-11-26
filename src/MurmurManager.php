@@ -5,11 +5,13 @@ namespace Arttecs\Murmur;
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Contracts\MetricsStore;
 use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Exceptions\MetricsStoreNotConfigured;
 use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Metrics\CacheMetricsStore;
 use Arttecs\Murmur\Metrics\DatabaseMetricsStore;
 use Arttecs\Murmur\Metrics\MetricsConfig;
 use Arttecs\Murmur\Metrics\RedisMetricsStore;
+use Arttecs\Murmur\Metrics\Snapshot;
 use Arttecs\Murmur\Publishers\HttpPublisher;
 use Arttecs\Murmur\Publishers\RedisPublisher;
 use Arttecs\Murmur\Server\Auth\Secret;
@@ -29,7 +31,9 @@ use InvalidArgumentException;
 use React\EventLoop\LoopInterface;
 
 /**
- * Publish events, create streams and issue subscription tokens.
+ * Publish events, create streams, issue subscription tokens, and read server metrics.
+ *
+ * @phpstan-import-type Snapshot from MetricsStore
  */
 class MurmurManager
 {
@@ -196,17 +200,13 @@ class MurmurManager
      */
     public function metricsStore(): ?MetricsStore
     {
-        if ($this->metricsStore !== null) {
-            return $this->metricsStore;
-        }
-
         $metrics = $this->metricsConfiguration();
 
         if ($metrics === null) {
             return null;
         }
 
-        return $this->metricsStore = match ($metrics->store) {
+        return $this->metricsStore ??= match ($metrics->store) {
             'database' => new DatabaseMetricsStore(
                 $this->app->make(ConnectionResolverInterface::class)->connection($this->config->get('murmur.metrics.database.connection')),
                 $metrics->table,
@@ -222,6 +222,35 @@ class MurmurManager
             ),
             default => ($this->metricsFactories[$metrics->store])($this->app),
         };
+    }
+
+    /**
+     * Read fresh snapshots sorted by node name, with values per server process as old as recorded_at.
+     *
+     * @return array<string, Snapshot>
+     *
+     * @throws MetricsStoreNotConfigured
+     */
+    public function metrics(): array
+    {
+        $store = $this->metricsStore() ?? throw new MetricsStoreNotConfigured;
+        $cutoff = now()->timestamp - (float) $this->config->get('murmur.metrics.ttl');
+        $nodes = array_filter($store->all(), fn (array $snapshot): bool => $snapshot['recorded_at'] > $cutoff);
+        ksort($nodes, SORT_STRING);
+
+        return $nodes;
+    }
+
+    /**
+     * Sum fresh counters and gauges across nodes by Prometheus series name, omitting murmur_uptime_seconds.
+     *
+     * @return array<string, int|float>
+     *
+     * @throws MetricsStoreNotConfigured
+     */
+    public function metricTotals(): array
+    {
+        return Snapshot::totals($this->metrics());
     }
 
     /**
