@@ -319,7 +319,7 @@ export class Murmur {
       return
     }
 
-    subscription.listeners.clear()
+    subscription.channel.detach()
     this.channels.delete(key)
     const topic = subscription.channel.name
     if (![...this.channels.values()].some(({ channel }) => channel.name === topic)) {
@@ -388,8 +388,8 @@ export class Murmur {
     for (const stream of this.streams) {
       stream.close()
     }
-    for (const { listeners } of this.channels.values()) {
-      listeners.clear()
+    for (const { channel } of this.channels.values()) {
+      channel.detach()
     }
     this.channels.clear()
     this.attemptSubscriptions = []
@@ -650,10 +650,14 @@ export class Murmur {
 
   /** Acknowledges only the joins included on the connection that attached. */
   protected receiveAttachment(): void {
-    for (const subscription of this.attemptSubscriptions) {
+    const attached = this.attemptSubscriptions
+    this.attemptSubscriptions = []
+    for (const subscription of attached) {
       subscription.pending = false
     }
-    this.attemptSubscriptions = []
+    for (const { channel } of attached) {
+      channel.attachmentConfirmed()
+    }
   }
 
   /** Stores a valid server-issued connection ID and reports an unexpected protocol. */

@@ -26,5 +26,5 @@ export function echoWithMurmurOptions(url: string, token: () => string): Echo<'f
     auth: { credentials: 'omit', headers: () => ({ Authorization: `Bearer ${token()}` }) },
   }
 
-  return new Echo<'function'>({ broadcaster: MurmurConnector, withoutInterceptors: true, ...options } as EchoOptions<'function'>)
+  return new Echo<'function'>({ broadcaster: MurmurConnector, ...options } as EchoOptions<'function'>)
 }

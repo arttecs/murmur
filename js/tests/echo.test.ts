@@ -47,6 +47,7 @@ afterEach(() => {
   for (const instance of instances.splice(0)) {
     instance.disconnect()
   }
+  vi.unstubAllGlobals()
   reset()
   vi.useRealTimers()
 })
@@ -207,85 +208,162 @@ it('keeps whisper methods chainable without registering or sending client events
   expect(authFetch.calls).toHaveLength(1)
 })
 
-it('reports subscriptions on open and after reconnect and drops departed callbacks', async () => {
+it('reports attachment once per channel and again after a transport failure', async () => {
   const instance = echo()
   const firstSubscribed = vi.fn()
   const secondSubscribed = vi.fn()
   instance.channel('orders').subscribed(firstSubscribed)
   const first = await connection()
-  expect(firstSubscribed).not.toHaveBeenCalled()
   first.dispatchEvent(new Event('open'))
+  expect(firstSubscribed).not.toHaveBeenCalled()
+  first.emit('murmur.attached', {}, '')
 
   instance.channel('news').subscribed(secondSubscribed)
-  expect(secondSubscribed).not.toHaveBeenCalled()
   const second = await connection(1)
   second.dispatchEvent(new Event('open'))
-  expect(firstSubscribed).toHaveBeenCalledTimes(2)
+  expect(firstSubscribed).toHaveBeenCalledExactlyOnceWith()
+  expect(secondSubscribed).not.toHaveBeenCalled()
+  second.emit('murmur.attached', {}, '')
+  expect(firstSubscribed).toHaveBeenCalledExactlyOnceWith()
   expect(secondSubscribed).toHaveBeenCalledExactlyOnceWith()
 
   second.fail()
   await wait(10)
-  const retry = await connection(2)
+  const incomplete = await connection(2)
+  incomplete.dispatchEvent(new Event('open'))
+  incomplete.fail()
+  await wait(10)
+  const retry = await connection(3)
   retry.dispatchEvent(new Event('open'))
+  expect(firstSubscribed).toHaveBeenCalledTimes(1)
+  expect(secondSubscribed).toHaveBeenCalledTimes(1)
+  retry.emit('murmur.attached', {}, '')
   instance.leaveChannel('orders')
-  const remaining = await connection(3)
+  const remaining = await connection(4)
   remaining.dispatchEvent(new Event('open'))
+  remaining.emit('murmur.attached', {}, '')
 
-  expect(firstSubscribed).toHaveBeenCalledTimes(3)
-  expect(secondSubscribed).toHaveBeenCalledTimes(3)
+  expect(firstSubscribed).toHaveBeenCalledTimes(2)
+  expect(secondSubscribed).toHaveBeenCalledTimes(2)
 })
 
-it('waits for the next open when a subscription callback joins a channel', async () => {
+it('waits for the next attach marker when a subscription callback joins a channel', async () => {
   const instance = echo()
   const subscribed = vi.fn()
   instance.channel('orders').subscribed(() => instance.channel('news').subscribed(subscribed))
   const first = await connection()
   first.dispatchEvent(new Event('open'))
+  first.emit('murmur.attached', {}, '')
 
   expect(subscribed).not.toHaveBeenCalled()
   const next = await connection(1)
   next.dispatchEvent(new Event('open'))
+  expect(subscribed).not.toHaveBeenCalled()
+  next.emit('murmur.attached', {}, '')
   expect(subscribed).toHaveBeenCalledExactlyOnceWith()
 })
 
-it('reports a denied token request to every private channel and to no public channel', async () => {
-  const fetch = vi.fn<typeof globalThis.fetch>()
+it('reports a denial only to the private channel that was refused', async () => {
+  const fetch = vi.fn(authFetch({ token: 'allowed', expires_at: nowSeconds() + 900 }))
     .mockResolvedValueOnce(new Response(null, { status: 403 }))
-    .mockResolvedValueOnce(new Response(null, { status: 500 }))
   const instance = echo({ fetch })
-  const privateError = vi.fn()
+  const deniedError = vi.fn()
+  const deniedSubscribed = vi.fn()
+  const allowedError = vi.fn()
+  const allowedSubscribed = vi.fn()
   const publicError = vi.fn()
-  instance.private('orders').error(privateError)
+  instance.private('orders').error(deniedError).subscribed(deniedSubscribed)
+  instance.private('alerts').error(allowedError).subscribed(allowedSubscribed)
   instance.channel('news').error(publicError)
 
-  await flush()
+  const source = await connection()
+  source.dispatchEvent(new Event('open'))
+  source.emit('murmur.attached', {}, '')
   await wait(10)
 
-  expect(privateError).toHaveBeenCalledExactlyOnceWith(403)
+  expect(deniedError).toHaveBeenCalledExactlyOnceWith(403)
+  expect(deniedSubscribed).not.toHaveBeenCalled()
+  expect(allowedError).not.toHaveBeenCalled()
+  expect(allowedSubscribed).toHaveBeenCalledExactlyOnceWith()
   expect(publicError).not.toHaveBeenCalled()
+  expect(topicsOf(source)).toEqual(['private-alerts', 'news'])
   expect(FakeEventSource.instances).toHaveLength(1)
 })
 
-it('leaves the socket ID undefined and closes the client and pending retries on disconnect', async () => {
+it('uses the announced socket ID and closes the client and pending retries on disconnect', async () => {
   const instance = echo()
-  expect(instance.socketId()).toBeUndefined()
+  expect(instance.socketId()).toBe('')
   const { murmur } = connectorOf(instance)
   expect(murmur).toBeInstanceOf(Murmur)
   instance.channel('news')
   const source = await connection()
   source.dispatchEvent(new Event('open'))
+  expect(instance.socketId()).toBe('')
+  const id = '0123456789abcdef0123456789abcdef'
+  source.emit('murmur.connected', { connection_id: id, protocol: 1 }, '')
+  expect(instance.socketId()).toBe(id)
   const stream = murmur.stream('https://app.test/sse?topics=stream')
   const streamSource = await connection(1)
   source.fail()
+  expect(instance.socketId()).toBe(id)
 
   instance.disconnect()
   await wait(50)
 
+  expect(instance.socketId()).toBe('')
   expect(source.closed).toBe(true)
   expect(streamSource.closed).toBe(true)
   expect(FakeEventSource.instances).toHaveLength(2)
   expect(murmur.stats().channels).toBe(0)
   stream.close()
+})
+
+it('works with the installed Vue, axios, jQuery and Turbo Echo interceptors before and after announcement', async () => {
+  const vueClients: ((request: { headers: Headers }, next: () => void) => void)[] = []
+  const axiosUse = vi.fn<(interceptor: (request: { headers: Record<string, string> }) => void) => void>()
+  const jqueryPrefilter = vi.fn<(interceptor: (options: object, original: object, request: {
+    setRequestHeader: (name: string, value: string) => void
+  }) => void) => void>()
+  const documentEvents = new EventTarget()
+  vi.stubGlobal('Vue', { http: { interceptors: vueClients } })
+  vi.stubGlobal('axios', Object.assign(() => {}, { interceptors: { request: { use: axiosUse } } }))
+  vi.stubGlobal('jQuery', Object.assign(() => {}, { ajax: () => {}, ajaxPrefilter: jqueryPrefilter }))
+  vi.stubGlobal('Turbo', {})
+  vi.stubGlobal('document', documentEvents)
+
+  const instance = echo()
+  instance.channel('news')
+  const source = await connection()
+  const vue = vueClients[0]
+  const axios = axiosUse.mock.calls[0]?.[0]
+  const jquery = jqueryPrefilter.mock.calls[0]?.[0]
+  assert.isDefined(vue)
+  assert.isDefined(axios)
+  assert.isDefined(jquery)
+  const id = '0123456789abcdef0123456789abcdef'
+
+  for (const announced of [false, true]) {
+    if (announced) {
+      source.dispatchEvent(new Event('open'))
+      source.emit('murmur.connected', { connection_id: id, protocol: 1 }, '')
+    }
+    const vueHeaders = new Headers()
+    const axiosHeaders: Record<string, string> = {}
+    const setRequestHeader = vi.fn()
+    const turboHeaders: Record<string, string> = {}
+    const turboEvent = Object.assign(new Event('turbo:before-fetch-request'), {
+      detail: { fetchOptions: { headers: turboHeaders } },
+    })
+    vue({ headers: vueHeaders }, () => {})
+    axios({ headers: axiosHeaders })
+    jquery({}, {}, { setRequestHeader })
+    documentEvents.dispatchEvent(turboEvent)
+
+    expect(vueHeaders.get('X-Socket-ID')).toBe(announced ? id : null)
+    expect(axiosHeaders).toEqual(announced ? { 'X-Socket-Id': id } : {})
+    expect(setRequestHeader.mock.calls).toEqual(announced ? [['X-Socket-Id', id]] : [])
+    expect(turboHeaders).toEqual({ 'X-Socket-Id': announced ? id : '' })
+  }
 })
 
 it('can connect again after disconnecting', async () => {
@@ -361,6 +439,29 @@ it('passes the auth request options and sends the bearer token without mutating 
   expect(headers.authorization).toBe('old')
   expect(new URL(source.url).origin + new URL(source.url).pathname).toBe('https://sse.test/events')
   expect(source.withCredentials).toBe(true)
+})
+
+it.each([
+  { global: 'laravel', option: 'option', meta: 'meta', expected: 'laravel' },
+  { global: '', option: 'option', meta: 'meta', expected: 'option' },
+  { global: undefined, option: null, meta: 'meta', expected: 'meta' },
+  { global: undefined, option: '', meta: '', expected: 'supplied' },
+])('resolves CSRF to $expected with Echo precedence and preserves the supplied headers', async ({
+  global, option, meta, expected,
+}) => {
+  const querySelector = vi.fn(() => ({ getAttribute: (name: string) => name === 'content' ? meta : null }))
+  vi.stubGlobal('window', { Laravel: { csrfToken: global } })
+  vi.stubGlobal('document', { querySelector, cookie: '' })
+  const headers = { 'x-csrf-token': 'supplied' }
+  const fetch = vi.fn(authFetch({ token: 'authorized', expires_at: nowSeconds() + 900 }))
+  echo({ csrfToken: option, auth: { headers }, fetch }).private('orders')
+  await connection()
+
+  const [endpoint, init] = fetch.mock.calls[0] ?? []
+  expect(endpoint).toBe('/broadcasting/auth')
+  expect(new Headers(init?.headers).get('X-CSRF-TOKEN')).toBe(expected)
+  expect(headers).toEqual({ 'x-csrf-token': 'supplied' })
+  expect(querySelector.mock.calls).toEqual(global || option ? [] : [['meta[name="csrf-token"]']])
 })
 
 it('evaluates asynchronous headers at each token request when a bearer token is supplied', async () => {

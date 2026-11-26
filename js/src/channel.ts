@@ -8,6 +8,9 @@ export class Channel {
   /** Callbacks registered for this channel's authorization failures. */
   protected readonly errors = new Set<(status: number) => void>()
 
+  /** Callbacks registered for the server's attachment acknowledgment. */
+  protected readonly attachments = new Set<() => void>()
+
   /** The subscribed topic, including its prefix for private channels. */
   public readonly name: string
 
@@ -61,6 +64,37 @@ export class Channel {
     for (const callback of this.errors) {
       invokeListener(callback, status)
     }
+  }
+
+  /**
+   * Registers a callback for attachment on a connection that included this channel.
+   *
+   * @internal
+   */
+  public onAttached(callback: () => void): void {
+    this.attachments.add(callback)
+  }
+
+  /**
+   * Notifies listeners that the server finished attaching this subscription.
+   *
+   * @internal
+   */
+  public attachmentConfirmed(): void {
+    for (const callback of this.attachments) {
+      invokeListener(callback)
+    }
+  }
+
+  /**
+   * Clears callbacks when the owning client leaves this subscription.
+   *
+   * @internal
+   */
+  public detach(): void {
+    this.listeners.clear()
+    this.errors.clear()
+    this.attachments.clear()
   }
 
   /** Resolves an event to the name used in the stream. */

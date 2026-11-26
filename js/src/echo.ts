@@ -7,6 +7,9 @@ export interface MurmurConnectorOptions extends Omit<MurmurOptions, 'namespace'>
   /** Echo's dotted event namespace, or false to disable its prefix. */
   namespace?: string | false
 
+  /** The CSRF token to use when window.Laravel does not supply one. */
+  csrfToken?: string | null
+
   /** The token sent as an Authorization header on token requests. */
   bearerToken?: string | null
 }
@@ -32,10 +35,21 @@ class EventFormatter {
 /** The prefix Echo and Murmur use for private channels. */
 const privatePrefix = 'private-'
 
-/** Combines the caller's authorization headers with Echo's bearer token. */
+/** Resolves a CSRF token using the same precedence as Echo's built-in connectors. */
+function resolveCsrfToken(options: MurmurConnectorOptions): string | null | undefined {
+  const browser: (Window & { Laravel?: { csrfToken?: string } }) | undefined =
+    typeof window === 'undefined' ? undefined : window
+  return browser?.Laravel?.csrfToken || options.csrfToken ||
+    (typeof document !== 'undefined' && typeof document.querySelector === 'function'
+      ? document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
+      : null)
+}
+
+/** Combines the caller's authorization headers with Echo's CSRF and bearer tokens. */
 function authorization(options: MurmurConnectorOptions): AuthOptions | undefined {
   const { auth, bearerToken } = options
-  if (!bearerToken) {
+  const csrfToken = resolveCsrfToken(options)
+  if (!bearerToken && !csrfToken) {
     return auth
   }
 
@@ -44,7 +58,12 @@ function authorization(options: MurmurConnectorOptions): AuthOptions | undefined
     headers: async () => {
       const supplied = typeof auth?.headers === 'function' ? await auth.headers() : auth?.headers
       const headers = new Headers(supplied)
-      headers.set('Authorization', `Bearer ${bearerToken}`)
+      if (csrfToken) {
+        headers.set('X-CSRF-TOKEN', csrfToken)
+      }
+      if (bearerToken) {
+        headers.set('Authorization', `Bearer ${bearerToken}`)
+      }
       return Object.fromEntries(headers)
     },
   }
@@ -58,11 +77,14 @@ class MurmurEchoChannel {
   /** Echo callbacks keyed by their wire event name. */
   protected readonly listeners = new Map<string, Set<CallableFunction>>()
 
-  /** The callbacks notified each time the shared connection opens. */
+  /** The callbacks notified when the channel attaches or recovers from a failure. */
   protected readonly subscriptions = new Set<CallableFunction>()
 
   /** The callbacks notified of a denied private authorization request. */
   protected readonly errors = new Set<CallableFunction>()
+
+  /** Whether attachment has already been reported since this channel joined or the connection failed. */
+  protected subscribedNotified = false
 
   /** Whether the channel remains joined. */
   protected active = true
@@ -72,7 +94,10 @@ class MurmurEchoChannel {
     protected readonly channel: Channel,
     protected readonly formatter: EventFormatter,
     protected readonly onWhisper: () => void = () => {},
-  ) {}
+  ) {
+    this.channel.onAttached(() => this.attached())
+    this.channel.error(status => this.unauthorized(status))
+  }
 
   /** Registers an Echo callback for a formatted event. */
   public listen(event: string, callback: CallableFunction): this {
@@ -116,7 +141,7 @@ class MurmurEchoChannel {
     return this
   }
 
-  /** Registers a callback for future successful opens with this channel joined. */
+  /** Registers a callback for future server acknowledgments of this channel. */
   public subscribed(callback: CallableFunction): this {
     if (this.active) {
       this.subscriptions.add(callback)
@@ -153,12 +178,12 @@ class MurmurEchoChannel {
     return this
   }
 
-  /**
-   * Notifies subscription callbacks that the shared connection has opened.
-   *
-   * @internal
-   */
-  public opened(): void {
+  /** Notifies subscription callbacks the first time this channel attaches after a join or failure. */
+  protected attached(): void {
+    if (this.subscribedNotified) {
+      return
+    }
+    this.subscribedNotified = true
     for (const callback of [...this.subscriptions]) {
       if (this.active) {
         invokeListener(() => callback())
@@ -166,17 +191,22 @@ class MurmurEchoChannel {
     }
   }
 
-  /**
-   * Notifies error callbacks of the authorization status.
-   *
-   * @internal
-   */
-  public unauthorized(status: number): void {
+  /** Notifies this channel's error callbacks of its denied authorization status. */
+  protected unauthorized(status: number): void {
     for (const callback of [...this.errors]) {
       if (this.active) {
         invokeListener(() => callback(status))
       }
     }
+  }
+
+  /**
+   * Allows the next successful attachment to notify listeners after a connection failure.
+   *
+   * @internal
+   */
+  public connectionLost(): void {
+    this.subscribedNotified = false
   }
 
   /**
@@ -255,20 +285,12 @@ export class MurmurConnector {
     })
     this.active = true
 
-    this.client.on('connected', () => {
-      const joined = Object.values(this.channels)
-      this.setStatus('connected')
-      for (const channel of joined) {
-        channel?.opened()
-      }
-    })
-    this.client.on('disconnected', () => this.setStatus('reconnecting'))
-    this.client.on('unauthorized', status => {
+    this.client.on('connected', () => this.setStatus('connected'))
+    this.client.on('disconnected', () => {
       for (const channel of Object.values(this.channels)) {
-        if (channel instanceof MurmurEchoPrivateChannel) {
-          channel.unauthorized(status)
-        }
+        channel?.connectionLost()
       }
+      this.setStatus('reconnecting')
     })
   }
 
@@ -334,9 +356,9 @@ export class MurmurConnector {
     this.setStatus(Object.keys(this.channels).length === 0 ? 'disconnected' : 'connecting')
   }
 
-  /** Returns undefined because Murmur has no connection identifier. */
-  public socketId(): undefined {
-    return undefined
+  /** Returns the server-issued ID or an empty value for Echo's request interceptors. */
+  public socketId(): string {
+    return this.active ? this.client.socketId() ?? '' : ''
   }
 
   /** Returns the current Echo connection status. */
