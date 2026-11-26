@@ -10,7 +10,9 @@ it('delivers a signed publish to a subscriber of a Laravel-issued stream URL', f
     config(['murmur.publish_url' => $h->url(''), 'murmur.public_url' => $h->url(''), 'murmur.stream_cursor_margin_ms' => 0]);
     $stream = Murmur::stream('private-chat.42');
     $r = SseReader::open($stream->url());
-    $r->start();
+    $r->start(replaying: true);
+    expect($r->next()['event'])->toBe('murmur.gap');
+    expect($r->attached()['id'])->toBeNull();
     publishFromSubprocess($h, 'private-chat.42', 'token', ['text' => 'Résumé']);
     $frame = $r->next();
     expect($frame['event'])->toBe('token');

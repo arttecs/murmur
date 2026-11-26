@@ -33,6 +33,11 @@ use function React\Promise\Timer\timeout;
 class RedisEventLog implements EventLog
 {
     /**
+     * The default reply limit when Redis 7.0 wakes a blocked XREAD.
+     */
+    protected const BLOCKED_READ_DEFAULT_COUNT = 1000;
+
+    /**
      * The connection reserved for blocking stream reads.
      */
     protected Client $reader;
@@ -332,7 +337,7 @@ class RedisEventLog implements EventLog
      * Resolve the starting cursor or read new stream entries from the current cursor.
      *
      * If MAXLEN trimming passed the cursor, every retained entry is newer
-     * than the cursor and XREAD returns at least the configured length.
+     * than the cursor. The reply may still be capped by the blocked-read limit.
      */
     protected function read(): void
     {
@@ -358,7 +363,7 @@ class RedisEventLog implements EventLog
             $this->cancelReadDeadline();
             $entries = $streams[0][1] ?? [];
 
-            if (count($entries) < $this->maxLength) {
+            if (count($entries) < min($this->maxLength, self::BLOCKED_READ_DEFAULT_COUNT)) {
                 $this->deliver($entries);
 
                 return;

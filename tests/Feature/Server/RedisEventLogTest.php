@@ -11,6 +11,7 @@ use React\Promise\PromiseInterface;
 
 use function React\Async\async;
 use function React\Async\await;
+use function React\Promise\all;
 use function React\Promise\set_rejection_handler;
 use function React\Promise\Timer\sleep;
 use function React\Promise\Timer\timeout;
@@ -124,6 +125,34 @@ it('skips malformed entries and delivers valid entries that follow them', functi
     expect($seen)->toBe([$id]);
     $replay = await($log->since(new EventId(0, 0), ['news', 'invalid topic'], 1000));
     expect(array_map(fn (Event $event) => (string) $event->id, $replay->events))->toBe([$id]);
+});
+
+it('checks a full blocked read when the redis retention length exceeds the reply limit', function () {
+    $capacity = 1001;
+    [$log, $key] = redisLog(maxLength: $capacity);
+    $client = $this->redisFixtures[$key]['client'];
+    $readerId = redisReaderId($log);
+    $gap = false;
+    $first = new Deferred;
+    $log->onGap(function () use (&$gap): void {
+        $gap = true;
+    });
+    $log->subscribe(function (Event $event) use ($first, &$gap): void {
+        $first->resolve([$gap, (string) $event->id]);
+    });
+    waitForRedisReader($client, $readerId);
+
+    await($client->multi());
+    $queued = [];
+
+    for ($i = 0; $i <= $capacity; $i++) {
+        $queued[] = $client->xadd($key, 'MAXLEN', '=', $capacity, '*', 'topic', 'news', 'name', 'burst', 'data', 'null');
+    }
+
+    await(all($queued));
+    $ids = await($client->exec());
+
+    expect(await(timeout($first->promise(), 2.0)))->toBe([true, $ids[1]]);
 });
 
 it('rejects the replay promise when a redis command fails', function () {
