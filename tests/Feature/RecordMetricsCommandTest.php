@@ -169,3 +169,25 @@ it('keeps the stdin writer hidden from the Artisan command list', function () {
 
     expect($process->getOutput())->toContain('murmur:serve')->not->toContain('murmur:record-metrics');
 });
+
+it('keeps writing when its parent is the init process', function () {
+    $file = tempnam(sys_get_temp_dir(), 'murmur-record-');
+    $line = json_encode(metricsRecordPayload(), JSON_THROW_ON_ERROR);
+    $writer = implode(' ', array_map(escapeshellarg(...), [PHP_BINARY, dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:record-metrics']));
+    $feed = 'printf "%s\n" "$LINE"; sleep 2; printf "%s\n" "$LINE"';
+    $process = Process::fromShellCommandLine("( ( {$feed} ) | {$writer} > /dev/null 2>&1 & )", env: [
+        'LINE' => $line,
+        'MURMUR_METRICS_STORE' => 'fake',
+        'MURMUR_TEST_METRICS_FILE' => $file,
+    ], timeout: 5);
+
+    try {
+        $process->mustRun();
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 2);
+        [$first, $second] = metricsTrace($file, 'saved');
+
+        expect($second->pid)->toBe($first->pid);
+    } finally {
+        unlink($file);
+    }
+})->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'The parent check requires ext-pcntl and ext-posix.');

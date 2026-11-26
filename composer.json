@@ -41,6 +41,7 @@
     },
     "suggest": {
         "ext-pcntl": "Drain connections on SIGTERM and SIGINT.",
+        "ext-posix": "Let the metrics writer notice a dead server during a store call.",
         "ext-redis": "Use the Redis driver from Laravel. Alternatively, install predis/predis.",
         "ext-uv": "Support more than about 1000 concurrent connections.",
         "ext-ev": "Support more than about 1000 concurrent connections.",

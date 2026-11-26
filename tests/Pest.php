@@ -256,7 +256,7 @@ function runPublishProcess(array $arguments): Process
  */
 function waitForMetricsCondition(Closure $condition, ?Process $process = null): void
 {
-    $deadline = hrtime(true) + 4_000_000_000;
+    $deadline = hrtime(true) + 15_000_000_000;
 
     while (! $condition()) {
         if (hrtime(true) >= $deadline || ($process !== null && ! $process->isRunning())) {

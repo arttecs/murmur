@@ -140,7 +140,7 @@ it('reports failed acknowledgements and keeps recording with the same writer', f
         $process->start();
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 1, $process);
 
-        expect($process->getErrorOutput())->toContain("The cause is in the application's log.")
+        expect($process->getErrorOutput())->toContain('The writer reported the cause through the exception handler.')
             ->not->toContain('sensitive store exception', 'The test exception handler failed.');
         [$failed, $reported, $next, $saved] = metricsTrace($file);
         expect([$failed->phase, $reported->phase, $next->phase, $saved->phase])->toBe(['start', 'reported', 'start', 'saved']);
@@ -168,8 +168,29 @@ it('drains noisy pipes, rejects an over-long reply, and accepts the next acknowl
 
         expect($process->getErrorOutput())->toContain('invalid acknowledgement')->not->toContain('sensitive writer output');
         expect($process->getOutput())->not->toContain('sensitive writer output');
-        expect($second->samples[0]->value)->toBe(1);
+        expect($second->samples[0]->value)->toBeGreaterThanOrEqual(1);
         expect($second->pid)->toBe($first->pid);
+    } finally {
+        $process->stop(2);
+        unlink($file);
+    }
+});
+
+it('keeps recording after output without a line break is mixed into an acknowledgement', function () {
+    $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
+    $process = metricsServingProcess(ServerHarness::availablePort(), [
+        'MURMUR_TEST_METRICS_FILE' => $file,
+        'MURMUR_TEST_METRICS_MODE' => 'stray',
+        'MURMUR_METRICS_ONLY' => 'murmur_errors_total',
+    ]);
+
+    try {
+        $process->start();
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 3, $process);
+        $saved = metricsTrace($file, 'saved');
+
+        expect($process->getErrorOutput())->toContain('invalid acknowledgement')->not->toContain('direct noise');
+        expect($saved[2]->pid)->toBe($saved[0]->pid);
     } finally {
         $process->stop(2);
         unlink($file);

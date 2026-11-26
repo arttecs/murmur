@@ -37,6 +37,10 @@ class FakeMetricsStore implements MetricsStore
             fwrite(STDOUT, "\n");
         }
 
+        if ($this->mode === 'stray' && $first) {
+            fwrite(STDOUT, 'direct noise');
+        }
+
         if ($this->mode === 'gate' && $first) {
             $this->append(['phase' => 'waiting']);
 

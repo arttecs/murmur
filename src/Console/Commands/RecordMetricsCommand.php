@@ -168,7 +168,9 @@ class RecordMetricsCommand extends Command
             return false;
         }
 
-        pcntl_signal(SIGINT, SIG_IGN);
+        if (! stream_isatty(STDIN)) {
+            pcntl_signal(SIGINT, SIG_IGN);
+        }
 
         if (! function_exists('posix_getppid') || ! function_exists('pcntl_async_signals')) {
             pcntl_signal(SIGALRM, SIG_DFL);
@@ -179,7 +181,7 @@ class RecordMetricsCommand extends Command
         $parent = posix_getppid();
         pcntl_async_signals(true);
         pcntl_signal(SIGALRM, static function () use ($parent): void {
-            if ($parent <= 1 || posix_getppid() !== $parent) {
+            if (posix_getppid() !== $parent) {
                 exit(self::SUCCESS);
             }
 

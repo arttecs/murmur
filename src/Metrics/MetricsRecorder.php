@@ -221,7 +221,6 @@ class MetricsRecorder
             if ($this->reply !== null) {
                 if (strlen($this->reply) + $size > static::ACK_BYTES) {
                     $this->reply = null;
-                    ErrorReporter::report(new RuntimeException('Murmur metrics recorder sent an invalid acknowledgement.'));
                 } else {
                     $this->reply .= substr($chunk, $offset, $size);
                 }
@@ -231,22 +230,30 @@ class MetricsRecorder
                 return;
             }
 
-            if ($this->reply !== null) {
-                $this->acknowledge($this->reply);
-            }
-
+            $this->acknowledge($this->reply ?? '');
             $this->reply = '';
             $offset = $newline + 1;
         }
     }
 
     /**
-     * Release the write slot only for a valid response to a pending snapshot.
+     * Release the write slot for any line that answers a delivered snapshot.
+     *
+     * A line that is not an acknowledgement counts as a failed write, so output
+     * mixed into the reply cannot leave the slot pending forever.
      */
     protected function acknowledge(string $reply): void
     {
-        if (! $this->pending || $this->backpressured || ! in_array($reply, ['ok', 'error'], true)) {
+        $valid = in_array($reply, ['ok', 'error'], true);
+
+        if (! $valid) {
             ErrorReporter::report(new RuntimeException('Murmur metrics recorder sent an invalid acknowledgement.'));
+        }
+
+        if (! $this->pending || $this->backpressured) {
+            if ($valid) {
+                ErrorReporter::report(new RuntimeException('Murmur metrics recorder sent an unexpected acknowledgement.'));
+            }
 
             return;
         }
@@ -255,7 +262,7 @@ class MetricsRecorder
         $this->cancelDeadline();
 
         if ($reply === 'error') {
-            ErrorReporter::report(new RuntimeException("Murmur could not write the metrics snapshot. The cause is in the application's log."));
+            ErrorReporter::report(new RuntimeException('Murmur could not write the metrics snapshot. The writer reported the cause through the exception handler.'));
         }
     }
 
