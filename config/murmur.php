@@ -130,7 +130,8 @@ return [
     ],
 
     /**
-     * Dispatch connection lifecycle events in the worker process when enabled.
+     * Dispatch best-effort connection lifecycle events in the worker process.
+     * Connection IDs are supplied or reused by clients and can identify several streams.
      */
     'lifecycle' => [
         /** Whether to notify Laravel listeners of open and closed SSE connections. */

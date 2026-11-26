@@ -8,7 +8,7 @@
 - Laravel bridge with broadcasting, private channel authorization, and a stream API.
 - JavaScript client for subscribing to channels and consuming streams in the browser.
 - Redis Streams driver for publishing from Laravel and sharing event history across Murmur nodes.
-- Environment variables for all package settings, including Redis timing, shutdown grace.
+- Environment variables for all package settings, including Redis timing, shutdown grace, and lifecycle acknowledgement timeout.
 - Custom publisher and event log factories registered through `Murmur::extend()`.
 - Non-blocking custom subscription authorizers registered through `Murmur::authorizeSubscriptionsUsing()`, with a PHPUnit conformance suite.
 - Per-process server metrics read through `Server::metrics()`, with `snapshot()`, `value()`, and `toPrometheus()`. No metrics route is served.
@@ -28,13 +28,15 @@
 - Event loop lag metrics and rate-limited warnings, plus a startup notice and socket-limit check for `stream_select`.
 - `GET /ready` for live event log readiness and staggered graceful shutdown with SSE reconnect hints.
 - `murmur:install` to publish configuration and set the application's environment values for Murmur.
-- SSE connection IDs and sender exclusion through Laravel's `toOthers()` and `Murmur::publish()`.
+- SSE connection IDs and sender exclusion through Laravel's `toOthers()` and `Murmur::publish()`. Clients can reuse an ID across reconnects, and several streams can share it.
 - A `murmur.attached` control frame that advances the cursor to the sampled tail after replay and acknowledges newly joined topics.
 - Protocol 1 documentation and the `X-Murmur-Protocol` response header on subscriptions and probes.
 - `Murmur::fake()` and PHPUnit conformance suites for event logs and metrics stores.
 - Guides for migrating from Reverb, writing drivers, testing applications, and operating Murmur.
 
 ### Changed
+
+- Topic names must be valid UTF-8. The limit remains 200 bytes.
 
 - Private channel authorization uses Laravel's broadcasting route and issues one token per channel.
 - The JavaScript client authorizes each private channel through `/broadcasting/auth`, isolates denied channels, retries throttled authorization with `Retry-After`, and budgets the stream URL for its largest reconnect.
@@ -45,6 +47,10 @@
 - Murmur supplies the Laravel broadcast connection by default and marks classes outside the supported PHP surface as internal.
 
 ### Fixed
+
+- Lifecycle listener failures no longer stop delivery of later events in the same batch.
+- Worker acknowledgements use a dedicated pipe so application output reaches the server log.
+- Lifecycle delivery flushes queued batches through the shutdown grace period and counts unacknowledged records when the worker stops.
 
 - Cursorless connections sample the log tail so quiet subscribers can replay from their attach point when it has an ID.
 - Custom authorizer grants are validated, duplicate tokens are verified once per request, and distant expiries avoid scheduling timers outside the supported range.

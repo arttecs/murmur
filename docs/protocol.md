@@ -24,7 +24,7 @@ Open a GET request to `/sse` with these URL query parameters.
 | `connection` | No | A previously announced connection ID to reuse across reconnects. |
 | `lastEventId` | No | A fallback replay cursor when `Last-Event-ID` is absent or malformed. |
 
-A topic must be valid UTF-8, is 1–200 bytes long, and cannot contain a comma or ASCII whitespace. Topic names are case-sensitive. A request may contain at most `server.max_topics_per_connection` entries, 50 by default. Commas delimit entries after URL decoding, and empty entries are invalid.
+A topic is 1–200 bytes of valid UTF-8 and cannot contain a comma or ASCII whitespace. Topic names are case-sensitive. A request may contain at most `server.max_topics_per_connection` entries, 50 by default. Commas delimit entries after URL decoding, and empty entries are invalid.
 
 | Status | Meaning |
 | --- | --- |
@@ -59,7 +59,9 @@ data: {"connection_id":"0123456789abcdef0123456789abcdef","protocol":1}
 
 The announcement has no `id:` field and does not advance the replay cursor. A connection ID is exactly 32 lowercase hexadecimal characters. When the client omits `connection`, the server generates the ID from 128 random bits and announces it only to that client. A supplied well-formed ID is used as is and several streams may share an ID. Clients should reuse only server-issued IDs. Put the ID in the client's own stream URL as `connection` when reconnecting and send it as `X-Socket-ID` on Laravel requests that can trigger a `toOthers()` broadcast.
 
-A connection ID grants no access. An authenticated user who can call an application endpoint that broadcasts with `toOthers()` can pass another connection's ID in `X-Socket-ID` and hide that one event from the matching connection, live and in replay. Proxy and access logs that capture the stream URL or the Laravel request header can expose the ID. This is the same class of risk as a Pusher or Reverb socket ID. [Nginx logging configuration](../README.md#nginx).
+The server accepts any well-formed connection ID without authenticating it. An authenticated user who can call an application endpoint that broadcasts with `toOthers()` can pass another connection's ID in `X-Socket-ID` and hide that one event from the matching connection, live and in replay. Proxy and access logs that capture the stream URL or the Laravel request header can expose the ID. This is the same class of risk as a Pusher or Reverb socket ID. [Nginx logging configuration](../README.md#nginx).
+
+The Laravel lifecycle events describe hub membership. On a reconnect with the same ID the new stream can join the hub before the server detects that the old stream has closed. See [lifecycle events](../README.md#lifecycle-events) for how to handle overlapping streams and missing notifications.
 
 The attach marker and numbered heartbeats reveal the newest sampled or dispatched identifier across all topics to every subscriber. This exposes the timing and rough volume of publishing even on topics the subscriber cannot read.
 
@@ -82,7 +84,7 @@ For a reconnect, send the latest ID received as the `Last-Event-ID` HTTP header 
 
 Without a valid cursor, the server registers the subscription for live delivery before sending `murmur.connected`. It can send events dispatched during the tail sample before `murmur.attached`. Delivery is guaranteed only for matching events published after the client has received `murmur.attached`, while the subscription stays active and subject to sender exclusion and any signalled loss of live history. On Redis, an event published after the server registers the subscription can still be dropped if its ID is at or below the sampled tail and the reader dispatches it after the marker. Wait for `murmur.attached` before fetching initial state or invoking subscribed callbacks.
 
-Replay sends retained matching events with IDs strictly greater than the cursor and at or before the sampled tail, in log order. When `fresh` is present, every entry must also appear in `topics`. Fresh topics deliver only events strictly after the sampled tail. With a cursor, the other topics replay from it. Every connection samples the tail, including one without a cursor or with only fresh topics. Redis uses one tail read within the existing query deadline, with no history lookup when there are no topics to replay. A failed tail sample closes the stream through the same path as a failed replay. The initial `murmur.connected` may arrive while the sample is pending.
+Replay sends retained matching events with IDs strictly greater than the cursor and at or before the sampled tail, in log order. When `fresh` is present, every entry must also appear in `topics`. Fresh topics deliver only events strictly after the sampled tail. With a cursor, the other topics replay from it. Every connection samples the tail, including one without a cursor or with only fresh topics. Redis uses one tail read within the existing query deadline, with no history lookup when there are no topics to replay. A failed tail sample closes the stream through the same path as a failed replay. The initial `murmur.connected` may arrive while the sample is pending. When replay fails before the attach marker, lifecycle delivery can still report `ConnectionOpened` followed by `ConnectionClosed` with reason `error`.
 
 The stream starts with `retry:`, then `murmur.connected`. Before the single attach marker, a subscription with a cursor can receive an initial `murmur.gap` and replayed events. A subscription without a cursor receives held numbered events at or before the sampled tail on its non-fresh topics before the marker, in log order. Remaining held frames and live delivery follow the marker.
 

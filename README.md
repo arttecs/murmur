@@ -101,7 +101,7 @@ Replace the Pusher-compatible browser transport with `@arttecs/murmur`. If your 
 
 See the [Reverb configuration reference](https://github.com/laravel/docs/blob/13.x/reverb.md) and [default Reverb settings](https://github.com/laravel/reverb/blob/main/config/reverb.php).
 
-Reverb dispatches its own connection events. In Murmur, enable [lifecycle events](#lifecycle-events) and register Laravel listeners for `ConnectionOpened` and `ConnectionClosed`. Murmur dispatches them from a separate worker as best-effort notifications for authorized SSE connections.
+Reverb dispatches `ChannelCreated`, `ChannelRemoved`, `MessageReceived`, `MessageSent`, and `ConnectionPruned` in its server process. Synchronous listeners run there. `ConnectionPruned` covers stale connections removed by the periodic pruning job. Reverb logs ordinary connection establishment and closure. Murmur has no equivalents for Reverb's channel, message, or pruning events. For best-effort notifications about authorized SSE streams, enable Murmur's [lifecycle events](#lifecycle-events) and listen for `ConnectionOpened` and `ConnectionClosed` in its separate Artisan worker. [Reverb event source](https://github.com/laravel/reverb/tree/68dbcd38fdcb4147c7043c4c844156f42d880264/src/Events).
 
 Presence channels, client events (whispers), multiple apps, and a Pusher-compatible HTTP API are unsupported in this version.
 
@@ -432,9 +432,11 @@ php artisan murmur:forget-metrics
 
 ## Lifecycle events
 
-Set `MURMUR_LIFECYCLE_EVENTS=true` on each Murmur server and restart it. Laravel dispatches `Arttecs\Murmur\Events\ConnectionOpened` when an authorized SSE connection attaches and `Arttecs\Murmur\Events\ConnectionClosed` when that connection closes. Rejected subscriptions emit no lifecycle events. These events describe the connection to the hub. The browser's `murmur.attached` frame also waits for its initial replay.
+Set `MURMUR_LIFECYCLE_EVENTS=true` on each Murmur server and restart it. Laravel dispatches `Arttecs\Murmur\Events\ConnectionOpened` when an authorized SSE connection joins the hub and `Arttecs\Murmur\Events\ConnectionClosed` when it closes. Rejected subscriptions emit no lifecycle events. If initial replay fails, the server records an open followed by a close with reason `error`, even though the browser never received `murmur.attached`.
 
-Both events expose the 32-character hex `connectionId`, the `node` (`MURMUR_NODE` or `hostname:port`), the subscribed wire `topics` including any `private-` prefixes, and the server's `occurredAt` Unix timestamp in seconds. The JavaScript client's connection ID identifies a browser tab and is the value sent as `X-Socket-ID`. The events contain only these connection fields and, on close, `durationSeconds` and `reason`.
+Both events expose the 32-character lowercase hex `connectionId`, the `node` (`MURMUR_NODE` or `hostname:port`), the subscribed `topics`, and the server's `occurredAt` Unix timestamp in seconds. Topics are the exact wire names in valid UTF-8, including any `private-` prefixes. The close event also includes `durationSeconds` and `reason`.
+
+A client supplies its connection ID or adopts the one the server announces, then can reuse it across reconnects. Several streams can share the same ID, and the server accepts any well-formed ID from any client without authenticating it. A reconnect's open event can arrive before the previous stream's close event because the server may discover a dead TCP connection only on a later write. Presence or cleanup keyed on the ID alone can remove a still-active stream or be triggered by another client using the same ID. If you track presence, count open streams per `(node, connectionId)` and allow for missing events. Derive identity from application data, such as a private topic the user was authorized to subscribe to.
 
 | Close reason | Meaning |
 | --- | --- |
@@ -444,7 +446,7 @@ Both events expose the 32-character hex `connectionId`, the `node` (`MURMUR_NODE
 | `shutdown` | The server ended the stream during shutdown or closed the connection directly. |
 | `error` | Replay or another server-side stream operation failed. |
 
-Use queued Laravel listeners with an asynchronous queue connection and a running queue worker. For example, put this listener in `app/Listeners` when using Laravel's event discovery. If discovery is disabled, register the listener in your application's service provider with `Event::listen(ConnectionOpened::class, RecordConnectionOpened::class)`.
+Use queued Laravel listeners for slow work. The example assumes an asynchronous queue connection and a running Laravel queue worker. A `sync` queue connection runs the handler in Murmur's worker and still holds its slot. Put the listener in `app/Listeners` to use Laravel's event discovery. If discovery is disabled, import the event and listener classes and register them in your application's service provider with `Event::listen(ConnectionOpened::class, RecordConnectionOpened::class)`.
 
 ```php
 namespace App\Listeners;
@@ -467,9 +469,9 @@ class RecordConnectionOpened implements ShouldQueue
 
 Murmur attempts delivery in the server's recorded order and hands each batch to the worker at most once. Batches are capped by both `lifecycle.batch` and the worker's 1 MiB input limit. If a listener throws, the worker continues with the next event. It reports the first exception in each failed batch through Laravel's exception handler and writes one summary with the count of failed events. The listener's queue applies its own execution order and retry policy.
 
-Use the events for best-effort notifications and a durable audit log for auditing. Buffer overflow drops the oldest records, and worker death and shutdown can also lose events. On shutdown the server keeps sending batches while streams drain, then flushes the remaining queue as each acknowledgement arrives. When the queue is empty, it closes the worker's input. The server counts queued and unacknowledged records as dropped if the worker reaches `server.shutdown_grace` or exits unexpectedly.
+Use the events for best-effort notifications and a durable audit log for auditing. Buffer overflow drops the oldest records, and worker death and shutdown can also lose events. On shutdown the server keeps sending batches while streams drain, then flushes the remaining queue as each acknowledgement arrives. When the queue is empty, it closes the worker's input. The server counts queued and unacknowledged records as dropped if the shutdown deadline arrives or the worker exits unexpectedly.
 
-Lifecycle events use the same [worker and platform requirements as metrics persistence](#store-snapshots-for-laravel) and work with or without a metrics store. The worker accepts one batch or snapshot at a time. Full batches can follow each acknowledgement, alternating with due snapshots when both are ready. Smaller batches normally wait for the next lifecycle interval. Throughput depends on how quickly the worker acknowledges each message, and the queue stays bounded by `lifecycle.buffer`. A slow store delays lifecycle batches, which accumulate until the buffer fills. A slow listener delays both later batches and metrics snapshots. The SSE server continues serving while the worker is busy.
+Lifecycle events use the same [worker and platform requirements as metrics persistence](#store-snapshots-for-laravel) and work with or without a metrics store. The worker accepts one batch or snapshot at a time. Full batches can follow each acknowledgement, alternating with due snapshots when both are ready. Smaller batches normally wait for the next lifecycle interval. Throughput depends on how quickly the worker acknowledges each message, and the queue stays bounded by `lifecycle.buffer`. A slow store delays lifecycle batches, which accumulate until the buffer fills. A slow listener delays both later batches and metrics snapshots. If a listener never returns, the server reports one acknowledgement timeout and both kinds of recording stop until the server restarts. The SSE server continues serving while the worker is busy.
 
 ## Logging
 
