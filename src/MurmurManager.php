@@ -20,6 +20,7 @@ use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\Log\RedisEventLog;
 use Arttecs\Murmur\Server\Server;
+use Arttecs\Murmur\Testing\MurmurFake;
 use Closure;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
 use Illuminate\Contracts\Config\Repository;
@@ -43,6 +44,11 @@ class MurmurManager
      * @var array<string, array{publisher: Closure(Application): Publisher, eventLog: Closure(Application): EventLog}>
      */
     protected array $drivers = [];
+
+    /**
+     * The in-memory publisher installed for the current test.
+     */
+    protected ?MurmurFake $fake = null;
 
     /**
      * The built-in metrics store names.
@@ -91,12 +97,27 @@ class MurmurManager
     }
 
     /**
+     * Record publications in memory for this application's tests.
+     */
+    public function fake(): MurmurFake
+    {
+        $this->fake = new MurmurFake;
+        $this->app->instance(Publisher::class, $this->fake);
+
+        return $this->fake;
+    }
+
+    /**
      * Resolve the publisher for the configured driver.
      *
      * @throws InvalidArgumentException
      */
     public function publisher(): Publisher
     {
+        if ($this->fake !== null) {
+            return $this->fake;
+        }
+
         $driver = $this->config->get('murmur.driver');
 
         if (isset($this->drivers[$driver])) {
@@ -284,7 +305,13 @@ class MurmurManager
      */
     public function token(array $topics, ?int $ttl = null): string
     {
-        $issuer = new TokenIssuer((string) $this->config->get('murmur.secret'), fn () => now()->timestamp);
+        $secret = (string) $this->config->get('murmur.secret');
+
+        if ($secret === '' && $this->fake !== null) {
+            $secret = 'murmur-test-secret-for-in-memory-publications';
+        }
+
+        $issuer = new TokenIssuer($secret, fn () => now()->timestamp);
 
         return $issuer->issue($topics, $ttl ?? $this->config->get('murmur.token_ttl'));
     }

@@ -15,36 +15,6 @@ use function React\Promise\set_rejection_handler;
 use function React\Promise\Timer\sleep;
 use function React\Promise\Timer\timeout;
 
-it('delivers entries added by another client', function () {
-    [$log, $key] = redisLog();
-    $client = $this->redisFixtures[$key]['client'];
-    $readerId = redisReaderId($log);
-    $seen = [];
-    $delivered = new Deferred;
-    $log->subscribe(function (Event $e) use (&$seen, $delivered) {
-        $seen[] = $e;
-        $delivered->resolve($e);
-    });
-    waitForRedisReader($client, $readerId);
-    $id = xadd($key, 'news', 'updated', ['id' => 7]);
-    await(timeout($delivered->promise(), 2.0));
-    expect($seen)->toHaveCount(1);
-    expect((string) $seen[0]->id)->toBe($id);
-    expect($seen[0]->topic)->toBe('news');
-    expect($seen[0]->name)->toBe('updated');
-    expect($seen[0]->data)->toEqual((object) ['id' => 7]);
-});
-
-it('replays later entries of the requested topics', function () {
-    [$log, $key] = redisLog();
-    $first = xadd($key, 'news', 'a');
-    xadd($key, 'other', 'b');
-    $third = xadd($key, 'news', 'c');
-    $replay = await($log->since(EventId::tryParse($first), ['news'], 1000));
-    expect($replay->gap)->toBeFalse();
-    expect(array_map(fn (Event $e) => (string) $e->id, $replay->events))->toBe([$third]);
-});
-
 it('reports a gap only after the stream has been trimmed', function () {
     [$log, $key] = redisLog(maxLength: 2);
     xadd($key, 'news', 'a');

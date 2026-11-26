@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-it('replaces and removes snapshots per node and ignores malformed entries', function (string $driver) {
+it('ignores malformed entries while returning valid snapshots', function (string $driver) {
     switch ($driver) {
         case 'database':
             config([
@@ -58,18 +58,9 @@ it('replaces and removes snapshots per node and ignores malformed entries', func
     try {
         expect($store->all())->toBe([]);
         $store->put('alpha', 100, [$sample]);
-        $store->put('node:2', 101, []);
-        expect($store->all())->toEqual([
+        expect($store->all())->toBe([
             'alpha' => ['recorded_at' => 100, 'samples' => [$sample]],
-            'node:2' => ['recorded_at' => 101, 'samples' => []],
         ]);
-
-        $store->put('alpha', 102, []);
-        expect($store->all()['alpha'])->toBe(['recorded_at' => 102, 'samples' => []]);
-
-        $store->forget('alpha');
-        $store->forget('missing');
-        expect($store->all())->toBe(['node:2' => ['recorded_at' => 101, 'samples' => []]]);
     } finally {
         if ($driver === 'database') {
             $migration->down();

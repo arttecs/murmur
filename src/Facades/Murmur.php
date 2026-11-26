@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Facade;
 /**
  * Access the Murmur manager through Laravel's facade.
  *
+ * @method static \Arttecs\Murmur\Testing\MurmurFake fake()
  * @method static void extend(string $driver, \Closure $publisher, \Closure $eventLog)
  * @method static void extendMetrics(string $store, \Closure $factory)
  * @method static \Arttecs\Murmur\Metrics\MetricsConfig|null metricsConfiguration()

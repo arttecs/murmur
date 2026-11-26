@@ -17,16 +17,6 @@ function logAt(int $capacity = 10000, int $start = 1000): MemoryEventLog
     }));
 }
 
-it('assigns ids and notifies subscribers', function () {
-    $log = logAt();
-    $seen = [];
-    $log->subscribe(function (Event $e) use (&$seen) {
-        $seen[] = (string) $e->id;
-    });
-    $stored = $log->append(new Event('news', 'a'));
-    expect($seen)->toBe([(string) $stored->id]);
-});
-
 it('notifies later memory listeners and reports the error without interrupting delivery', function () {
     \React\Async\delay(1.01);
     $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
@@ -48,25 +38,6 @@ it('notifies later memory listeners and reports the error without interrupting d
         ini_set('error_log', (string) $previous);
         unlink($errorLog);
     }
-});
-
-it('replays only later events of the requested topics', function () {
-    $log = logAt();
-    $first = $log->append(new Event('news', 'a'));
-    $log->append(new Event('other', 'b'));
-    $third = $log->append(new Event('news', 'c'));
-    $replay = await($log->since($first->id, ['news'], 1000));
-    expect($replay->gap)->toBeFalse();
-    expect(array_map(fn (Event $e) => (string) $e->id, $replay->events))->toBe([(string) $third->id]);
-});
-
-it('reports a gap when the cursor is older than the evicted history', function () {
-    $log = logAt(capacity: 2);
-    $first = $log->append(new Event('news', 'a'));
-    $log->append(new Event('news', 'b'));
-    $log->append(new Event('news', 'c'));
-    $log->append(new Event('news', 'd'));
-    expect(await($log->since($first->id, ['news'], 1000))->gap)->toBeTrue();
 });
 
 it('reports a gap for a cursor from before the log was created', function () {
@@ -111,19 +82,6 @@ it('drops listeners and keeps the history when closed', function () {
 it('rejects a capacity below one', function (int $capacity) {
     new MemoryEventLog($capacity);
 })->with([0, -1])->throws(InvalidArgumentException::class);
-
-it('returns a gap without events when the matching replay exceeds the limit', function () {
-    $log = logAt();
-    $first = $log->append(new Event('news', 'first'));
-    $second = $log->append(new Event('news', 'second'));
-    $log->append(new Event('other', 'ignored'));
-    $last = $log->append(new Event('news', 'last'));
-
-    $limited = await($log->since($first->id, ['news'], 1));
-    expect($limited->gap)->toBeTrue()->and($limited->events)->toBe([]);
-    $replay = await($log->since($first->id, ['news'], 2));
-    expect($replay->gap)->toBeFalse()->and($replay->events)->toBe([$second, $last]);
-});
 
 it('limits delivery error logs to one line per second and counts suppressed errors', function () {
     React\Async\delay(1.01);

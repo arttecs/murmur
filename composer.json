@@ -40,6 +40,7 @@
         "laravel/pint": "^1.32"
     },
     "suggest": {
+        "phpunit/phpunit": "Use the Murmur testing assertions and driver conformance test cases.",
         "ext-pcntl": "Drain connections on SIGTERM and SIGINT.",
         "ext-posix": "Let the metrics writer notice a dead server during a store call.",
         "ext-redis": "Use the Redis driver from Laravel. Alternatively, install predis/predis.",

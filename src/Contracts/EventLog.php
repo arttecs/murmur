@@ -35,7 +35,7 @@ interface EventLog
     public function onGap(callable $listener): void;
 
     /**
-     * Wait until the log can deliver live events to its subscribers.
+     * Wait until the log can deliver live events to its subscribers. Reject if closed.
      *
      * @return PromiseInterface<null>
      */

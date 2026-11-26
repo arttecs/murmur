@@ -2,11 +2,9 @@
 
 namespace Arttecs\Murmur\Broadcasting;
 
-use Arttecs\Murmur\Contracts\Publisher;
 use Arttecs\Murmur\Exceptions\PresenceNotSupported;
 use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\MurmurManager;
-use Arttecs\Murmur\Server\Event;
 use Firebase\JWT\JWT;
 use Illuminate\Broadcasting\Broadcasters\Broadcaster;
 use Illuminate\Broadcasting\Channel;
@@ -23,9 +21,9 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 class MurmurBroadcaster extends Broadcaster
 {
     /**
-     * Create a broadcaster with the Murmur publisher and token manager.
+     * Create a broadcaster with the Murmur manager.
      */
-    public function __construct(protected Publisher $publisher, protected MurmurManager $manager) {}
+    public function __construct(protected MurmurManager $manager) {}
 
     /**
      * Publish the given event to each channel.
@@ -55,7 +53,7 @@ class MurmurBroadcaster extends Broadcaster
         unset($payload['socket']);
 
         foreach ($topics as $topic) {
-            $this->publisher->publish(new Event($topic, $event, $payload));
+            $this->manager->publish($topic, $event, $payload);
         }
     }
 
