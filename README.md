@@ -101,6 +101,8 @@ Replace the Pusher-compatible browser transport with `@arttecs/murmur`. If your 
 
 See the [Reverb configuration reference](https://github.com/laravel/docs/blob/13.x/reverb.md) and [default Reverb settings](https://github.com/laravel/reverb/blob/main/config/reverb.php).
 
+Reverb dispatches its own connection events. In Murmur, enable [lifecycle events](#lifecycle-events) and register Laravel listeners for `ConnectionOpened` and `ConnectionClosed`. Murmur dispatches them from a separate worker as best-effort notifications for authorized SSE connections.
+
 Presence channels, client events (whispers), multiple apps, and a Pusher-compatible HTTP API are unsupported in this version.
 
 ### Client events (whispers)
@@ -165,10 +167,10 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `redis.query_timeout` | `MURMUR_REDIS_QUERY_TIMEOUT` | `5.0` | Seconds allowed for a Redis query outside the blocking live read. Increase this for slower Redis round trips. |
 | `redis.block_ms` | `MURMUR_REDIS_BLOCK_MS` | `5000` | Milliseconds Redis waits for new events during a live read. A stalled reader is replaced 5 seconds after this wait. |
 | `metrics.store` | `MURMUR_METRICS_STORE` | `null` | Snapshot store. Set to `database`, `redis`, `cache`, or a registered custom store. |
-| `metrics.interval` | `MURMUR_METRICS_INTERVAL` | `15.0` | Seconds between recording attempts. Ticks are skipped while a write is pending. |
+| `metrics.interval` | `MURMUR_METRICS_INTERVAL` | `15.0` | Seconds between recording attempts. With lifecycle events enabled, busy ticks coalesce into a single due snapshot. |
 | `metrics.ttl` | `MURMUR_METRICS_TTL` | `60` | Age in seconds at which a snapshot becomes stale. Must exceed the interval. |
 | `metrics.timeout` | `MURMUR_METRICS_TIMEOUT` | `10.0` | Seconds to wait for an acknowledgement before reporting a timeout. The server keeps waiting for the reply. |
-| `metrics.node` | `MURMUR_NODE` | `null` | Identifier of this server. Defaults to its hostname and listening port. |
+| `metrics.node` | `MURMUR_NODE` | `null` | Server identifier for metric snapshots and lifecycle events. Defaults to the hostname and listening port. |
 | `metrics.only` | `MURMUR_METRICS_ONLY` | `[]` | Comma-separated metric names to record. An empty list records all server metrics. |
 | `metrics.database.connection` | `MURMUR_METRICS_DB_CONNECTION` | `null` | Laravel database connection. Uses the application default when unset. |
 | `metrics.database.table` | `MURMUR_METRICS_DB_TABLE` | `murmur_metrics` | Table where the database store keeps snapshots. |
@@ -176,6 +178,10 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `metrics.redis.key` | `MURMUR_METRICS_REDIS_KEY` | `murmur:metrics` | Redis hash key before Laravel applies its prefix. |
 | `metrics.cache.store` | `MURMUR_METRICS_CACHE_STORE` | `null` | Laravel cache store. Uses the application default when unset. |
 | `metrics.cache.prefix` | `MURMUR_METRICS_CACHE_PREFIX` | `murmur:metrics:` | Prefix applied to the cache entries and their index. |
+| `lifecycle.enabled` | `MURMUR_LIFECYCLE_EVENTS` | `false` | Dispatch connection lifecycle events through the Artisan worker. |
+| `lifecycle.buffer` | `MURMUR_LIFECYCLE_BUFFER` | `1000` | Positive maximum number of waiting records. Overflow evicts the oldest records. |
+| `lifecycle.batch` | `MURMUR_LIFECYCLE_BATCH` | `100` | Positive maximum record count per batch. Must be at most `lifecycle.buffer`. |
+| `lifecycle.interval` | `MURMUR_LIFECYCLE_INTERVAL` | `1.0` | Positive, finite number of seconds between batch attempts. |
 
 Write `MURMUR_ALLOWED_ORIGINS` as a comma-separated list. Murmur trims whitespace and drops empty entries. Keep `server.max_sockets` at least as high as `server.max_connections`.
 
@@ -212,7 +218,7 @@ Murmur::authorizeSubscriptionsUsing(
 
 Set `MURMUR_DRIVER=example` and, independently, `MURMUR_METRICS_STORE=reports` to use those implementations. Names may contain lowercase ASCII letters, digits, underscores, and hyphens. The built-in event driver names are `http` and `redis`. The built-in metrics store names are `database`, `redis`, and `cache`.
 
-Laravel calls the `Publisher` to send events. `murmur:serve` uses the `EventLog` for live delivery and replay. Event log methods and callbacks run in the server's event loop and must never block. Return ReactPHP promises from `since()` and `ready()` and keep `healthy()` a cheap synchronous check. Metrics store writes run in the separate Artisan writer. A store's `put()` replaces one node's snapshot, `all()` returns snapshots keyed by node, and `forget()` removes a node.
+Laravel calls the `Publisher` to send events. `murmur:serve` uses the `EventLog` for live delivery and replay. Event log methods and callbacks run in the server's event loop and must never block. Return ReactPHP promises from `since()` and `ready()` and keep `healthy()` a cheap synchronous check. Metrics store writes run in the separate Artisan worker. A store's `put()` replaces one node's snapshot, `all()` returns snapshots keyed by node, and `forget()` removes a node.
 
 The subscription authorizer factory builds an object when `murmur:serve` creates the server. Its `authorize(?string $token, array $topics)` method runs in that server process's event loop and must be non-blocking. It receives the requested topics and one distinct token at a time, or `null` when the request contains no token. Cache or bound authorization I/O for up to `server.max_topics_per_connection` calls per request. Resolve a ReactPHP promise with an immutable `Server\Auth\Grant` containing a list of valid topic names and a positive Unix expiry in seconds. Reject with `Exceptions\InvalidToken` for invalid credentials. The server checks whether the grants cover each requested private topic. Use a token format without commas. With no custom factory, the server verifies Murmur's HS256 JWTs. Laravel's broadcasting endpoint, `Murmur::token()`, and private stream URLs still issue Murmur JWTs, so configure clients and the authorizer to use compatible credentials.
 
@@ -359,7 +365,7 @@ Set `MURMUR_METRICS_STORE` in the Laravel app and on each Murmur server, and poi
 
 - **Database.** Set `MURMUR_METRICS_STORE=database`. Set the database connection and table before publishing and running the migration. The migration uses the configured connection and table.
 - **Redis.** Set `MURMUR_METRICS_STORE=redis`. Use the same Laravel Redis connection, prefix, and metrics hash key on each host. Both PhpRedis and Predis work.
-- **Cache.** Set `MURMUR_METRICS_STORE=cache` and choose a Laravel cache store shared by the writer processes and the app, such as Redis or the database cache. Use the same metrics key prefix on each host. Snapshots and their index expire in the cache. Concurrent index updates use an atomic lock when the cache store supports it and are last-writer-wins otherwise.
+- **Cache.** Set `MURMUR_METRICS_STORE=cache` and choose a Laravel cache store shared by the worker processes and the app, such as Redis or the database cache. Use the same metrics key prefix on each host. Snapshots and their index expire in the cache. Concurrent index updates use an atomic lock when the cache store supports it and are last-writer-wins otherwise.
 
 For the database store, publish and run the migration once during setup.
 
@@ -370,13 +376,13 @@ php artisan migrate
 
 Each store keeps the latest snapshot for each node. A node identifies one `murmur:serve` process and defaults to `hostname:port` using the listening port, including a `--port` override. Set a distinct `MURMUR_NODE` for each process if the defaults collide. Node names can use up to 128 ASCII letters, digits, dots, underscores, colons, or hyphens. Set `MURMUR_METRICS_ONLY` to a comma-separated selection from the metric names below, or leave it blank to record all of them.
 
-Murmur starts one Artisan writer before the server starts listening and reuses it for the server's lifetime. The server sends the first snapshot as soon as it starts listening, then attempts a new snapshot on each interval tick. Store I/O runs in the writer, so the server keeps delivering events while a write is pending. The server skips ticks until the writer acknowledges the current snapshot. If `metrics.timeout` elapses, Murmur reports the timeout once for that write and keeps waiting. A late acknowledgement allows recording to resume on the next tick.
+Murmur starts one Artisan worker before the server opens sockets when either metrics persistence or lifecycle events are enabled. The server sends the first snapshot as soon as it starts listening and checks for a new snapshot on each metrics interval. The worker performs store I/O while the server continues serving SSE. With metrics persistence alone, the server skips ticks while a snapshot is pending. When both features are enabled, the server remembers at most one due snapshot and alternates between the two when both are due. Murmur reports a timeout once if a reply exceeds `metrics.timeout` and waits for the acknowledgement before sending again.
 
-When a store write fails, the writer reports the underlying exception through Laravel's exception handler and sends an error acknowledgement. The writer shares the server's standard error, so with a log channel that writes there, such as `stderr`, the cause appears next to the server's own output. The writer's standard output carries the acknowledgements and is otherwise discarded: a custom store must not write to it, because a line that is not an acknowledgement counts as a failed write. The next interval can write another snapshot. If the writer exits during serving, Murmur reports its exit code or signal and stops recording until the server restarts. The server keeps accepting connections.
+When a store write fails, the worker reports the exception through Laravel's exception handler and sends an error acknowledgement. The worker shares the server's standard error, so a logging channel such as `stderr` puts the cause alongside the server's output. The worker reserves standard output for acknowledgements. Keep direct writes to STDOUT out of custom stores and lifecycle listeners. If the worker exits during serving, Murmur reports its exit code or signal once and stops both features until the server restarts. The server keeps accepting connections.
 
-On graceful shutdown, the server stops scheduling snapshots and closes the writer's input. The writer can finish its current write. If it is still running after one second, the server sends SIGTERM and escalates to SIGKILL shortly after. Readers ignore snapshots when their age reaches the TTL. Use a TTL greater than the interval and keep the server and application clocks synchronized.
+On graceful shutdown, the server stops scheduling snapshots and lets the worker finish a pending write. The server sends SIGTERM after one second if the worker is still running and escalates to SIGKILL 200 ms later. Readers ignore snapshots when their age reaches the TTL. Use a TTL greater than the interval and keep the server and application clocks synchronized.
 
-The recorder is supported on Linux and macOS and requires `proc_open()`, a POSIX `sh`, and PHP built without `--enable-sigchild`. The writer runs the server's PHP binary without the server's `-d` or `-c` options. Windows is unsupported. `murmur:serve` checks these requirements at startup and exits with a one-line error if a check fails. With `pcntl` and `posix`, the writer checks for parent death during store calls when PHP can dispatch signals. Without both extensions, a writer orphaned in the middle of a store call exits on end-of-input once that call returns, so the store's own timeouts bound how long it lives.
+The worker requires Linux or macOS, `proc_open()`, a POSIX `sh`, an Artisan entry point that resolves to an absolute path, and PHP built without `--enable-sigchild`. It runs the server's PHP binary with its default configuration. `murmur:serve` exits with a one-line error when startup preflight fails. With `pcntl` and `posix`, the worker checks for parent death while processing messages when PHP can dispatch signals. Without both extensions, an orphaned worker exits on end-of-input once its current operation returns.
 
 ```php
 use Arttecs\Murmur\Facades\Murmur;
@@ -413,6 +419,8 @@ php artisan murmur:forget-metrics
 | `murmur_gaps_total` | counter | — | Murmur gap frames written to connections. |
 | `murmur_publish_requests_total` | counter | `status` | HTTP publish responses by status. |
 | `murmur_event_loop_lag_exceeded_total` | counter | — | Lag measurements, taken every 100 ms, above `server.loop_lag_threshold_ms`. |
+| `murmur_lifecycle_dropped_total` | counter | — | Lifecycle records discarded before handoff to the worker, including on overflow or worker loss. |
+| `murmur_lifecycle_sent_total` | counter | — | Lifecycle records handed to the worker. |
 | `murmur_errors_total` | counter | — | Errors reported, including rate-limited reports. |
 | `murmur_connections` | gauge | — | Open SSE connections. |
 | `murmur_sockets` | gauge | — | Accepted TCP sockets currently open. |
@@ -421,6 +429,47 @@ php artisan murmur:forget-metrics
 | `murmur_memory_bytes` | gauge | — | Bytes of memory allocated by PHP. |
 | `murmur_memory_peak_bytes` | gauge | — | Peak bytes of memory allocated by PHP. |
 | `murmur_event_loop_lag_seconds` | gauge | — | Largest event loop timer delay in seconds over the last ten measurements, taken every 100 ms, or zero before the first ten. |
+
+## Lifecycle events
+
+Set `MURMUR_LIFECYCLE_EVENTS=true` on each Murmur server and restart it. Laravel dispatches `Arttecs\Murmur\Events\ConnectionOpened` when an authorized SSE connection attaches and `Arttecs\Murmur\Events\ConnectionClosed` when that connection closes. Rejected subscriptions emit no lifecycle events. These events describe the connection to the hub. The browser's `murmur.attached` frame also waits for its initial replay.
+
+Both events expose the 32-character hex `connectionId`, the `node` (`MURMUR_NODE` or `hostname:port`), the subscribed wire `topics` including any `private-` prefixes, and the server's `occurredAt` Unix timestamp in seconds. The JavaScript client's connection ID identifies a browser tab and is the value sent as `X-Socket-ID`. The events contain only these connection fields and, on close, `durationSeconds` and `reason`.
+
+| Close reason | Meaning |
+| --- | --- |
+| `client` | The peer disconnected. |
+| `expired` | The subscription grant expired. |
+| `slow_consumer` | The connection exceeded a backpressure limit. |
+| `shutdown` | The server ended the stream during shutdown or closed the connection directly. |
+| `error` | Replay or another server-side stream operation failed. |
+
+Use queued Laravel listeners with an asynchronous queue connection and a running queue worker. For example, put this listener in `app/Listeners` when using Laravel's event discovery. If discovery is disabled, register the listener in your application's service provider with `Event::listen(ConnectionOpened::class, RecordConnectionOpened::class)`.
+
+```php
+namespace App\Listeners;
+
+use Arttecs\Murmur\Events\ConnectionOpened;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Support\Facades\Log;
+
+class RecordConnectionOpened implements ShouldQueue
+{
+    public function handle(ConnectionOpened $event): void
+    {
+        Log::info('Murmur connection opened.', [
+            'connection_id' => $event->connectionId,
+            'node' => $event->node,
+        ]);
+    }
+}
+```
+
+Murmur attempts delivery in the server's recorded order and hands each batch to the worker at most once. Batches are capped by both `lifecycle.batch` and the worker's 1 MiB input limit. If a listener throws, the worker reports the exception through Laravel's exception handler, stops dispatching that batch, and accepts the next batch. The listener's queue applies its own execution order and retry policy.
+
+Use the events for best-effort notifications and a durable audit log for auditing. Buffer overflow drops the oldest records, and worker death and shutdown can also lose events. On shutdown the server sends a final batch if the worker can accept it within the existing shutdown budget.
+
+Lifecycle events use the same [worker and platform requirements as metrics persistence](#store-snapshots-for-laravel) and work with or without a metrics store. The worker accepts one batch or snapshot at a time. A slow store delays lifecycle batches, which accumulate until the buffer fills. A slow listener delays both later batches and metrics snapshots. The SSE server continues serving while the worker is busy.
 
 ## Logging
 
@@ -440,7 +489,9 @@ When the event loop timer runs late by more than `MURMUR_LOOP_LAG_THRESHOLD_MS`,
 
 Semantic versioning covers the `Murmur` facade and the public methods of `MurmurManager`, the `MurmurServiceProvider` class name, the types in `Contracts\` and `Exceptions\`, configuration keys and environment variables, and public Artisan command names and options.
 
-It also covers `Server\Server`, `Server\ServerConfig`, `Server\Auth\Grant`, `Server\Metrics` (`snapshot()`, `value()`, `toPrometheus()`, and `names()`), `Server\Event`, `Server\EventId`, `Server\Replay`, `Stream`, the classes in `Testing\`, and the [wire protocol](docs/protocol.md).
+It also covers `Events\ConnectionOpened`, `Events\ConnectionClosed`, `Server\Server`, `Server\ServerConfig`, `Server\Auth\Grant`, `Server\Metrics` (`snapshot()`, `value()`, `toPrometheus()`, and `names()`), `Server\Event`, `Server\EventId`, `Server\Replay`, `Stream`, the classes in `Testing\`, and the [wire protocol](docs/protocol.md).
+
+The lifecycle recorder, worker, worker configuration, and hidden `murmur:worker` command are internal.
 
 ## License
 

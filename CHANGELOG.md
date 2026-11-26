@@ -13,7 +13,9 @@
 - Non-blocking custom subscription authorizers registered through `Murmur::authorizeSubscriptionsUsing()`, with a PHPUnit conformance suite.
 - Per-process server metrics read through `Server::metrics()`, with `snapshot()`, `value()`, and `toPrometheus()`. No metrics route is served.
 - Opt-in persistence for per-node metrics snapshots in database, Redis, cache, or custom stores registered with `Murmur::extendMetrics()`.
-- One long-lived Artisan writer per metrics-enabled server, with configurable intervals, acknowledgement timeouts, node names, and metric filters.
+- One long-lived Artisan worker per server with metrics persistence or lifecycle events enabled.
+- Opt-in Laravel `ConnectionOpened` and `ConnectionClosed` events, including close reasons, with bounded best-effort delivery outside the SSE event loop.
+- `murmur_lifecycle_sent_total` and `murmur_lifecycle_dropped_total` counters.
 - `Murmur::metrics()`, `Murmur::metricTotals()`, and the `murmur:status` and `murmur:forget-metrics` commands for reading and managing stored snapshots.
 - `Murmur::serving()` to receive the server and its event loop when `murmur:serve` starts.
 - PSR-3 logging through an optional Laravel log channel for delivery errors and server lifecycle messages.
