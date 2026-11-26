@@ -77,6 +77,7 @@ it('keeps using the configured secret and captures broadcasts through an already
         'app.key' => 'base64:'.base64_encode(str_repeat('a', 32)),
         'broadcasting.default' => 'murmur',
     ]);
+    Broadcast::routes();
     Broadcast::channel('orders.{orderId}', fn (User $user, string $orderId) => $orderId === '42');
 
     $fake = Murmur::fake();
@@ -86,7 +87,7 @@ it('keeps using the configured secret and captures broadcasts through an already
     $fake->assertPublished('news', 'updated');
     $fake->assertPublished('private-orders.42', OrderShipped::class, fn (Event $event): bool => $event->data === ['orderId' => 42]);
     $token = $this->actingAs(new User(['id' => 9]))
-        ->postJson('/murmur/auth', ['channels' => ['private-orders.42']])
+        ->postJson('/broadcasting/auth', ['channel_name' => 'private-orders.42'])
         ->assertOk()
         ->json('token');
     $grant = (new TokenVerifier(config('murmur.secret')))->verify($token);

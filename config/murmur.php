@@ -109,19 +109,6 @@ return [
     ],
 
     /**
-     * Laravel route for exchanging private channel access for tokens.
-     * Disable it if your application issues its own subscription tokens.
-     */
-    'auth' => [
-        /** Whether to register the murmur.auth route. */
-        'enabled' => filter_var(env('MURMUR_AUTH_ENABLED', true), FILTER_VALIDATE_BOOL),
-        /** URL path for the authorization endpoint. Change this if the path is already in use. */
-        'path' => (string) env('MURMUR_AUTH_PATH', 'murmur/auth'),
-        /** Comma-separated Laravel middleware for the authorization route. Publish this file to use middleware whose parameters contain commas. */
-        'middleware' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('MURMUR_AUTH_MIDDLEWARE', 'web'))), fn (string $middleware): bool => $middleware !== '')),
-    ],
-
-    /**
      * Redis transport settings. Point Laravel and the server at the same
      * database and stream when using the redis driver.
      */

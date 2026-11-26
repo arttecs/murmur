@@ -6,11 +6,11 @@ use Arttecs\Murmur\Exceptions\PresenceNotSupported;
 use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\Server\ConnectionId;
+use Arttecs\Murmur\Server\Topic;
 use Firebase\JWT\JWT;
 use Illuminate\Broadcasting\Broadcasters\Broadcaster;
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
@@ -61,38 +61,7 @@ class MurmurBroadcaster extends Broadcaster
     }
 
     /**
-     * Issue a single subscription token after authorizing every requested channel.
-     *
-     * @param  list<string>  $channels
-     * @return array{token: string, expires_at: int}
-     *
-     * @throws AccessDeniedHttpException
-     */
-    public function authorizeChannels(Request $request, array $channels): array
-    {
-        foreach ($channels as $channel) {
-            if (! is_string($channel)) {
-                throw new AccessDeniedHttpException;
-            }
-
-            $channel = Str::chopStart($channel, 'private-');
-
-            if ($this->retrieveUser($request, $channel) === null) {
-                throw new AccessDeniedHttpException;
-            }
-
-            $this->verifyUserCanAccessChannel($request, $channel);
-        }
-
-        $token = $this->manager->token($channels);
-        [, $encodedClaims] = explode('.', $token);
-        $claims = JWT::jsonDecode(JWT::urlsafeB64Decode($encodedClaims));
-
-        return ['token' => $token, 'expires_at' => $claims->exp];
-    }
-
-    /**
-     * Authorize the channel requested through Laravel's broadcasting endpoint.
+     * Authorize the private channel requested through Laravel's broadcasting endpoint.
      *
      * @param  Request  $request
      * @return array{token: string, expires_at: int}
@@ -101,16 +70,37 @@ class MurmurBroadcaster extends Broadcaster
      */
     public function auth($request): array
     {
-        return $this->authorizeChannels($request, [$request->channel_name]);
+        $topic = $request->channel_name;
+
+        if (is_string($topic) && str_starts_with($topic, 'presence-')) {
+            throw new AccessDeniedHttpException('Murmur does not support presence channels.');
+        }
+
+        if (! is_string($topic) || ! Topic::isValid($topic) || ! Topic::isPrivate($topic) || $topic === 'private-') {
+            throw new AccessDeniedHttpException;
+        }
+
+        $channel = substr($topic, strlen('private-'));
+
+        if ($this->retrieveUser($request, $channel) === null) {
+            throw new AccessDeniedHttpException;
+        }
+
+        return $this->verifyUserCanAccessChannel($request, $channel);
     }
 
     /**
-     * Return the result of a successful channel authorization callback.
+     * Issue a token for the one private topic that passed the channel callback.
      *
      * @param  Request  $request
+     * @return array{token: string, expires_at: int}
      */
-    public function validAuthenticationResponse($request, $result): mixed
+    public function validAuthenticationResponse($request, $result): array
     {
-        return $result;
+        $token = $this->manager->token([$request->channel_name]);
+        [, $encodedClaims] = explode('.', $token);
+        $claims = JWT::jsonDecode(JWT::urlsafeB64Decode($encodedClaims));
+
+        return ['token' => $token, 'expires_at' => $claims->exp];
     }
 }

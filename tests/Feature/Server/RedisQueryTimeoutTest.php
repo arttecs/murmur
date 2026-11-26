@@ -34,7 +34,11 @@ it('times out unanswered replay queries and opens a fresh redis connection', fun
                     continue;
                 }
 
-                $client->write($command === 'XINFO' ? "-ERR no such key\r\n" : "*0\r\n");
+                $client->write(match ($command) {
+                    'XREVRANGE' => "*1\r\n*2\r\n$3\r\n1-0\r\n*0\r\n",
+                    'XINFO' => "-ERR no such key\r\n",
+                    default => "*0\r\n",
+                });
             }
         });
     });

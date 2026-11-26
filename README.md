@@ -11,7 +11,7 @@ composer require arttecs/murmur
 php artisan murmur:install
 ```
 
-The installer publishes `config/murmur.php`, fills in a missing or blank `MURMUR_SECRET` in `.env`, and sets `BROADCAST_CONNECTION=murmur`. If another broadcaster is configured, the installer asks before changing it. In non-interactive mode it keeps the existing broadcaster unless you pass `--force`. That flag also allows replacing the published configuration.
+The installer publishes `config/murmur.php`, fills in a missing or blank `MURMUR_SECRET` in `.env`, and sets `BROADCAST_CONNECTION=murmur`. If another broadcaster is configured, the installer asks before changing it. In non-interactive mode it keeps the existing broadcaster unless you pass `--force`. That flag also allows replacing the published configuration. For private channels, the installer points you to Laravel's broadcasting setup if the auth route is missing.
 
 Laravel and every Murmur server must share the same signing secret of at least 32 bytes. The installer generates a 64-character hexadecimal secret and stores it in `.env`. It adds blank placeholders for the secret and origin allowlist to an existing `.env.example` when needed. If `MURMUR_ALLOWED_ORIGINS` is missing or blank and `APP_URL` in `.env` has a valid origin, the installer adds that origin and prints it.
 
@@ -37,7 +37,7 @@ curl -N 'http://127.0.0.1:8080/sse?topics=news'
 
 Murmur registers the `murmur` broadcast connection when the application has no entry for it. You can set an application-specific entry in `config/broadcasting.php`.
 
-Make Murmur your application's default broadcast connection in `.env`. This is required: Laravel registers the callbacks from `routes/channels.php` on the default connection, so `POST /murmur/auth` can only authorize channels when that connection is `murmur`.
+Make Murmur your application's default broadcast connection in `.env`. Laravel registers the callbacks from `routes/channels.php` on the default connection and uses that connection to authorize private channels.
 
 ```dotenv
 BROADCAST_CONNECTION=murmur
@@ -45,7 +45,11 @@ BROADCAST_CONNECTION=murmur
 
 Events implementing `ShouldBroadcast` publish to their Laravel channel names as SSE topics. A `Channel('news')` publishes to `news`, and a `PrivateChannel('orders.42')` publishes to `private-orders.42`. Run your Laravel queue worker if your broadcasts are queued.
 
-Register private channel callbacks with Laravel's `Broadcast::channel()` using channel patterns such as `orders.{orderId}`. An authenticated client can send `{"channels":["private-orders.42"]}` to `POST /murmur/auth`. Laravel checks access against each channel's configured guard and returns `token` and `expires_at` on success. Channel names in one request may total up to 2048 bytes. Names with non-ASCII characters grow when encoded in the subscription URL, and the server rejects a request whose headers exceed 8 KiB, so keep channel names short and ASCII. Use the token in the `token` query parameter on `/sse` along with the requested `topics`. The auth route uses the `web` middleware by default, so include the session credentials and CSRF token required by your application.
+Register Laravel's broadcasting routes with `php artisan install:broadcasting`, `withBroadcasting()`, or `Broadcast::routes()`. Define private channel callbacks with `Broadcast::channel()` using patterns such as `orders.{orderId}`.
+
+Send an authenticated JSON request to `POST /broadcasting/auth` with `{"channel_name":"private-orders.42"}`. The app's middleware controls credentials. Laravel uses the channel's configured guard and returns `{"token":"<JWT>","expires_at":1710000900}` for an authorized channel or 403 for a denied, missing, invalid, public, or presence channel. Each token covers one channel. An optional `socket_id` is ignored because the token authorizes the channel and the connection ID grants no access.
+
+Request a token for each private topic and join the tokens with commas in the `token` query parameter on `/sse`. The number of tokens is limited by `server.max_topics_per_connection` and by the 8 KiB limit for the request line and headers. Refresh tokens before expiry. See [the wire protocol](docs/protocol.md#private-topics) for SSE status codes and expiry rules.
 
 Use Laravel's `broadcast($event)->toOthers()` to skip the sending subscription. Send the ID from the `murmur.connected` event in the `X-Socket-ID` header on the Laravel request that triggers the broadcast. Pass the same ID as `connection` on reconnect to keep the exclusion in replay. For a direct publication, pass the ID as the fourth argument to `Murmur::publish()`.
 
@@ -71,11 +75,13 @@ Use a distinct topic for each stream run. Reusing a topic can replay the previou
 
 Use `@arttecs/murmur` to subscribe to channels and consume streams in the browser. See the [JavaScript client README](js/README.md) for installation and usage.
 
+When reopening an SSE connection after adding topics, pass the newly joined topics as a comma-separated `fresh` query value. Those topics start at the log tail sampled for the new connection. Other topics still replay from the cursor.
+
 ## Migrating from Laravel Reverb
 
 Keep your Laravel broadcast events, `routes/channels.php` authorization callbacks, and `Channel` and `PrivateChannel` classes. Set `BROADCAST_CONNECTION=murmur` and start `php artisan murmur:serve`. The app and server use one `MURMUR_SECRET` in place of the Reverb app ID, key, and secret.
 
-Replace the Pusher-compatible browser transport with `@arttecs/murmur`. If your frontend uses Laravel Echo, use the [Murmur Echo connector](js/README.md#laravel-echo). Private subscriptions exchange channel access for an SSE token through `/murmur/auth` by default.
+Replace the Pusher-compatible browser transport with `@arttecs/murmur`. If your frontend uses Laravel Echo, use the [Murmur Echo connector](js/README.md#laravel-echo). Keep the same Laravel `/broadcasting/auth` route and guards you used with Reverb. Murmur returns a subscription token for the authorized channel.
 
 | Setting | Reverb | Murmur |
 | --- | --- | --- |
@@ -147,9 +153,6 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `stream_cursor_margin_ms` | `MURMUR_STREAM_CURSOR_MARGIN_MS` | `1000` | Milliseconds to subtract from a new stream cursor. Increase this if clocks on the application and event hosts can differ. |
 | `http.timeout` | `MURMUR_HTTP_TIMEOUT` | `2.0` | Total request deadline in seconds. |
 | `http.connect_timeout` | `MURMUR_HTTP_CONNECT_TIMEOUT` | `1.0` | Connection deadline in seconds. |
-| `auth.enabled` | `MURMUR_AUTH_ENABLED` | `true` | Whether to register the murmur.auth route. |
-| `auth.path` | `MURMUR_AUTH_PATH` | `murmur/auth` | URL path for the authorization endpoint. Change this if the path is already in use. |
-| `auth.middleware` | `MURMUR_AUTH_MIDDLEWARE` | `["web"]` | Comma-separated Laravel middleware for the authorization route. Publish this file to use middleware whose parameters contain commas. |
 | `redis.connection` | `MURMUR_REDIS_CONNECTION` | `default` | Name of the Laravel Redis connection used to append events. |
 | `redis.url` | `MURMUR_REDIS_URL` | `redis://127.0.0.1:6379` | Redis URL used by the server for live reading and replay. |
 | `redis.stream` | `MURMUR_REDIS_STREAM` | `murmur:events` | Stream name before Laravel's Redis key prefix. Set this to isolate applications in one database. |
@@ -168,7 +171,7 @@ Edit `config/murmur.php` after publishing it. The environment variables shown be
 | `metrics.cache.store` | `MURMUR_METRICS_CACHE_STORE` | `null` | Laravel cache store. Uses the application default when unset. |
 | `metrics.cache.prefix` | `MURMUR_METRICS_CACHE_PREFIX` | `murmur:metrics:` | Prefix applied to the cache entries and their index. |
 
-Write `MURMUR_ALLOWED_ORIGINS` and `MURMUR_AUTH_MIDDLEWARE` as comma-separated lists. Murmur trims whitespace and drops empty entries. Keep `server.max_sockets` at least as high as `server.max_connections`. Set `MURMUR_AUTH_ENABLED=false` to omit the Laravel authorization route. Its name is `murmur.auth` whenever it is registered. Boolean variables accept `true`, `false`, `1`, `0`, `on`, `off`, `yes`, and `no`; any other value counts as false. Middleware with comma-separated parameters, such as `throttle:60,1`, cannot be written in `MURMUR_AUTH_MIDDLEWARE`; publish the config file and set `auth.middleware` there.
+Write `MURMUR_ALLOWED_ORIGINS` as a comma-separated list. Murmur trims whitespace and drops empty entries. Keep `server.max_sockets` at least as high as `server.max_connections`.
 
 A subscriber receives `murmur.gap` in place of a replay if the requested history exceeds `server.max_replay_events` matching events or if the encoded replay frames exceed half of `server.max_buffer_bytes`. The connection continues delivering live events.
 
@@ -201,7 +204,7 @@ Laravel calls the `Publisher` to send events. `murmur:serve` uses the `EventLog`
 
 Run the packaged PHPUnit suites against your implementations. Extend `Testing\EventLogConformanceTestCase` and provide a new empty log with the supplied loop and a writer that appends into that log's backend. The fixture must trim to the requested capacity and return the assigned `EventId` directly or through a promise.
 
-Event logs apply the optional `since()` event filter before counting replay results against the limit. The server uses it to exclude events the connection would skip.
+Event logs sample the tail before querying replay history and return it even when the topic list is empty. Return events through that tail and apply the optional `since()` event filter before counting results against the limit.
 
 ```php
 use App\Tests\Support\EventLogFixture;

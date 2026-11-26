@@ -4,6 +4,7 @@ namespace Arttecs\Murmur\Server\Http;
 
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Exceptions\InvalidToken;
+use Arttecs\Murmur\Server\Auth\Grant;
 use Arttecs\Murmur\Server\Auth\TokenVerifier;
 use Arttecs\Murmur\Server\ConnectionId;
 use Arttecs\Murmur\Server\Event;
@@ -18,9 +19,12 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use React\EventLoop\LoopInterface;
 use React\Http\Message\Response;
+use React\Promise\PromiseInterface;
 use React\Socket\ConnectionInterface;
 use React\Stream\ThroughStream;
 use Throwable;
+
+use function React\Promise\resolve;
 
 /**
  * Authorize and stream an SSE subscription.
@@ -78,24 +82,34 @@ class SseHandler
             return new Response(400, $headers);
         }
 
-        $grant = null;
+        $fresh = isset($query['fresh']) && is_string($query['fresh']) ? explode(',', $query['fresh']) : [];
 
-        if (is_string($query['token'] ?? null)) {
-            try {
-                $grant = $this->tokens->verify($query['token']);
-            } catch (InvalidToken) {
-                $grant = null;
-            }
+        if (isset($query['fresh']) && ($fresh === [] || array_diff($fresh, $topics) !== [])) {
+            return new Response(400, $headers);
         }
 
-        foreach (array_filter($topics, Topic::isPrivate(...)) as $topic) {
-            if ($grant === null) {
-                return new Response(401, $headers);
-            }
+        $tokens = isset($query['token']) && is_string($query['token']) ? explode(',', $query['token']) : [];
 
-            if (! $grant->allows($topic)) {
-                return new Response(403, $headers);
-            }
+        if (isset($query['token']) && ($tokens === [] || count($tokens) > $this->config->maxTopicsPerConnection || in_array('', $tokens, true))) {
+            return new Response(400, $headers);
+        }
+
+        $privateTopics = array_filter($topics, Topic::isPrivate(...));
+
+        if ($tokens === [] && $privateTopics !== []) {
+            return new Response(401, $headers);
+        }
+
+        try {
+            $grants = array_map($this->tokens->verify(...), $tokens);
+        } catch (InvalidToken) {
+            return new Response(401, $headers);
+        }
+
+        $expiresAt = $this->authorizationExpiry($privateTopics, $grants);
+
+        if ($expiresAt === false) {
+            return new Response(403, $headers);
         }
 
         if ($this->hub->connectionCount() >= $this->config->maxConnections) {
@@ -114,7 +128,7 @@ class SseHandler
 
         $stream = new ThroughStream;
 
-        $connection = new HeldConnection($stream, $this->config->maxBufferBytes, $cursor, $this->metrics, $id);
+        $connection = new HeldConnection($stream, $this->config->maxBufferBytes, $cursor, $this->metrics, $id, $fresh);
 
         $this->hub->attach($connection, $topics);
         $connection->onClose(function () use ($client): void {
@@ -125,12 +139,15 @@ class SseHandler
 
         $endStream = fn () => $this->endStream($stream, $client);
 
-        if ($grant !== null) {
-            $timer = $this->loop->addTimer(max(0.0, $grant->expiresAt - microtime(true)), $endStream);
+        if ($expiresAt !== null) {
+            $timer = $this->loop->addTimer(max(0.0, $expiresAt - microtime(true)), $endStream);
             $connection->onClose(fn () => $this->loop->cancelTimer($timer));
         }
 
-        $this->loop->futureTick(function () use ($connection, $cursor, $topics, $endStream): void {
+        $replayTopics = $cursor === null ? [] : array_values(array_diff($topics, $fresh));
+        $snapshot = $fresh === [] ? null : $this->replay($connection, $cursor, $replayTopics);
+
+        $this->loop->futureTick(function () use ($connection, $cursor, $replayTopics, $snapshot, $endStream): void {
             if ($connection->isClosed()) {
                 return;
             }
@@ -147,29 +164,21 @@ class SseHandler
                 return;
             }
 
-            if ($cursor === null) {
+            if ($cursor === null && $snapshot === null) {
                 $connection->release();
 
                 return;
             }
 
-            try {
-                $replay = $this->log->since(
-                    $cursor,
-                    $topics,
-                    $this->config->maxReplayEvents,
-                    fn (Event $event): bool => $event->except !== $connection->id,
-                )->then(function (Replay $replay) use ($connection): void {
-                    $connection->release($replay);
-                });
-            } catch (Throwable) {
-                $endStream();
+            ($snapshot ?? $this->replay($connection, $cursor, $replayTopics))->then(function (?Replay $replay) use ($connection, $endStream): void {
+                if ($replay === null) {
+                    $endStream();
 
-                return;
-            }
+                    return;
+                }
 
-            $replay->catch($endStream);
-            $connection->onClose($replay->cancel(...));
+                $connection->release($replay);
+            })->catch($endStream);
         });
 
         return new Response(200, $headers + [
@@ -178,6 +187,55 @@ class SseHandler
             'X-Accel-Buffering' => 'no',
             'Connection' => 'close',
         ], $stream);
+    }
+
+    /**
+     * Find when one of the requested private topics will no longer be covered.
+     *
+     * @param  array<int, string>  $topics
+     * @param  list<Grant>  $grants
+     * @return int|false|null Unix expiry, false for missing coverage, or null for public-only subscriptions.
+     */
+    protected function authorizationExpiry(array $topics, array $grants): int|false|null
+    {
+        $expiresAt = null;
+
+        foreach ($topics as $topic) {
+            $topicExpiry = null;
+
+            foreach ($grants as $grant) {
+                if ($grant->allows($topic)) {
+                    $topicExpiry = max($topicExpiry ?? $grant->expiresAt, $grant->expiresAt);
+                }
+            }
+
+            if ($topicExpiry === null) {
+                return false;
+            }
+
+            $expiresAt = min($expiresAt ?? $topicExpiry, $topicExpiry);
+        }
+
+        return $expiresAt;
+    }
+
+    /**
+     * Snapshot the log tail and request replay for the selected topics.
+     *
+     * @param  list<string>  $topics
+     * @return PromiseInterface<Replay|null>
+     */
+    protected function replay(HeldConnection $connection, ?EventId $cursor, array $topics): PromiseInterface
+    {
+        $replay = resolve(null)->then(fn () => $this->log->since(
+            $cursor ?? new EventId(0, 0),
+            $topics,
+            $this->config->maxReplayEvents,
+            fn (Event $event): bool => $event->except !== $connection->id,
+        ))->catch(fn (Throwable $error) => null);
+        $connection->onClose($replay->cancel(...));
+
+        return $replay;
     }
 
     /**

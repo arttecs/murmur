@@ -48,9 +48,10 @@ class SlowReplayLog implements EventLog
     public function since(EventId $after, array $topics, int $limit, ?callable $filter = null): PromiseInterface
     {
         $timer = null;
+        $replay = $this->log->since($after, $topics, $limit, $filter);
 
-        return new Promise(function (callable $resolve) use ($after, $topics, $limit, $filter, &$timer): void {
-            $timer = Loop::addTimer($this->delaySeconds, fn () => $resolve($this->log->since($after, $topics, $limit, $filter)));
+        return new Promise(function (callable $resolve) use ($replay, &$timer): void {
+            $timer = Loop::addTimer($this->delaySeconds, fn () => $resolve($replay));
         }, function () use (&$timer): void {
             Loop::cancelTimer($timer);
 

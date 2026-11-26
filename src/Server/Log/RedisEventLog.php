@@ -143,9 +143,14 @@ class RedisEventLog implements EventLog
     public function since(EventId $after, array $topics, int $limit, ?callable $filter = null): PromiseInterface
     {
         return $this->query($this->replay, 'xrevrange', $this->streamKey, '+', '-', 'COUNT', 1)->then(function (array $newest) use ($after, $topics, $limit, $filter): PromiseInterface {
-            $tail = isset($newest[0]) ? EventId::tryParse($newest[0][0]) : null;
+            $last = $newest[0][0] ?? null;
+            $tail = $last === null ? null : EventId::tryParse($last);
 
-            return $this->readReplayPage((string) $after, $topics, $limit, $filter)->then(function (?array $events) use ($after, $tail): PromiseInterface|Replay {
+            if ($last === null || $topics === []) {
+                return $this->hasGap($after, $this->replay)->then(fn (bool $gap): Replay => new Replay($gap, [], $tail));
+            }
+
+            return $this->readReplayPage((string) $after, $last, $topics, $limit, $filter)->then(function (?array $events) use ($after, $tail): PromiseInterface|Replay {
                 if ($events === null) {
                     return new Replay(true, [], $tail);
                 }
@@ -163,9 +168,9 @@ class RedisEventLog implements EventLog
      * @param  list<Event>  $events
      * @return PromiseInterface<list<Event>|null>
      */
-    protected function readReplayPage(string $cursor, array $topics, int $limit, ?callable $filter, array $events = []): PromiseInterface
+    protected function readReplayPage(string $cursor, string $last, array $topics, int $limit, ?callable $filter, array $events = []): PromiseInterface
     {
-        return $this->query($this->replay, 'xrange', $this->streamKey, '('.$cursor, '+', 'COUNT', 500)->then(function (array $entries) use ($topics, $limit, $filter, $events): PromiseInterface|array|null {
+        return $this->query($this->replay, 'xrange', $this->streamKey, '('.$cursor, $last, 'COUNT', 500)->then(function (array $entries) use ($last, $topics, $limit, $filter, $events): PromiseInterface|array|null {
             foreach ($entries as $entry) {
                 $event = $this->decode($entry);
 
@@ -179,7 +184,7 @@ class RedisEventLog implements EventLog
             }
 
             return count($entries) === 500
-                ? $this->readReplayPage($entries[499][0], $topics, $limit, $filter, $events)
+                ? $this->readReplayPage($entries[499][0], $last, $topics, $limit, $filter, $events)
                 : $events;
         });
     }

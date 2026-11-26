@@ -6,6 +6,7 @@ use Dotenv\Dotenv;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Broadcast;
+use Illuminate\Support\Facades\Route;
 
 beforeEach(function () {
     $this->files = new Filesystem;
@@ -168,3 +169,18 @@ it('leaves the origin allowlist alone when set or the application URL is invalid
     "APP_URL=localhost\n",
     "APP_URL=\n",
 ]);
+
+it('prints one instruction when the application has no broadcasting auth route', function () {
+    expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
+    $output = Artisan::output();
+    expect(substr_count($output, 'php artisan install:broadcasting'))->toBe(1);
+    expect($output)->toContain('Broadcast::routes()');
+    expect(Route::getRoutes()->getRoutesByMethod()['POST']['broadcasting/auth'] ?? null)->toBeNull();
+});
+
+it('omits the instruction when laravel registered its unnamed broadcasting auth route', function () {
+    Broadcast::routes();
+
+    expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
+    expect(Artisan::output())->not->toContain('php artisan install:broadcasting');
+});

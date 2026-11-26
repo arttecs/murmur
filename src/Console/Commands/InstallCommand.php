@@ -8,6 +8,7 @@ use Dotenv\Parser\EntryParser;
 use Dotenv\Parser\Lines;
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Routing\Route;
 use RuntimeException;
 use SensitiveParameter;
 
@@ -81,6 +82,14 @@ class InstallCommand extends Command
 
         if (! $updated && ! $published) {
             $this->info('No files changed.');
+        }
+
+        $routes = $this->laravel['router']->getRoutes();
+
+        if (! $routes->hasNamedRoute('broadcasting.auth') && ! collect($routes->getRoutes())->contains(
+            fn (Route $route): bool => $route->uri() === 'broadcasting/auth' && in_array('POST', $route->methods(), true),
+        )) {
+            $this->line('For private channels, run php artisan install:broadcasting or call Broadcast::routes().');
         }
 
         $this->line('Start the server with php artisan murmur:serve.');

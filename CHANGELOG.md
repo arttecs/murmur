@@ -8,7 +8,7 @@
 - Laravel bridge with broadcasting, private channel authorization, and a stream API.
 - JavaScript client for subscribing to channels and consuming streams in the browser.
 - Redis Streams driver for publishing from Laravel and sharing event history across Murmur nodes.
-- Environment variables for all package settings, including Redis timing, shutdown grace, and an option to disable the Laravel authorization route.
+- Environment variables for all package settings, including Redis timing, shutdown grace.
 - Custom publisher and event log factories registered through `Murmur::extend()`.
 - Per-process server metrics read through `Server::metrics()`, with `snapshot()`, `value()`, and `toPrometheus()`. No metrics route is served.
 - Opt-in persistence for per-node metrics snapshots in database, Redis, cache, or custom stores registered with `Murmur::extendMetrics()`.
@@ -23,11 +23,15 @@
 - Event loop lag metrics and rate-limited warnings, plus a startup notice and socket-limit check for `stream_select`.
 - `GET /ready` for live event log readiness and staggered graceful shutdown with SSE reconnect hints.
 - `murmur:install` to publish configuration and set the application's environment values for Murmur.
+- SSE connection IDs and sender exclusion through Laravel's `toOthers()` and `Murmur::publish()`.
 - Protocol 1 documentation and the `X-Murmur-Protocol` response header on subscriptions and probes.
 - `Murmur::fake()` and PHPUnit conformance suites for event logs and metrics stores.
 - Guides for migrating from Reverb, writing drivers, testing applications, and operating Murmur.
 
 ### Changed
 
-- `Contracts\EventLog` gained `onGap()`, `ready()`, and `healthy()` during pre-release development. Custom event logs must implement all three methods.
+- Private channel authorization uses Laravel's broadcasting route and issues one token per channel.
+- SSE subscriptions can combine several tokens and skip replay for newly joined topics.
+
+- `Contracts\EventLog` gained `onGap()`, `ready()`, and `healthy()` during pre-release development. Custom event logs must implement all three methods. The `since()` method accepts a filter and returns a replay bounded by the sampled tail.
 - Murmur supplies the Laravel broadcast connection by default and marks classes outside the supported PHP surface as internal.

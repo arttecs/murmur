@@ -14,11 +14,11 @@ class ConfigTest extends TestCase
 
         $data = $this->providedData();
 
-        if ($data === [] && $this->name() !== 'test_disabling_authorization_leaves_the_route_unregistered') {
+        if ($data === []) {
             return;
         }
 
-        [$variable, $value] = $data ?: ['MURMUR_AUTH_ENABLED', 'false'];
+        [$variable, $value] = $data;
         $previousEnv = $_ENV;
         $previousServer = $_SERVER;
 
@@ -37,16 +37,10 @@ class ConfigTest extends TestCase
         $this->assertSame($expected, config('murmur.'.$key));
     }
 
-    public function test_disabling_authorization_leaves_the_route_unregistered(): void
-    {
-        $this->assertFalse($this->app['router']->has('murmur.auth'));
-    }
-
     public function test_fills_missing_settings_in_published_config_groups(): void
     {
         config(['murmur' => [
             'server' => ['allowed_origins' => []],
-            'auth' => ['middleware' => []],
             'redis' => ['stream' => 'app-events'],
             'metrics' => [
                 'only' => [],
@@ -58,13 +52,11 @@ class ConfigTest extends TestCase
         (new MurmurServiceProvider($this->app))->register();
 
         $this->assertSame([], config('murmur.server.allowed_origins'));
-        $this->assertSame([], config('murmur.auth.middleware'));
         $this->assertSame('app-events', config('murmur.redis.stream'));
         $this->assertSame(5.0, config('murmur.server.shutdown_grace'));
         $this->assertSame(2.0, config('murmur.server.shutdown_spread'));
         $this->assertSame(100, config('murmur.server.loop_lag_threshold_ms'));
         $this->assertSame(5000, config('murmur.redis.block_ms'));
-        $this->assertTrue(config('murmur.auth.enabled'));
         $this->assertNull(config('murmur.metrics.store'));
         $this->assertSame(15.0, config('murmur.metrics.interval'));
         $this->assertSame(60, config('murmur.metrics.ttl'));
@@ -98,7 +90,6 @@ class ConfigTest extends TestCase
             ['MURMUR_LOOP_LAG_THRESHOLD_MS', '25', 'server.loop_lag_threshold_ms', 25],
             ['MURMUR_SHUTDOWN_SPREAD', '0.25', 'server.shutdown_spread', 0.25],
             ['MURMUR_SHUTDOWN_GRACE', '7.5', 'server.shutdown_grace', 7.5],
-            ['MURMUR_AUTH_ENABLED', 'no', 'auth.enabled', false],
             ['MURMUR_LOG_CHANNEL', '', 'server.log_channel', null],
             ['MURMUR_LOG_CHANNEL', 'stderr', 'server.log_channel', 'stderr'],
             ['MURMUR_PUBLIC_URL', 'https://events.test', 'public_url', 'https://events.test'],
@@ -107,9 +98,6 @@ class ConfigTest extends TestCase
             ['MURMUR_STREAM_CURSOR_MARGIN_MS', '500', 'stream_cursor_margin_ms', 500],
             ['MURMUR_HTTP_TIMEOUT', '1.5', 'http.timeout', 1.5],
             ['MURMUR_HTTP_CONNECT_TIMEOUT', '0.5', 'http.connect_timeout', 0.5],
-            ['MURMUR_AUTH_PATH', 'events/auth', 'auth.path', 'events/auth'],
-            ['MURMUR_AUTH_MIDDLEWARE', 'a, b,,c', 'auth.middleware', ['a', 'b', 'c']],
-            ['MURMUR_AUTH_ENABLED', 'false', 'auth.enabled', false],
             ['MURMUR_REDIS_CONNECTION', 'events', 'redis.connection', 'events'],
             ['MURMUR_REDIS_URL', 'redis://redis.test:6380', 'redis.url', 'redis://redis.test:6380'],
             ['MURMUR_REDIS_STREAM', 'my-app:events', 'redis.stream', 'my-app:events'],

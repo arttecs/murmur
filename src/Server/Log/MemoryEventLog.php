@@ -118,6 +118,10 @@ class MemoryEventLog implements EventLog
         $oldest = $count === $this->capacity ? $this->next : 0;
         $tail = $count === 0 ? null : $this->events[($this->next + $this->capacity - 1) % $this->capacity]->id;
 
+        if ($topics === []) {
+            return resolve(new Replay($after->compare($this->floor) < 0, [], $tail));
+        }
+
         for ($offset = 0; $offset < $count; $offset++) {
             $event = $this->events[($oldest + $offset) % $this->capacity];
 

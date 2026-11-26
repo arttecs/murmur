@@ -1,108 +1,97 @@
 <?php
 
+use Arttecs\Murmur\MurmurServiceProvider;
 use Arttecs\Murmur\Server\Auth\TokenVerifier;
 use Arttecs\Murmur\Tests\Fixtures\User;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Broadcast;
+use Illuminate\Support\Facades\Route;
 
 beforeEach(function () {
     config([
         'app.key' => 'base64:'.base64_encode(str_repeat('a', 32)),
         'broadcasting.default' => 'murmur',
-        'broadcasting.connections.murmur' => ['driver' => 'murmur'],
     ]);
+    Broadcast::routes();
 });
 
-it('issues one token for all authorized channels', function () {
-    Broadcast::channel('orders.{id}', fn ($user, $id) => (int) $id === 1);
+it('issues a token scoped to the channel requested through the laravel route', function () {
+    Broadcast::channel('orders.{id}', fn (User $user, string $id): bool => $user->id === 9 && $id === '1');
+
     $response = $this->actingAs(new User(['id' => 9]))
-        ->postJson('/murmur/auth', ['channels' => ['private-orders.1']])
-        ->assertOk();
-    $grant = (new TokenVerifier('test-secret-with-at-least-32-bytes'))->verify($response->json('token'));
+        ->postJson('/broadcasting/auth', ['channel_name' => 'private-orders.1', 'socket_id' => 'any legacy socket'])
+        ->assertOk()
+        ->assertJsonStructure(['token', 'expires_at']);
+
+    $grant = (new TokenVerifier(config('murmur.secret')))->verify($response->json('token'));
     expect($grant->topics)->toBe(['private-orders.1']);
     expect($response->json('expires_at'))->toBe($grant->expiresAt);
 });
 
-it('denies the whole request when one channel is refused', function () {
-    Broadcast::channel('orders.{id}', fn ($user, $id) => (int) $id === 1);
+it('denies a private channel when the callback refuses it', function () {
+    Broadcast::channel('orders.{id}', fn (): bool => false);
+
     $this->actingAs(new User(['id' => 9]))
-        ->postJson('/murmur/auth', ['channels' => ['private-orders.1', 'private-orders.2']])
+        ->postJson('/broadcasting/auth', ['channel_name' => 'private-orders.1'])
         ->assertForbidden();
 });
 
-it('denies guests', function () {
-    Broadcast::channel('orders.{id}', fn () => true);
-    $this->postJson('/murmur/auth', ['channels' => ['private-orders.1']])->assertForbidden();
+it('denies guests on private channels', function () {
+    Broadcast::channel('orders.{id}', fn (): bool => true);
+
+    $this->postJson('/broadcasting/auth', ['channel_name' => 'private-orders.1'])->assertForbidden();
 });
 
-it('validates the channel list', function (array $channels) {
+it('denies public and malformed channel names before any callback runs', function (array $input) {
+    foreach (['news', 'private-', 'private-orders 1', 'private-orders.1,private-admin', 'private-'.str_repeat('x', 200)] as $channel) {
+        Broadcast::channel($channel, fn () => $this->fail('The channel callback ran.'));
+    }
+
     $this->actingAs(new User(['id' => 9]))
-        ->postJson('/murmur/auth', ['channels' => $channels])
-        ->assertStatus(422);
+        ->postJson('/broadcasting/auth', $input)
+        ->assertForbidden();
 })->with([
-    'empty' => [[]],
-    'public' => [['news']],
-    'presence' => [['presence-room.1']],
-    'comma' => [['private-orders.1,private-admin']],
-    'inner space' => [['private-orders 1']],
-    'too long' => [['private-'.str_repeat('x', 200)]],
-    'too many' => [array_map(fn (int $i) => "private-orders.{$i}", range(1, 51))],
+    'missing' => [[]],
+    'array' => [['channel_name' => ['private-orders.1']]],
+    'public' => [['channel_name' => 'news']],
+    'empty channel' => [['channel_name' => 'private-']],
+    'space' => [['channel_name' => 'private-orders 1']],
+    'comma' => [['channel_name' => 'private-orders.1,private-admin']],
+    'too long' => [['channel_name' => 'private-'.str_repeat('x', 200)]],
 ]);
 
-it('validates an invalid list before authorizing a guest', function () {
-    $this->postJson('/murmur/auth', ['channels' => []])->assertUnprocessable();
-});
-
-it('issues one token covering several channels', function () {
-    Broadcast::channel('orders.{id}', fn ($user, $id) => true);
-    $response = $this->actingAs(new User(['id' => 9]))
-        ->postJson('/murmur/auth', ['channels' => ['private-orders.1', 'private-orders.2']])
-        ->assertOk();
-
-    expect((new TokenVerifier('test-secret-with-at-least-32-bytes'))->verify($response->json('token'))->topics)
-        ->toBe(['private-orders.1', 'private-orders.2']);
-});
-
-it('authorizes a single channel through the broadcaster auth method', function () {
-    Broadcast::channel('orders.{id}', fn ($user, $id) => (int) $id === 1);
-    $request = Request::create('/broadcasting/auth', 'POST', ['channel_name' => 'private-orders.1']);
-    $request->setUserResolver(fn () => new User(['id' => 9]));
-
-    $result = Broadcast::connection('murmur')->auth($request);
-
-    expect((new TokenVerifier('test-secret-with-at-least-32-bytes'))->verify($result['token'])->topics)->toBe(['private-orders.1']);
-});
-
-it('requires the channel guard even when the default guard has a user', function () {
-    config(['auth.guards.api' => ['driver' => 'murmur-request']]);
-    Auth::viaRequest('murmur-request', fn () => null);
-    Broadcast::channel('orders.{id}', fn () => true, ['guards' => ['api']]);
+it('denies presence channels with an explanation', function () {
+    Broadcast::channel('rooms.1', fn (): bool => true);
 
     $this->actingAs(new User(['id' => 9]))
-        ->postJson('/murmur/auth', ['channels' => ['private-orders.1']])
+        ->postJson('/broadcasting/auth', ['channel_name' => 'presence-rooms.1'])
+        ->assertForbidden()
+        ->assertJsonPath('message', 'Murmur does not support presence channels.');
+});
+
+it('uses the configured guard for each channel', function () {
+    config([
+        'auth.guards.partner' => ['driver' => 'murmur-partner'],
+        'auth.guards.staff' => ['driver' => 'murmur-staff'],
+    ]);
+    Auth::viaRequest('murmur-partner', fn () => new User(['id' => 9]));
+    Auth::viaRequest('murmur-staff', fn () => null);
+    Broadcast::channel('orders.{id}', fn (User $user): bool => $user->id === 9, ['guards' => ['partner']]);
+    Broadcast::channel('staff.{id}', fn (): bool => true, ['guards' => ['staff']]);
+
+    $this->postJson('/broadcasting/auth', ['channel_name' => 'private-orders.1'])->assertOk();
+    $this->actingAs(new User(['id' => 9]))
+        ->postJson('/broadcasting/auth', ['channel_name' => 'private-staff.1'])
         ->assertForbidden();
 });
 
-it('authorizes with the channel guard when the default guard has no user', function () {
-    config(['auth.guards.api' => ['driver' => 'murmur-request']]);
-    Auth::viaRequest('murmur-request', fn () => new User(['id' => 9]));
-    Broadcast::channel('orders.{id}', fn (User $user) => $user->id === 9, ['guards' => ['api']]);
+it('registers no package authorization route even with legacy configuration', function () {
+    config(['murmur.auth' => ['enabled' => true, 'path' => 'old/auth', 'middleware' => []]]);
+    $provider = new MurmurServiceProvider($this->app);
+    $provider->register();
+    $provider->boot();
 
-    $this->postJson('/murmur/auth', ['channels' => ['private-orders.1']])->assertOk();
-});
-
-it('limits the total channel name size in bytes', function () {
-    Broadcast::channel('orders.{id}', fn () => true);
-    $channels = array_map(fn (int $i) => "private-orders.{$i}".str_repeat('x', 180 - strlen((string) $i)), range(1, 10));
-    $channels[] = 'private-orders.'.str_repeat("\u{00E9}", 41).'x';
-    expect(array_sum(array_map(strlen(...), $channels)))->toBe(2048);
-
-    $this->actingAs(new User(['id' => 9]));
-    $this->postJson('/murmur/auth', ['channels' => $channels])->assertOk();
-
-    $channels[10] .= 'x';
-    $this->postJson('/murmur/auth', ['channels' => $channels])
-        ->assertUnprocessable()
-        ->assertJsonValidationErrors('channels');
+    expect(Route::has('murmur.auth'))->toBeFalse();
+    $this->postJson('/murmur/auth')->assertNotFound();
+    $this->postJson('/old/auth')->assertNotFound();
 });

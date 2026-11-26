@@ -8,7 +8,7 @@ Murmur serves HTTP and Server-Sent Events (SSE). Its SSE server handles the rout
 | `POST /publish` | Publish to a server with HTTP publishing enabled and an in-memory event log. |
 | `GET /health` | Check that the HTTP server is alive. |
 | `GET /ready` | Check that the server is ready to deliver live events. |
-| `POST /murmur/auth` | Exchange private channel access for a subscription token through Laravel. The path is configurable. |
+| `POST /broadcasting/auth` | Exchange access to one private channel for a subscription token through Laravel. |
 
 Unrecognized method and path combinations on the SSE server return 404. It serves one request per TCP connection. The default cap is 1000 accepted sockets, including open SSE streams. Additional sockets are closed without a response. Accepted sockets have 10 seconds by default to complete a request before the server closes them. This deadline does not limit the lifetime of a successful SSE response. Invalid or oversized HTTP headers can be rejected by the HTTP parser before a Murmur route runs.
 
@@ -19,7 +19,8 @@ Open a GET request to `/sse` with these URL query parameters.
 | Parameter | Required | Value |
 | --- | --- | --- |
 | `topics` | Yes | A comma-separated list of topic names, URL-encoded as a single query parameter. |
-| `token` | For private topics | An HS256 JWT granting access to every requested private topic. |
+| `token` | For private topics | A comma-separated list of signed tokens that together grant access to the requested private topics. |
+| `fresh` | No | A comma-separated subset of `topics` that starts at the attach point, skipping earlier events. |
 | `connection` | No | A previously announced connection ID to reuse across reconnects. |
 | `lastEventId` | No | A fallback replay cursor when `Last-Event-ID` is absent or malformed. |
 
@@ -28,9 +29,9 @@ A topic is 1–200 bytes and cannot contain a comma or ASCII whitespace. Topic n
 | Status | Meaning |
 | --- | --- |
 | 200 | The subscription succeeded. The response remains open for SSE frames. |
-| 400 | The topic list is missing, malformed, or over its entry limit, or the connection ID is malformed. |
-| 401 | The request includes a private topic and has no valid token. |
-| 403 | The `Origin` header is disallowed, or a valid token fails to grant at least one requested private topic. |
+| 400 | The topic list is missing, malformed, or over its entry limit, the connection ID is malformed, the token list is invalid, or `fresh` contains an invalid or unsubscribed topic. |
+| 401 | A private subscription omitted tokens, or a supplied token is malformed, expired, or has an invalid signature. |
+| 403 | The `Origin` header is disallowed, or the valid tokens together fail to cover at least one requested private topic. |
 | 503 | The server has reached its SSE connection limit (900 by default) or is shutting down. |
 
 A successful response includes `Content-Type: text/event-stream`, `Cache-Control: no-cache`, and `X-Accel-Buffering: no`.
@@ -64,7 +65,7 @@ IDs use `<milliseconds>-<sequence>`. A received cursor must contain 1–18 decim
 
 For a reconnect, send the latest ID received as the `Last-Event-ID` HTTP header or the `lastEventId` query parameter. When both are valid, the header wins. Invalid cursors are ignored. Without a valid cursor, the connection starts with live delivery.
 
-Replay sends retained matching events with IDs strictly greater than the cursor, in log order. Live events arriving during replay are held until replay finishes. The server drops duplicate or older IDs once it has written an event with a newer ID. When a cursor is ahead of the sampled log tail, the server uses that tail as the starting point for deduplicating live events. The connection closes if the replay query fails or the held live data exceeds `server.max_buffer_bytes`. The server also closes a stream whose output exceeds that limit under backpressure. The default byte limit is 1,048,576.
+Replay sends retained matching events with IDs strictly greater than the cursor, in log order. When `fresh` is present, every entry must also appear in `topics`. The server samples the log tail when attaching, including when there is no cursor. Fresh topics deliver only events after that tail, including when a delayed Redis reader receives older entries after the stream opens. The other topics still replay from the requested cursor. Live events arriving during replay are held until replay finishes. The server drops duplicate or older IDs once it has written an event with a newer ID. When a cursor is ahead of the sampled log tail, the server uses that tail as the starting point for deduplicating live events. The connection closes if the replay query fails or the held live data exceeds `server.max_buffer_bytes`. The server also closes a stream whose output exceeds that limit under backpressure. The default byte limit is 1,048,576.
 
 The server can send an unnumbered gap frame before resuming delivery.
 
@@ -75,7 +76,7 @@ data: {}
 ```
 
 - With an in-memory log, a cursor older than log creation or the last evicted event signals a gap. With Redis, a cursor older than the first retained entry signals a gap if Redis reports trimmed history. An unparseable first retained Redis ID also signals a gap.
-- A trim gap may be followed by matching retained events. A gap indicates that the log cannot guarantee complete history. Clients that need a complete view should refresh it from the application.
+- A trim gap may be followed by matching retained events. A gap indicates that the log cannot guarantee complete history. The log may report a trim gap even if the trimmed entries belonged only to fresh topics. Clients that need a complete view should refresh it from the application.
 - If replay would exceed `server.max_replay_events` events eligible for delivery (1000 by default) or the encoded replay frames for this recipient would exceed half of `server.max_buffer_bytes`, the server sends the gap and discards the replay batch. It continues with held and live events.
 - If the Redis reader loses its connection and discovers history was trimmed past its cursor, the server sends a gap to existing subscribers before resuming live delivery.
 
@@ -83,20 +84,22 @@ The `murmur.` event namespace is reserved. `murmur.end` is published by Laravel'
 
 ### Private topics
 
-Topic names beginning with `private-` require a token. Sign an HS256 JWT using the same shared secret as the server, at least 32 bytes long. Use these claims.
+Topic names beginning with `private-` require authorization. The server accepts an HS256 JWT signed with the same shared secret as the server, at least 32 bytes long. Each token has these claims.
 
 | Claim | Value |
 | --- | --- |
 | `topics` | JSON array of strings containing full wire topic names, including `private-`. Each private topic must match an entry exactly. |
 | `exp` | Integer Unix expiration time in seconds. Laravel issues tokens for `token_ttl` seconds, 900 by default. |
 
-The server verifies the JWT signature and expiration with no clock leeway. It checks both claims' types. Laravel issues tokens with these two claims only. If another issuer adds `nbf` or `iat`, the server also rejects a token whose `nbf`, or whose `iat` when `nbf` is absent, is later than its own clock, again with no leeway; omit both claims or keep the clocks synchronized. A request containing only public topics may omit the token, and an invalid token is ignored for that request. Every subscription using a valid token closes when the token expires. Obtain a fresh token before reconnecting to private topics.
+The server verifies the JWT signature and expiration with no clock leeway. It checks both claims' types. Laravel issues tokens with these two claims only. If another issuer adds `nbf` or `iat`, the server also rejects a token whose `nbf`, or whose `iat` when `nbf` is absent, is later than its own clock, again with no leeway; omit both claims or keep the clocks synchronized. A public-only request can omit `token`. When supplied, the comma-separated list must contain only nonempty items and at most `server.max_topics_per_connection` tokens. The server verifies every token, including those unused by the subscription. It checks the union of their grants against the requested private topics. When grants overlap, each private topic stays authorized through the latest expiry of a token that covers it. The server closes the stream at the first of those per-topic expiries. Public topics do not impose an expiry. Obtain fresh tokens before reconnecting to private topics.
 
 ### Laravel authorization
 
-The default token endpoint is `POST /murmur/auth`. Send an authenticated request with `Content-Type: application/json` and a JSON object such as `{"channels":["private-orders.42"]}`. Provide any credentials and CSRF token required by the Laravel middleware. The package uses the `web` middleware by default. The route path and middleware can be configured, and the route can be disabled.
+Use `POST /broadcasting/auth` on the Laravel application. The application registers the route through Laravel's broadcasting setup. Send an authenticated JSON request with `Content-Type: application/json` and a body such as `{"channel_name":"private-orders.42"}`. The optional `socket_id` is accepted and ignored. The token grants access to a topic and the connection ID grants no access. Include the credentials required by the application's route middleware.
 
-Laravel expects a nonempty list of valid private topic names with the same entry limit as `/sse` and a combined size of at most 2048 bytes. For each name, Laravel strips the `private-` prefix to check the channel callback and requires an authenticated user using its configured guard. The route returns 200 with `{"token":"<JWT>","expires_at":1710000900}` when all channels are authorized. It returns 422 with `message` and `errors` fields for validation errors and 403 if a channel is denied or lacks an authenticated user. Application middleware may reject the request before it reaches the route.
+Laravel strips the `private-` prefix and checks the registered channel callback with its configured guards. An authorized request receives 200 with `{"token":"<JWT>","expires_at":1710000900}`. The token covers exactly the requested topic and `expires_at` is the Unix time in seconds from the token. Missing or invalid channel names, public and presence channels, unauthenticated requests, and denied channel callbacks receive 403. Application middleware may reject the request earlier.
+
+For several private topics, make one authorization request per topic and send the resulting tokens together on the SSE URL. The topic and token counts are each limited to `server.max_topics_per_connection`, and all encoded query parameters and headers must fit in the 8 KiB request-head limit.
 
 ### CORS
 

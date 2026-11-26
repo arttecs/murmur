@@ -51,7 +51,7 @@ class MurmurServiceProvider extends ServiceProvider
         $overrides = (array) $config->get('murmur', []);
         $merged = array_replace($defaults, $overrides);
 
-        foreach (['server', 'http', 'auth', 'redis', 'metrics'] as $group) {
+        foreach (['server', 'http', 'redis', 'metrics'] as $group) {
             $merged[$group] = array_replace($defaults[$group], (array) ($overrides[$group] ?? []));
         }
 
@@ -71,17 +71,13 @@ class MurmurServiceProvider extends ServiceProvider
     }
 
     /**
-     * Register the broadcast driver, authorization route, configuration, and commands.
+     * Register the broadcast driver, configuration, and commands.
      */
     public function boot(): void
     {
         $this->callAfterResolving(BroadcastManager::class, function (BroadcastManager $manager): void {
             $manager->extend('murmur', fn (Application $app) => $app->make(MurmurBroadcaster::class));
         });
-
-        if ($this->app['config']->get('murmur.auth.enabled')) {
-            $this->loadRoutesFrom(__DIR__.'/../routes/murmur.php');
-        }
 
         $this->publishes([
             __DIR__.'/../config/murmur.php' => $this->app->configPath('murmur.php'),

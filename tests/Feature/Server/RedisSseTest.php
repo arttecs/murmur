@@ -110,3 +110,36 @@ it('binds only after redis is ready and delivers an immediate publish to a new s
         $server->close();
     }
 });
+
+it('suppresses retained fresh events even when the redis live reader sees them after attachment', function (bool $withCursor) {
+    $errorLog = tempnam(sys_get_temp_dir(), 'murmur');
+    $previous = ini_set('error_log', $errorLog);
+
+    try {
+        [$log, $key] = redisLog();
+        $client = $this->redisFixtures[$key]['client'];
+        $cursor = xadd($key, 'old', 'cursor');
+        $readerId = redisReaderId($log);
+        $h = ServerHarness::start(log: $log);
+        waitForRedisReader($client, $readerId);
+
+        expect(await($client->client('KILL', 'ID', $readerId)))->toBe(1);
+        waitForRedisRetry($log);
+        $history = xadd($key, 'old', 'retained-old');
+        xadd($key, 'new', 'retained-fresh');
+        $query = $withCursor ? "topics=old,new&lastEventId={$cursor}" : 'topics=new';
+        $r = SseReader::open($h->url('/sse?'.$query.'&fresh=new'));
+        $r->start();
+
+        if ($withCursor) {
+            expect($r->next()['id'])->toBe($history);
+        }
+
+        expect(fn () => $r->next(1.2))->toThrow(RuntimeException::class, 'Timed out');
+        $fresh = xadd($key, 'new', 'live-fresh');
+        expect($r->next()['id'])->toBe($fresh);
+    } finally {
+        ini_set('error_log', (string) $previous);
+        unlink($errorLog);
+    }
+})->with([false, true]);

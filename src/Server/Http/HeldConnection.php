@@ -35,7 +35,14 @@ class HeldConnection extends Connection
     protected ?EventId $lastWrittenId = null;
 
     /**
+     * The attach point before which fresh topics are withheld.
+     */
+    protected ?EventId $attachTail = null;
+
+    /**
      * Create a held connection with the subscriber's requested replay cursor.
+     *
+     * @param  list<string>  $freshTopics
      */
     public function __construct(
         WritableStreamInterface $stream,
@@ -43,6 +50,7 @@ class HeldConnection extends Connection
         protected ?EventId $cursor = null,
         ?Metrics $metrics = null,
         ?string $id = null,
+        protected array $freshTopics = [],
     ) {
         parent::__construct($stream, $maxBufferBytes, $metrics, $id);
     }
@@ -101,7 +109,7 @@ class HeldConnection extends Connection
             return;
         }
 
-        $tail = $replay?->tail;
+        $tail = $this->attachTail = $replay?->tail;
 
         if ($this->cursor !== null && $tail !== null) {
             $this->lastWrittenId = $this->cursor->compare($tail) <= 0 ? $this->cursor : $tail;
@@ -109,7 +117,7 @@ class HeldConnection extends Connection
 
         $frames = [];
         $bytes = 0;
-        $gap = $replay?->gap ?? false;
+        $gap = $this->cursor !== null && ($replay?->gap ?? false);
 
         foreach ($replay?->events ?? [] as $event) {
             if ($this->excludes($event)) {
@@ -167,7 +175,9 @@ class HeldConnection extends Connection
      */
     protected function writeEvent(Event $event, ?string $frame = null, bool $replayed = false): void
     {
-        if ($this->closed || $this->hasWritten($event)) {
+        if ($this->closed || $this->hasWritten($event)
+            || ($this->attachTail !== null && $event->id !== null
+                && in_array($event->topic, $this->freshTopics, true) && $event->id->compare($this->attachTail) <= 0)) {
             return;
         }
 
