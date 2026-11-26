@@ -266,3 +266,13 @@ function waitForMetricsCondition(Closure $condition, ?Process $process = null): 
         delay(0.01);
     }
 }
+
+/**
+ * Read the store phases written by the test writer.
+ */
+function metricsTrace(string $file, ?string $phase = null): array
+{
+    $entries = array_filter(array_map(json_decode(...), file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)));
+
+    return array_values(array_filter($entries, fn (object $entry): bool => $phase === null || $entry->phase === $phase));
+}

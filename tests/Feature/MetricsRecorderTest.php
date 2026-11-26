@@ -2,17 +2,18 @@
 
 use Arttecs\Murmur\Facades\Murmur;
 use Arttecs\Murmur\Metrics\MetricsRecorder;
-use Arttecs\Murmur\Server\Log\MemoryEventLog;
-use Arttecs\Murmur\Server\Server;
-use Arttecs\Murmur\Server\ServerConfig;
+use Arttecs\Murmur\Server\ErrorReporter;
+use Arttecs\Murmur\Server\Metrics;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
+use Psr\Log\NullLogger;
 use React\EventLoop\Loop;
 use React\Http\Browser;
 use React\Socket\SocketServer;
 use Symfony\Component\Process\Process;
 
 use function React\Async\await;
+use function React\Async\delay;
 
 function metricsServingProcess(int $port, array $env): Process
 {
@@ -29,124 +30,292 @@ function metricsServingProcess(int $port, array $env): Process
     ], timeout: 5);
 }
 
-function metricsTrace(string $file, ?string $phase = null): array
-{
-    $entries = array_filter(array_map(json_decode(...), file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)));
-
-    return array_values(array_filter($entries, fn (object $entry): bool => $phase === null || $entry->phase === $phase));
-}
-
-it('writes immediately after listening, then records a filtered snapshot on the interval', function () {
+it('records the first snapshot as soon as the server listens', function () {
     $port = ServerHarness::availablePort();
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
     $process = metricsServingProcess($port, [
         'MURMUR_TEST_METRICS_FILE' => $file,
-        'MURMUR_METRICS_INTERVAL' => '0.8',
-        'MURMUR_METRICS_ONLY' => 'murmur_connections_opened_total',
+        'MURMUR_METRICS_INTERVAL' => '30',
     ]);
 
     try {
         $process->start();
-        waitForMetricsCondition(fn () => str_contains($process->getOutput(), 'Murmur is listening'), $process);
-        expect($process->getOutput())->toContain(":{$port}");
-        $listening = hrtime(true);
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) === 1, $process);
+
+        expect($process->getOutput())->toContain("Murmur is listening on http://127.0.0.1:{$port}");
+        $samples = array_column(metricsTrace($file, 'saved')[0]->samples, 'value', 'name');
+        expect($samples['murmur_uptime_seconds'])->toBeGreaterThan(0);
+    } finally {
+        $process->stop(2);
+        unlink($file);
+    }
+});
+
+it('records filtered snapshots on the interval with the same writer', function () {
+    $port = ServerHarness::availablePort();
+    $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
+    $process = metricsServingProcess($port, [
+        'MURMUR_TEST_METRICS_FILE' => $file,
+        'MURMUR_METRICS_INTERVAL' => '1.25',
+        'MURMUR_METRICS_ONLY' => 'murmur_connections_opened_total',
+    ]);
+    $reader = null;
+
+    try {
+        $process->start();
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 1, $process);
-        $elapsed = hrtime(true);
-        expect(($elapsed - $listening) / 1_000_000_000)->toBeLessThan(0.65);
         $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
         expect($reader->next()['retry'])->toBe('3000');
-        waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 2, $process);
-        [$first, $second] = metricsTrace($file, 'saved');
 
-        expect((hrtime(true) - $elapsed) / 1_000_000_000)->toBeGreaterThan(0.3);
+        waitForMetricsCondition(fn () => in_array(1, array_map(fn (object $entry) => $entry->samples[0]->value, metricsTrace($file, 'saved')), true), $process);
+        $entries = metricsTrace($file, 'saved');
+        $first = $entries[0];
+        $last = end($entries);
+
+        expect(array_unique(array_column($entries, 'pid')))->toHaveCount(1);
         expect($first->node)->toBe(gethostname().":{$port}");
         expect($first->samples)->toHaveCount(1);
         expect($first->samples[0]->name)->toBe('murmur_connections_opened_total');
         expect($first->samples[0]->value)->toBe(0);
-        expect($second->samples[0]->value)->toBe(1);
+        expect($last->samples[0]->value)->toBe(1);
     } finally {
-        $process->stop(0.5);
+        $reader?->close();
+        $process->stop(2);
         unlink($file);
     }
 });
 
-it('continues accepting requests during a slow write and skips overlapping ticks', function () {
+it('keeps HTTP responsive while a write is pending and resumes without queued ticks after a single timeout', function () {
     $port = ServerHarness::availablePort();
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
     $process = metricsServingProcess($port, [
         'MURMUR_TEST_METRICS_FILE' => $file,
-        'MURMUR_TEST_METRICS_MODE' => 'slow',
+        'MURMUR_TEST_METRICS_MODE' => 'gate',
+        'MURMUR_METRICS_TIMEOUT' => '0.2',
+        'MURMUR_METRICS_ONLY' => 'murmur_errors_total,murmur_connections_opened_total',
     ]);
+    $reader = null;
 
     try {
         $process->start();
-        waitForMetricsCondition(fn () => count(metricsTrace($file, 'start')) >= 1, $process);
-        $response = await((new Browser)->withTimeout(0.2)->get("http://127.0.0.1:{$port}/health"));
-        expect($response->getStatusCode())->toBe(200);
-        expect(metricsTrace($file, 'saved'))->toBe([]);
-        waitForMetricsCondition(fn () => count(metricsTrace($file)) >= 3, $process);
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'waiting')) === 1, $process);
+        waitForMetricsCondition(fn () => str_contains($process->getErrorOutput(), 'Murmur metrics recorder timed out'), $process);
+        delay(0.5);
 
+        $response = await((new Browser)->withTimeout(4)->get("http://127.0.0.1:{$port}/health"));
+        expect($response->getStatusCode())->toBe(200);
+        $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
+        expect($reader->next()['retry'])->toBe('3000');
+        expect(array_column(metricsTrace($file), 'phase'))->toBe(['start', 'waiting']);
+        touch($file.'.release');
+
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 2, $process);
         $events = metricsTrace($file);
-        expect(array_slice(array_column($events, 'phase'), 0, 3))->toBe(['start', 'saved', 'start']);
-        expect($events[0]->pid)->toBe($events[1]->pid)->not->toBe($events[2]->pid);
+        expect(array_slice(array_column($events, 'phase'), 0, 4))->toBe(['start', 'waiting', 'saved', 'start']);
+        expect(array_unique(array_column($events, 'pid')))->toHaveCount(1);
+        expect(array_column(metricsTrace($file, 'saved')[1]->samples, 'value', 'name'))->toMatchArray([
+            'murmur_errors_total' => 1,
+            'murmur_connections_opened_total' => 1,
+        ]);
     } finally {
-        $process->stop(0.5);
+        $reader?->close();
+        $process->stop(2);
+        if (is_file($file.'.release')) {
+            unlink($file.'.release');
+        }
         unlink($file);
     }
 });
 
-it('reports child failures and keeps recording', function (string $mode, string $message) {
+it('reports failed acknowledgements and keeps recording with the same writer', function () {
     $port = ServerHarness::availablePort();
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
     $process = metricsServingProcess($port, [
         'MURMUR_TEST_METRICS_FILE' => $file,
-        'MURMUR_TEST_METRICS_MODE' => $mode,
-        'MURMUR_METRICS_TIMEOUT' => '0.4',
+        'MURMUR_TEST_METRICS_MODE' => 'fail-first',
         'MURMUR_METRICS_ONLY' => 'murmur_errors_total',
     ]);
 
     try {
         $process->start();
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 1, $process);
-        expect($process->getErrorOutput())->toContain($message);
-        expect($process->getErrorOutput())->not->toContain('sensitive store exception');
 
-        $failed = metricsTrace($file, 'start')[0];
-        $success = metricsTrace($file, 'saved')[0];
-        expect($success->samples[0]->value)->toBe(1);
-        expect($success->pid)->not->toBe($failed->pid);
-        expect(posix_kill($failed->pid, 0))->toBeFalse();
+        expect($process->getErrorOutput())->toContain("The cause is in the application's log.")
+            ->not->toContain('sensitive store exception', 'The test exception handler failed.');
+        [$failed, $reported, $next, $saved] = metricsTrace($file);
+        expect([$failed->phase, $reported->phase, $next->phase, $saved->phase])->toBe(['start', 'reported', 'start', 'saved']);
+        expect($reported->message)->toBe('sensitive store exception');
+        expect($saved->samples[0]->value)->toBe(1);
+        expect($saved->pid)->toBe($failed->pid);
     } finally {
-        $process->stop(0.5);
+        $process->stop(2);
         unlink($file);
     }
-})->with([['fail-first', 'Murmur metrics recorder exited'], ['hang', 'Murmur metrics recorder timed out']])
-    ->skip(! extension_loaded('posix'), 'Checking that the child was reaped requires ext-posix.');
+});
 
-it('terminates and reaps a running writer when serving shuts down', function () {
+it('drains noisy pipes, rejects an over-long reply, and accepts the next acknowledgement', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
-    $port = ServerHarness::availablePort();
-    $process = metricsServingProcess($port, [
+    $process = metricsServingProcess(ServerHarness::availablePort(), [
         'MURMUR_TEST_METRICS_FILE' => $file,
-        'MURMUR_TEST_METRICS_MODE' => 'hang',
+        'MURMUR_TEST_METRICS_MODE' => 'noisy',
+        'MURMUR_METRICS_ONLY' => 'murmur_errors_total',
+    ]);
+
+    try {
+        $process->start();
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 2, $process);
+        [$first, $second] = metricsTrace($file, 'saved');
+
+        expect($process->getErrorOutput())->toContain('invalid acknowledgement')->not->toContain('sensitive writer output');
+        expect($process->getOutput())->not->toContain('sensitive writer output');
+        expect($second->samples[0]->value)->toBe(1);
+        expect($second->pid)->toBe($first->pid);
+    } finally {
+        $process->stop(2);
+        unlink($file);
+    }
+});
+
+it('does not queue more snapshots while the writer input pipe is blocked', function () {
+    config(['murmur.metrics.store' => 'cache', 'murmur.metrics.interval' => 0.02, 'murmur.metrics.timeout' => 0.4]);
+    $loop = Loop::get();
+    $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg('fwrite(STDOUT, "ok\n"); sleep(10);');
+    $writer = new MetricsRecorder($loop, Murmur::metricsConfiguration(), 'test-node', $command);
+    $metrics = new Metrics;
+    $snapshots = 0;
+    $metrics->gauge('murmur_uptime_seconds', str_repeat('x', 524288), function () use (&$snapshots): int {
+        return ++$snapshots;
+    });
+
+    $errors = 0;
+    $counter = function () use (&$errors): void {
+        $errors++;
+    };
+    $logger = new NullLogger;
+    ErrorReporter::countUsing($counter);
+    ErrorReporter::logUsing($logger);
+
+    try {
+        $writer->launch();
+        $writer->start($metrics);
+        waitForMetricsCondition(function () use (&$errors): bool {
+            return $errors >= 2;
+        });
+        expect($snapshots)->toBe(1);
+        expect($writer->running())->toBeTrue();
+    } finally {
+        await($writer->stop());
+        ErrorReporter::forget($counter, $logger);
+    }
+
+    expect($writer->running())->toBeFalse();
+});
+
+it('exits after its parent is killed while a store write is pending', function () {
+    $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
+    $process = metricsServingProcess(ServerHarness::availablePort(), [
+        'MURMUR_TEST_METRICS_FILE' => $file,
+        'MURMUR_TEST_METRICS_MODE' => 'gate',
         'MURMUR_METRICS_TIMEOUT' => '10',
     ]);
+    $child = null;
+
+    try {
+        $process->start();
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'waiting')) === 1, $process);
+        $child = metricsTrace($file, 'start')[0]->pid;
+        $process->signal(SIGKILL);
+        waitForMetricsCondition(fn () => ! $process->isRunning());
+        waitForMetricsCondition(fn () => ! posix_kill($child, 0));
+
+        expect(array_column(metricsTrace($file), 'phase'))->toBe(['start', 'waiting']);
+    } finally {
+        $process->stop(2);
+        if ($child !== null && posix_kill($child, 0)) {
+            posix_kill($child, SIGKILL);
+        }
+        unlink($file);
+    }
+})->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'Checking for an orphan requires ext-pcntl and ext-posix.');
+
+it('reports writer death once and keeps accepting SSE connections without respawning', function () {
+    $port = ServerHarness::availablePort();
+    $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
+    $process = metricsServingProcess($port, [
+        'MURMUR_TEST_METRICS_FILE' => $file,
+        'MURMUR_TEST_METRICS_MODE' => 'gate',
+        'MURMUR_METRICS_TIMEOUT' => '0.2',
+    ]);
+    $reader = null;
 
     try {
         $process->start();
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'waiting')) >= 1, $process);
         $child = metricsTrace($file, 'start')[0]->pid;
-        $process->signal(SIGTERM);
-        waitForMetricsCondition(fn () => ! $process->isRunning());
+        waitForMetricsCondition(fn () => str_contains($process->getErrorOutput(), 'Murmur metrics recorder timed out'), $process);
+        posix_kill($child, SIGKILL);
+        waitForMetricsCondition(fn () => str_contains($process->getErrorOutput(), 'metrics recording has stopped'), $process);
 
-        expect($process->getExitCode())->toBe(0, $process->getErrorOutput());
-        expect(posix_kill($child, 0))->toBeFalse();
+        $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
+        expect($reader->next()['retry'])->toBe('3000');
+        delay(0.3);
         expect(array_column(metricsTrace($file), 'phase'))->toBe(['start', 'waiting']);
+        expect(substr_count($process->getErrorOutput(), 'metrics recording has stopped'))->toBe(1);
+        expect($process->getErrorOutput())->toContain('signal '.SIGKILL);
+        expect(posix_kill($child, 0))->toBeFalse();
     } finally {
-        $process->stop(0.5);
+        $reader?->close();
+        $process->stop(2);
         unlink($file);
     }
-})->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'Signal handling requires ext-pcntl and ext-posix.');
+})->skip(! extension_loaded('posix') || ! extension_loaded('pcntl'), 'Killing and checking the writer requires ext-posix and ext-pcntl.');
+
+it('reaps the writer on signal-driven shutdown', function (string $mode, string $phase, array $phases, bool $group) {
+    if ($group && ! extension_loaded('posix')) {
+        $this->markTestSkipped('Sending a process group signal requires ext-posix.');
+    }
+
+    $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
+    $process = metricsServingProcess(ServerHarness::availablePort(), [
+        'MURMUR_TEST_METRICS_FILE' => $file,
+        'MURMUR_TEST_METRICS_MODE' => $mode,
+        'MURMUR_TEST_METRICS_SESSION' => $group ? '1' : '',
+        'MURMUR_TEST_METRICS_SHUTDOWN_TEST' => $mode === 'gate' ? $file : '',
+        'MURMUR_METRICS_INTERVAL' => '20',
+        'MURMUR_METRICS_TIMEOUT' => '10',
+    ]);
+
+    try {
+        $process->start();
+        waitForMetricsCondition(fn () => count(metricsTrace($file, $phase)) === 1, $process);
+        $child = metricsTrace($file, 'start')[0]->pid;
+        if ($group) {
+            expect(posix_kill(-$process->getPid(), SIGINT))->toBeTrue();
+        } else {
+            $process->signal(SIGTERM);
+        }
+
+        waitForMetricsCondition(fn () => ! $process->isRunning());
+
+        expect($process->getExitCode())->toBe(0);
+        expect($process->getErrorOutput())->toBe('');
+        if (extension_loaded('posix')) {
+            expect(posix_kill($child, 0))->toBeFalse();
+        }
+
+        expect(array_column(metricsTrace($file), 'phase'))->toBe($phases);
+    } finally {
+        $process->stop(2);
+        if (is_file($file.'.release')) {
+            unlink($file.'.release');
+        }
+        unlink($file);
+    }
+})->with([
+    'idle on SIGTERM' => ['', 'saved', ['start', 'saved'], false],
+    'mid-write on group SIGINT' => ['gate', 'waiting', ['start', 'waiting', 'saved'], true],
+    'ignores SIGTERM in the store' => ['hang', 'waiting', ['start', 'waiting'], false],
+])->skip(! extension_loaded('pcntl'), 'Signal handling requires ext-pcntl.');
 
 it('does not load the process dependency when metrics are disabled', function () {
     $process = metricsServingProcess(ServerHarness::availablePort(), [
@@ -161,36 +330,36 @@ it('does not load the process dependency when metrics are disabled', function ()
 it('releases listening and accepted sockets while the writer is running', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-recorder-');
     $port = ServerHarness::availablePort();
-    $server = new Server(new ServerConfig(secret: config('murmur.secret'), port: $port), new MemoryEventLog);
-    config(['murmur.metrics.store' => 'cache']);
-    $command = 'env MURMUR_METRICS_STORE=fake MURMUR_TEST_METRICS_MODE=hang MURMUR_TEST_METRICS_FILE='.escapeshellarg($file)
-        .' '.escapeshellarg(PHP_BINARY).' '.escapeshellarg(dirname(__DIR__).'/Support/metrics-artisan.php').' murmur:record-metrics';
-    $writer = new MetricsRecorder(Loop::get(), Murmur::metricsConfiguration(), 'test-node', $command);
+    $process = metricsServingProcess($port, [
+        'MURMUR_TEST_METRICS_FILE' => $file,
+        'MURMUR_TEST_METRICS_MODE' => 'hang',
+        'MURMUR_TEST_METRICS_SOCKET_TEST' => $file,
+        'MURMUR_METRICS_TIMEOUT' => '10',
+    ]);
+    $reader = null;
     $other = null;
-    $descriptors = array_map(fn () => fopen('/dev/null', 'r'), range(1, 16));
 
     try {
-        await($server->listen());
-        $reader = SseReader::open($server->address().'/sse?topics=news');
-        expect($reader->next()['retry'])->toBe('3000');
-        $writer->start($server->metrics());
-        waitForMetricsCondition(fn () => count(metricsTrace($file, 'waiting')) >= 1);
+        $process->start();
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'waiting')) === 1, $process);
         $child = metricsTrace($file, 'start')[0]->pid;
-        $server->close();
+        $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
+        expect($reader->next()['retry'])->toBe('3000');
+        touch($file.'.release');
 
-        expect(fn () => $reader->next(0.15))->toThrow(RuntimeException::class, 'The SSE stream closed');
+        expect(fn () => $reader->next(4))->toThrow(RuntimeException::class, 'The SSE stream closed');
         $other = new SocketServer("127.0.0.1:{$port}");
         expect(posix_kill($child, 0))->toBeTrue();
     } finally {
-        $server->close();
-        await($writer->stop());
+        $reader?->close();
         $other?->close();
-        foreach ($descriptors as $descriptor) {
-            fclose($descriptor);
+        $process->stop(2);
+        if (is_file($file.'.release')) {
+            unlink($file.'.release');
         }
         unlink($file);
     }
-})->skip(! extension_loaded('posix'), 'Checking child liveness requires ext-posix.');
+})->skip(! extension_loaded('posix') || ! extension_loaded('pcntl'), 'Checking child liveness requires ext-posix and ext-pcntl.');
 
 it('explains invalid metrics settings before opening a listener', function () {
     config(['murmur.metrics.store' => 'cache', 'murmur.metrics.interval' => 0]);
@@ -225,35 +394,14 @@ it('refuses to serve when the host cannot launch the metrics recorder', function
     expect($process->getOutput().$process->getErrorOutput())->toContain('Murmur metrics recording requires proc_open() on Linux or macOS.');
 });
 
-it('refuses to start without bash or a descriptor directory', function (string $missing, string $message) {
-    config(['murmur.metrics.store' => 'cache']);
-    expect(fn () => new class($missing) extends MetricsRecorder
-    {
-        public function __construct(protected string $missing)
-        {
-            parent::__construct(Loop::get(), Murmur::metricsConfiguration(), 'test-node', 'php artisan murmur:record-metrics');
-        }
+it('refuses to serve when the Artisan entry point cannot be resolved', function () {
+    $process = metricsServingProcess(ServerHarness::availablePort(), [
+        'MURMUR_TEST_ARTISAN_BINARY' => '/nonexistent/murmur-artisan',
+        'MURMUR_TEST_METRICS_DISABLED' => '1',
+    ]);
+    $process->run();
 
-        protected function bashBinary(): ?string
-        {
-            return $this->missing === 'bash' ? null : parent::bashBinary();
-        }
-
-        protected function descriptorsListable(): bool
-        {
-            return $this->missing !== 'descriptors';
-        }
-    })->toThrow(InvalidArgumentException::class, $message);
-})->with([
-    ['bash', 'Murmur metrics recording requires Bash.'],
-    ['descriptors', 'Murmur metrics recording requires a readable /proc/self/fd or /dev/fd.'],
-]);
-
-it('resolves bash to an absolute executable path', function () {
-    config(['murmur.metrics.store' => 'cache']);
-    $recorder = new MetricsRecorder(Loop::get(), Murmur::metricsConfiguration(), 'test-node', 'php artisan murmur:record-metrics');
-    $bash = (new ReflectionProperty($recorder, 'bash'))->getValue($recorder);
-
-    expect($bash)->toStartWith('/')->toEndWith('/bash');
-    expect(is_executable($bash))->toBeTrue();
+    expect($process->getExitCode())->toBe(1);
+    expect($process->getOutput())->not->toContain('Murmur is listening');
+    expect($process->getOutput().$process->getErrorOutput())->toMatch('/\A[^\r\n]*could not locate the Artisan entry point[^\r\n]*\n\z/');
 });

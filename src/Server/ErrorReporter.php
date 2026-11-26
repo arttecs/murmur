@@ -70,9 +70,9 @@ class ErrorReporter
     }
 
     /**
-     * Report the exception class and message at most once per second.
+     * Report the exception class and message at most once per second unless forced.
      */
-    public static function report(Throwable $error): void
+    public static function report(Throwable $error, bool $force = false): void
     {
         foreach (static::$counters as $counter) {
             try {
@@ -83,7 +83,7 @@ class ErrorReporter
 
         $now = hrtime(true);
 
-        if (static::$lastReport !== null && $now - static::$lastReport < 1_000_000_000) {
+        if (! $force && static::$lastReport !== null && $now - static::$lastReport < 1_000_000_000) {
             static::$suppressed++;
 
             return;

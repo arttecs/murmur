@@ -2,13 +2,13 @@
 
 use Symfony\Component\Process\Process;
 
-function recordMetricsInput(string $input, ?string $store, string $file, string $mode = ''): Process
+function recordMetricsInput(string|iterable $input, ?string $store, string $file, string $mode = ''): Process
 {
-    $process = new Process([PHP_BINARY, dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:record-metrics'], env: [
+    $process = new Process([PHP_BINARY, '-d', 'memory_limit=32M', dirname(__DIR__).'/Support/metrics-artisan.php', 'murmur:record-metrics'], env: [
         'MURMUR_METRICS_STORE' => $store ?? '',
         'MURMUR_TEST_METRICS_FILE' => $file,
         'MURMUR_TEST_METRICS_MODE' => $mode,
-    ], input: $input, timeout: 3);
+    ], input: $input, timeout: 8);
     $process->run();
 
     return $process;
@@ -35,34 +35,39 @@ function metricsRecordPayload(): array
     ];
 }
 
-it('stores valid stdin without filtering or changing its timestamp', function () {
+it('stores successive lines without filtering or changing their timestamps and exits on EOF', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-record-');
 
     try {
         $payload = metricsRecordPayload();
-        $process = recordMetricsInput(json_encode($payload, JSON_THROW_ON_ERROR), 'fake', $file);
+        $next = [...$payload, 'recorded_at' => 124];
+        $process = recordMetricsInput(json_encode($payload, JSON_THROW_ON_ERROR)."\n".json_encode($next, JSON_THROW_ON_ERROR)."\n", 'fake', $file);
 
         expect($process->getExitCode())->toBe(0, $process->getErrorOutput());
-        expect($process->getOutput().$process->getErrorOutput())->toBe('');
-        $saved = json_decode(file($file, FILE_IGNORE_NEW_LINES)[1], true, flags: JSON_THROW_ON_ERROR);
+        expect($process->getOutput())->toBe("ok\nok\n");
+        expect($process->getErrorOutput())->toBe('');
+        [$first, $second] = metricsTrace($file, 'saved');
+        expect($first->pid)->toBe($second->pid);
         $payload['samples'][1]['labels'] = [];
+        $saved = json_decode(json_encode($first, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
         expect(array_intersect_key($saved, $payload))->toBe($payload);
+        expect($second->recorded_at)->toBe(124);
     } finally {
         unlink($file);
     }
 });
 
-it('rejects invalid stdin on stderr without reaching the store', function (Closure $makeInput) {
+it('rejects invalid lines without reaching the store and handles the next valid line', function (Closure $makeInput) {
     $file = tempnam(sys_get_temp_dir(), 'murmur-record-');
 
     try {
-        $process = recordMetricsInput($makeInput(metricsRecordPayload()), 'fake', $file);
+        $payload = metricsRecordPayload();
+        $process = recordMetricsInput($makeInput($payload)."\n".json_encode($payload, JSON_THROW_ON_ERROR)."\n", 'fake', $file);
 
-        expect($process->getExitCode())->toBe(1)
-            ->and($process->getOutput())->toBe('')
-            ->and($process->getErrorOutput())->toMatch('/\A[^\r\n]+\r?\n\z/')
-            ->not->toContain('sensitive-payload')
-            ->and(file_get_contents($file))->toBe('');
+        expect($process->getExitCode())->toBe(0)
+            ->and($process->getOutput())->toBe("error\nok\n")
+            ->and($process->getErrorOutput())->toBe('')
+            ->and(metricsTrace($file, 'start'))->toHaveCount(1);
     } finally {
         unlink($file);
     }
@@ -83,6 +88,7 @@ it('rejects invalid stdin on stderr without reaching the store', function (Closu
     'invalid type' => [fn ($p) => json_encode([...$p, 'samples' => [[...$p['samples'][0], 'type' => 'histogram']]])],
     'non-string help' => [fn ($p) => json_encode([...$p, 'samples' => [[...$p['samples'][0], 'help' => null]]])],
     'array labels' => [fn ($p) => json_encode([...$p, 'samples' => [[...$p['samples'][0], 'labels' => []]]])],
+    'invalid label name' => [fn ($p) => json_encode([...$p, 'samples' => [[...$p['samples'][0], 'labels' => ["invalid\n" => '202']]]])],
     'non-string label values' => [fn ($p) => json_encode([...$p, 'samples' => [[...$p['samples'][0], 'labels' => ['status' => 202]]]])],
     'extra sample field' => [fn ($p) => json_encode([...$p, 'samples' => [[...$p['samples'][0], 'extra' => 1]]])],
     'string value' => [fn ($p) => json_encode([...$p, 'samples' => [[...$p['samples'][0], 'value' => '7']]])],
@@ -90,20 +96,72 @@ it('rejects invalid stdin on stderr without reaching the store', function (Closu
     'oversized' => [fn ($p) => json_encode($p).str_repeat(' ', 1024 * 1024)],
 ]);
 
-it('reports no store and hides exceptions thrown by a configured store', function (?string $store, string $mode, string $message) {
+it('discards an over-long line with bounded memory and accepts a line at the exact limit', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-record-');
 
     try {
-        $process = recordMetricsInput(json_encode(metricsRecordPayload(), JSON_THROW_ON_ERROR), $store, $file, $mode);
+        $payload = json_encode(metricsRecordPayload(), JSON_THROW_ON_ERROR);
+        $input = (function () use ($payload): Generator {
+            for ($i = 0; $i < 640; $i++) {
+                yield str_repeat(' ', 65536);
+            }
 
-        expect($process->getExitCode())->toBe(1)
-            ->and($process->getOutput())->toBe('')
-            ->and($process->getErrorOutput())->toBe($message."\n")
-            ->not->toContain('sensitive store exception');
+            yield "\n".$payload.str_repeat(' ', 1_048_576 - strlen($payload))."\n";
+        })();
+        $process = recordMetricsInput($input, 'fake', $file);
+
+        expect($process->getExitCode())->toBe(0, $process->getErrorOutput());
+        expect($process->getOutput())->toBe("error\nok\n");
+        expect(metricsTrace($file, 'saved'))->toHaveCount(1);
     } finally {
         unlink($file);
     }
-})->with([[null, '', 'No Murmur metrics store is configured.'], ['fake', 'throw', 'Murmur could not write the metrics snapshot.']]);
+});
+
+it('refuses invalid store configuration at startup before reading stdin', function (?string $store, string $message) {
+    $process = recordMetricsInput('', $store, '');
+
+    expect($process->getExitCode())->toBe(1)
+        ->and($process->getOutput())->toBe('')
+        ->and($process->getErrorOutput())->toBe($message."\n");
+})->with([
+    [null, 'No Murmur metrics store is configured.'],
+    ['unknown', 'Murmur metrics store configuration is invalid.'],
+]);
+
+it('acknowledges a failed write and continues even when the exception handler throws', function () {
+    $file = tempnam(sys_get_temp_dir(), 'murmur-record-');
+
+    try {
+        $line = json_encode(metricsRecordPayload(), JSON_THROW_ON_ERROR)."\n";
+        $process = recordMetricsInput($line.$line, 'fake', $file, 'fail-first');
+        $events = metricsTrace($file);
+
+        expect($process->getExitCode())->toBe(0);
+        expect($process->getOutput())->toBe("error\nok\n");
+        expect($process->getErrorOutput())->toBe('');
+        expect(array_column($events, 'phase'))->toBe(['start', 'reported', 'start', 'saved']);
+        expect($events[1]->message)->toBe('sensitive store exception');
+        expect(array_unique(array_column($events, 'pid')))->toHaveCount(1);
+    } finally {
+        unlink($file);
+    }
+});
+
+it('keeps the database query log empty across writes', function () {
+    $file = tempnam(sys_get_temp_dir(), 'murmur-record-');
+
+    try {
+        $line = json_encode(metricsRecordPayload(), JSON_THROW_ON_ERROR)."\n";
+        $process = recordMetricsInput($line.$line, 'fake', $file, 'query-log');
+
+        expect($process->getExitCode())->toBe(0);
+        expect($process->getOutput())->toBe("ok\nok\n");
+        expect(array_column(metricsTrace($file, 'queries'), 'count'))->toBe([0, 0]);
+    } finally {
+        unlink($file);
+    }
+});
 
 it('keeps the stdin writer hidden from the Artisan command list', function () {
     $process = new Process([PHP_BINARY, dirname(__DIR__).'/Support/metrics-artisan.php', 'list', '--raw']);

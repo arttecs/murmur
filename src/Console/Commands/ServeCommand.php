@@ -7,15 +7,17 @@ use Arttecs\Murmur\Metrics\MetricsRecorder;
 use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
-use Illuminate\Console\Application;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\ProcessUtils;
 use InvalidArgumentException;
 use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;
+use RuntimeException;
 use Symfony\Component\Console\Input\ArgvInput;
 use Throwable;
 
+use function Illuminate\Support\artisan_binary;
 use function React\Promise\all;
 
 /**
@@ -51,7 +53,6 @@ class ServeCommand extends Command
                 $metrics->node ?? ($host === false ? '' : $host.':'.$config->port),
                 $this->metricsCommand(),
             );
-            $log = $this->makeLog();
         } catch (InvalidArgumentException $exception) {
             $this->error($exception->getMessage());
 
@@ -66,25 +67,48 @@ class ServeCommand extends Command
             return self::FAILURE;
         }
 
-        $server = new Server($config, $log, $loop, $channel === null ? null : Log::channel($channel));
-        $manager->callServingCallbacks($server, $loop);
-        $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];
+        try {
+            $recorder?->launch();
+        } catch (RuntimeException $exception) {
+            $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $server = null;
+        $signals = [];
         $shuttingDown = false;
-        $shutdown = function () use ($server, $recorder, $loop, &$shuttingDown): void {
-            $shuttingDown = true;
-
-            if ($recorder === null) {
-                $server->shutdown()->then($loop->stop(...));
-
-                return;
-            }
-
-            all([$recorder->stop(), $server->shutdown()])->then($loop->stop(...));
-        };
-
         $exitCode = self::SUCCESS;
 
         try {
+            try {
+                $log = $this->makeLog();
+            } catch (InvalidArgumentException $exception) {
+                $this->error($exception->getMessage());
+
+                return self::FAILURE;
+            }
+
+            $server = new Server($config, $log, $loop, $channel === null ? null : Log::channel($channel));
+            $manager->callServingCallbacks($server, $loop);
+
+            $signals = extension_loaded('pcntl') ? [SIGTERM, SIGINT] : [];
+            $shutdown = function () use ($server, $recorder, $loop, &$shuttingDown): void {
+                $shuttingDown = true;
+
+                if ($recorder === null) {
+                    $server->shutdown()->then($loop->stop(...));
+
+                    return;
+                }
+
+                all([$recorder->stop(), $server->shutdown()])->then($loop->stop(...));
+            };
+
+            foreach ($signals as $signal) {
+                $loop->addSignal($signal, $shutdown);
+            }
+
             $server->listen()->then(function () use ($server, $recorder): void {
                 $this->info('Murmur is listening on '.$server->address());
                 $recorder?->start($server->metrics());
@@ -98,20 +122,18 @@ class ServeCommand extends Command
                 $loop->futureTick($loop->stop(...));
             });
 
-            foreach ($signals as $signal) {
-                $loop->addSignal($signal, $shutdown);
-            }
-
             $loop->run();
         } finally {
             foreach ($signals as $signal) {
                 $loop->removeSignal($signal, $shutdown);
             }
 
-            $server->close();
-
-            if ($recorder !== null) {
-                $this->stopRecorder($recorder, $loop);
+            try {
+                $server?->close();
+            } finally {
+                if ($recorder !== null) {
+                    $this->stopRecorder($recorder, $loop);
+                }
             }
         }
 
@@ -125,19 +147,21 @@ class ServeCommand extends Command
      */
     protected function metricsCommand(): string
     {
-        $artisan = Application::artisanBinary();
+        $artisan = artisan_binary();
 
-        if ((! defined('ARTISAN_BINARY') || ARTISAN_BINARY === 'artisan') && $this->input instanceof ArgvInput && isset($_SERVER['SCRIPT_FILENAME'])) {
-            $path = realpath($_SERVER['SCRIPT_FILENAME']);
-
-            if ($path === false || ! is_file($path)) {
-                throw new InvalidArgumentException('Murmur metrics recording could not locate the Artisan entry point.');
-            }
-
-            $artisan = escapeshellarg($path);
+        if ($artisan === 'artisan') {
+            $artisan = $this->input instanceof ArgvInput && isset($_SERVER['SCRIPT_FILENAME'])
+                ? $_SERVER['SCRIPT_FILENAME']
+                : base_path('artisan');
         }
 
-        return Application::phpBinary().' '.$artisan.' murmur:record-metrics';
+        $path = realpath($artisan);
+
+        if ($path === false || ! is_file($path)) {
+            throw new InvalidArgumentException('Murmur metrics recording could not locate the Artisan entry point.');
+        }
+
+        return ProcessUtils::escapeArgument(PHP_BINARY).' '.ProcessUtils::escapeArgument($path).' murmur:record-metrics';
     }
 
     /**

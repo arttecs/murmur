@@ -3,23 +3,47 @@
 namespace Arttecs\Murmur\Tests\Support;
 
 use Arttecs\Murmur\Contracts\MetricsStore;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 class FakeMetricsStore implements MetricsStore
 {
+    protected int $writes = 0;
+
     public function __construct(protected string $file, protected string $mode) {}
 
     public function put(string $node, int $recordedAt, array $samples): void
     {
-        $first = filesize($this->file) === 0;
+        $first = ++$this->writes === 1;
         $this->append(['phase' => 'start']);
 
-        if ($this->mode === 'throw' || ($this->mode === 'fail-first' && $first)) {
+        if ($this->mode === 'fail-first' && $first) {
             throw new RuntimeException('sensitive store exception');
         }
 
-        if ($this->mode === 'slow') {
-            usleep(250_000);
+        if ($this->mode === 'query-log') {
+            $connection = DB::connection('sqlite');
+            $connection->select('select 1');
+            $this->append(['phase' => 'queries', 'count' => count($connection->getQueryLog())]);
+        }
+
+        if ($this->mode === 'noisy' && $first) {
+            $chunk = str_repeat('sensitive writer output ', 2048);
+            for ($i = 0; $i < 32; $i++) {
+                fwrite(STDERR, $chunk);
+                fwrite(STDOUT, $chunk);
+            }
+            fwrite(STDERR, "\n");
+            fwrite(STDOUT, "\n");
+        }
+
+        if ($this->mode === 'gate' && $first) {
+            $this->append(['phase' => 'waiting']);
+
+            while (! is_file($this->file.'.release')) {
+                clearstatcache(true, $this->file.'.release');
+                usleep(10_000);
+            }
         }
 
         if ($this->mode === 'hang' && $first) {
@@ -28,7 +52,11 @@ class FakeMetricsStore implements MetricsStore
             }
 
             $this->append(['phase' => 'waiting']);
-            sleep(10);
+            $until = hrtime(true) + 15_000_000_000;
+
+            while (hrtime(true) < $until) {
+                usleep(50_000);
+            }
         }
 
         $this->append(['phase' => 'saved', 'node' => $node, 'recorded_at' => $recordedAt, 'samples' => $samples]);
