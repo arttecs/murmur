@@ -10,10 +10,24 @@ jobs:
         php: ['8.3', '8.4', '8.5']
         laravel: ['12', '13']
         redis_client: [phpredis]
+        loop: [stream_select]
         include:
           - php: '8.5'
             laravel: '13'
             redis_client: predis
+            loop: stream_select
+          - php: '8.5'
+            laravel: '13'
+            redis_client: phpredis
+            loop: uv
+          - php: '8.5'
+            laravel: '13'
+            redis_client: phpredis
+            loop: ev
+          - php: '8.5'
+            laravel: '13'
+            redis_client: phpredis
+            loop: event
     env:
       REDIS_CLIENT: ${{ matrix.redis_client }}
     services:
@@ -31,13 +45,21 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: redis
+          extensions: redis${{ matrix.loop != 'stream_select' && format(', {0}', matrix.loop) || '' }}
           coverage: none
+      - if: matrix.loop != 'stream_select'
+        run: php -r 'extension_loaded("${{ matrix.loop }}") || exit(1);'
       - run: composer update --with illuminate/support:^${{ matrix.laravel }} --no-interaction --no-progress
       - if: matrix.redis_client == 'predis'
         run: composer require --dev predis/predis --no-interaction --no-progress
       - run: vendor/bin/pint --test
       - run: vendor/bin/pest
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sh tests/Docker/smoke.sh
 
   javascript:
     runs-on: ubuntu-latest
