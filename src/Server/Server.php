@@ -438,20 +438,21 @@ class Server
         if ($this->clients === []) {
             $this->close();
         } else {
-            $this->shutdownDeadline = $this->loop->addTimer($graceSeconds ?? $this->config->shutdownGraceSeconds, $this->close(...));
-            $this->drainStreams();
+            $grace = $graceSeconds ?? $this->config->shutdownGraceSeconds;
+            $this->shutdownDeadline = $this->loop->addTimer($grace, $this->close(...));
+            $this->drainStreams(min($this->config->shutdownSpreadSeconds, max(0.0, $grace) * 0.8));
         }
 
         return $this->shutdown->promise();
     }
 
     /**
-     * Schedule stream endings at equal intervals in connection order.
+     * Schedule stream endings at equal intervals over the spread, in connection order.
      */
-    protected function drainStreams(): void
+    protected function drainStreams(float $spreadSeconds): void
     {
         $connections = $this->hub->connections();
-        $step = $this->config->shutdownSpreadSeconds / max(1, count($connections) - 1);
+        $step = $spreadSeconds / max(1, count($connections) - 1);
 
         foreach ($connections as $index => $connection) {
             if ($index === 0 || $step === 0.0) {

@@ -391,7 +391,7 @@ php artisan murmur:forget-metrics
 | `murmur_uptime_seconds` | gauge | — | Seconds since the server started listening. |
 | `murmur_memory_bytes` | gauge | — | Bytes of memory allocated by PHP. |
 | `murmur_memory_peak_bytes` | gauge | — | Peak bytes of memory allocated by PHP. |
-| `murmur_event_loop_lag_seconds` | gauge | — | Most recent event loop timer delay in seconds, or zero before the first measurement. |
+| `murmur_event_loop_lag_seconds` | gauge | — | Most recent event loop timer delay in seconds, or zero before the first measurement. The timer fires once per second, so a short block is seen only when it overlaps a tick. |
 
 ## Logging
 
@@ -409,7 +409,7 @@ When the event loop timer runs late by more than `MURMUR_LOOP_LAG_THRESHOLD_MS`,
 
 ## Compatibility
 
-Semantic versioning covers the `Murmur` facade and the public methods of `MurmurManager`, the types in `Contracts\` and `Exceptions\`, configuration keys and environment variables, and public Artisan command names and options.
+Semantic versioning covers the `Murmur` facade and the public methods of `MurmurManager`, the `MurmurServiceProvider` class name, the types in `Contracts\` and `Exceptions\`, configuration keys and environment variables, and public Artisan command names and options.
 
 It also covers `Server\Server`, `Server\ServerConfig`, `Server\Metrics` (`snapshot()`, `value()`, `toPrometheus()`, and `names()`), `Server\Event`, `Server\EventId`, `Server\Replay`, `Stream`, the classes in `Testing\`, and the [wire protocol](docs/protocol.md).
 

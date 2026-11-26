@@ -102,6 +102,7 @@ abstract class EventLogConformanceTestCase extends TestCase
         $replay = $this->await($this->log->since($cursor, ['news'], 2));
         self::assertFalse($replay->gap);
         self::assertEquals([$second->withId($secondId), $fourth->withId($fourthId)], $replay->events);
+        self::assertEquals($fourthId, $replay->tail, 'The replay tail must be the newest identifier in the log.');
 
         $limited = $this->await($this->log->since($cursor, ['news'], 1));
         self::assertTrue($limited->gap);
@@ -120,6 +121,64 @@ abstract class EventLogConformanceTestCase extends TestCase
         $this->append($append, new Event('news', 'fourth'));
 
         self::assertTrue($this->await($this->log->since($cursor, ['news'], 10))->gap);
+    }
+
+    /**
+     * Replay history that is still retained after older entries were trimmed, without a gap.
+     */
+    public function test_replays_retained_history_across_topics_after_trimming(): void
+    {
+        [$this->log, $append] = $this->createEventLog(3, $this->loop);
+        $this->append($append, new Event('news', 'first'));
+        $cursor = $this->append($append, new Event('news', 'second'));
+        $third = new Event('weather', 'third');
+        $thirdId = $this->append($append, $third);
+        $fourth = new Event('news', 'fourth');
+        $fourthId = $this->append($append, $fourth);
+
+        $replay = $this->await($this->log->since($cursor, ['news', 'weather'], 10));
+
+        self::assertFalse($replay->gap, 'A cursor inside the retained history must not report a gap.');
+        self::assertEquals([$third->withId($thirdId), $fourth->withId($fourthId)], $replay->events);
+        self::assertEquals($fourthId, $replay->tail);
+    }
+
+    /**
+     * Deliver only events appended after a listener subscribed, and nothing after the log closes.
+     */
+    public function test_delivers_only_new_events_and_nothing_after_close(): void
+    {
+        [$this->log, $append] = $this->createEventLog(10, $this->loop);
+        $early = [];
+        $late = [];
+        $delivered = new Deferred;
+        $this->log->subscribe(function (Event $event) use (&$early): void {
+            $early[] = $event->name;
+        });
+        $this->await($this->log->ready());
+        $this->append($append, new Event('news', 'before'));
+        $this->log->subscribe(function (Event $event) use (&$late, $delivered): void {
+            $late[] = $event->name;
+            $delivered->resolve(null);
+        });
+        $this->append($append, new Event('news', 'after'));
+        $this->await($delivered->promise());
+
+        self::assertSame(['before', 'after'], $early);
+        self::assertSame(['after'], $late, 'A listener must not receive events appended before it subscribed.');
+
+        $this->log->close();
+
+        try {
+            $this->append($append, new Event('news', 'closed'));
+        } catch (Throwable) {
+        }
+
+        $settled = new Deferred;
+        $this->loop->addTimer(0.05, fn () => $settled->resolve(null));
+        $this->await($settled->promise());
+
+        self::assertSame(['before', 'after'], $early, 'A closed log must not deliver events.');
     }
 
     /**

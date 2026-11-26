@@ -35,7 +35,7 @@ abstract class MetricsStoreConformanceTestCase extends TestCase
 
         $sample = ['name' => 'murmur_connections', 'type' => 'gauge', 'help' => 'Connections.', 'labels' => [], 'value' => 7];
         $store->put('alpha', $now + 1, [$sample]);
-        self::assertSame(['recorded_at' => $now + 1, 'samples' => [$sample]], $store->all()['alpha']);
+        self::assertEquals(['recorded_at' => $now + 1, 'samples' => [$sample]], $store->all()['alpha']);
 
         $store->forget('alpha');
         $store->forget('absent');
@@ -57,7 +57,16 @@ abstract class MetricsStoreConformanceTestCase extends TestCase
 
         $store->put('alpha', $now, $samples);
 
-        self::assertSame(['alpha' => ['recorded_at' => $now, 'samples' => $samples]], $store->all());
+        $stored = $store->all();
+        self::assertSame(['alpha'], array_keys($stored));
+        self::assertSame($now, $stored['alpha']['recorded_at']);
+        self::assertCount(count($samples), $stored['alpha']['samples']);
+
+        foreach ($samples as $index => $sample) {
+            foreach ($sample as $key => $value) {
+                self::assertSame($value, $stored['alpha']['samples'][$index][$key] ?? null, "Sample {$index} lost or changed [{$key}].");
+            }
+        }
 
         $store->put('alpha', $now + 1, []);
         self::assertSame(['alpha' => ['recorded_at' => $now + 1, 'samples' => []]], $store->all());

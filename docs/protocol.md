@@ -1,6 +1,6 @@
 # Murmur wire protocol 1
 
-Murmur serves HTTP and Server-Sent Events (SSE). Its SSE server handles the routes below. The authorization route runs in the Laravel application and can have a different base URL. The SSE server includes `X-Murmur-Protocol: 1` in the responses it generates for `GET /sse`, `GET /health`, and `GET /ready`, including route-level errors. The PHP constant is `Server::PROTOCOL`.
+Murmur serves HTTP and Server-Sent Events (SSE). Its SSE server handles the routes below. The authorization route runs in the Laravel application and can have a different base URL. The SSE server includes `X-Murmur-Protocol: 1` in the responses it generates for `GET /sse`, `GET /health`, and `GET /ready`, including route-level errors. The PHP constant is `Server::PROTOCOL`. The header is meant for non-browser clients and probes: the server does not list it in `Access-Control-Expose-Headers`, so a cross-origin page cannot read it. The request line and headers of any request must fit in 8 KiB, which bounds the combined length of the `topics`, `token`, and `lastEventId` parameters; a larger request is answered with 431.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -79,7 +79,7 @@ Topic names beginning with `private-` require a token. Sign an HS256 JWT using t
 | `topics` | JSON array of strings containing full wire topic names, including `private-`. Each private topic must match an entry exactly. |
 | `exp` | Integer Unix expiration time in seconds. Laravel issues tokens for `token_ttl` seconds, 900 by default. |
 
-The server verifies the JWT signature and expiration with no clock leeway. It checks both claims' types. A request containing only public topics may omit the token, and an invalid token is ignored for that request. Every subscription using a valid token closes when the token expires. Obtain a fresh token before reconnecting to private topics.
+The server verifies the JWT signature and expiration with no clock leeway. It checks both claims' types. Laravel issues tokens with these two claims only. If another issuer adds `nbf` or `iat`, the server also rejects a token whose `nbf`, or whose `iat` when `nbf` is absent, is later than its own clock, again with no leeway; omit both claims or keep the clocks synchronized. A request containing only public topics may omit the token, and an invalid token is ignored for that request. Every subscription using a valid token closes when the token expires. Obtain a fresh token before reconnecting to private topics.
 
 ### Laravel authorization
 

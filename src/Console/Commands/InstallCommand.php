@@ -54,14 +54,22 @@ class InstallCommand extends Command
         }
 
         $directory = $this->laravel->environmentPath();
-        $environment = $directory.DIRECTORY_SEPARATOR.'.env';
+        $environment = $this->laravel->environmentFilePath();
         $example = $directory.DIRECTORY_SEPARATOR.'.env.example';
         $updated = false;
+
+        foreach ([$environment, $example] as $path) {
+            if ($files->isFile($path) && (! is_readable($path) || ! is_writable($path) || ! is_writable(dirname($path)))) {
+                $this->error(basename($path).' is not readable and writable. Nothing was changed in it.');
+
+                return self::FAILURE;
+            }
+        }
 
         if ($files->isFile($environment)) {
             $updated = $this->updateEnvironment($files, $environment);
         } else {
-            $this->line('.env was not found. Add these lines to it and fill MURMUR_SECRET with a randomly generated 64-character hex secret.');
+            $this->line(basename($environment).' was not found. Add these lines to it and fill MURMUR_SECRET with a randomly generated 64-character hex secret.');
             $this->line('MURMUR_SECRET=');
             $this->line('BROADCAST_CONNECTION=murmur');
         }
@@ -82,7 +90,7 @@ class InstallCommand extends Command
     }
 
     /**
-     * Set the missing or blank values and write the file only if it changed.
+     * Set the missing or blank values and write the file only if it changed, keeping its permissions.
      */
     protected function updateEnvironment(Filesystem $files, string $path, bool $example = false): bool
     {
@@ -98,11 +106,15 @@ class InstallCommand extends Command
             ),
         );
 
+        if (preg_match('/^(?:export[ \t]+)?BROADCAST_CONNECTION[ \t]*=[ \t]*["\']?murmur["\']?[ \t]*$/m', $content) !== 1) {
+            $this->warn('BROADCAST_CONNECTION in '.basename($path).' was left unchanged. Set it to murmur, or run again with --force, to broadcast through Murmur.');
+        }
+
         if ($content === $original) {
             return false;
         }
 
-        $files->replace($path, $content);
+        $files->replace($path, $content, fileperms($path) & 0777);
         $this->info('Updated '.basename($path).'.');
 
         return true;

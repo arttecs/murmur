@@ -2,6 +2,7 @@
 
 use Arttecs\Murmur\Facades\Murmur;
 use Arttecs\Murmur\MurmurManager;
+use Arttecs\Murmur\MurmurServiceProvider;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Metrics;
@@ -14,6 +15,7 @@ it('marks every type outside the public API as internal', function () {
     $public = [
         Murmur::class,
         MurmurManager::class,
+        MurmurServiceProvider::class,
         Server::class,
         ServerConfig::class,
         Metrics::class,

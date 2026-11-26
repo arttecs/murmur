@@ -19,6 +19,7 @@
 - JavaScript client options for retry delays, jitter, token refresh margin, and stream failure limits, with per-stream overrides.
 - JavaScript client authorization headers, credentials mode, custom authorizers, and credentialed SSE connections.
 - JavaScript client statistics through `stats()`.
+- Laravel Echo connector at `@arttecs/murmur/echo` for public and private channels, notifications, and connection status.
 - Event loop lag metrics and rate-limited warnings, plus a startup notice and socket-limit check for `stream_select`.
 - `GET /ready` for live event log readiness and staggered graceful shutdown with SSE reconnect hints.
 - `murmur:install` to publish configuration and set the application's environment values for Murmur.

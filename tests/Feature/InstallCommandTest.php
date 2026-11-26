@@ -104,3 +104,39 @@ it('preserves an application-defined broadcast connection', function () {
 
     expect(config('broadcasting.connections.murmur'))->toBe(['driver' => 'log', 'custom' => true]);
 });
+
+it('keeps the permissions of the environment file it rewrites', function () {
+    file_put_contents($this->envFile, "APP_NAME=Murmur\n");
+    chmod($this->envFile, 0600);
+
+    expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
+    clearstatcache();
+
+    expect(file_get_contents($this->envFile))->toContain('MURMUR_SECRET=');
+    expect(fileperms($this->envFile) & 0777)->toBe(0600);
+});
+
+it('refuses to replace an environment file it cannot write', function () {
+    file_put_contents($this->envFile, "APP_NAME=Murmur\n");
+    chmod($this->envFile, 0400);
+
+    try {
+        expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(1);
+        expect(Artisan::output())->toContain('.env is not readable and writable.');
+        expect(file_get_contents($this->envFile))->toBe("APP_NAME=Murmur\n");
+        clearstatcache();
+        expect(fileperms($this->envFile) & 0777)->toBe(0400);
+    } finally {
+        chmod($this->envFile, 0600);
+    }
+})->skip(fn () => function_exists('posix_geteuid') && posix_geteuid() === 0, 'The superuser can write any file.');
+
+it('says when another broadcast connection was left in place', function () {
+    file_put_contents($this->envFile, "MURMUR_SECRET=existing\nBROADCAST_CONNECTION=log\n");
+
+    expect(Artisan::call('murmur:install', ['--no-interaction' => true]))->toBe(0);
+    expect(Artisan::output())->toContain('BROADCAST_CONNECTION in .env was left unchanged.');
+
+    expect(Artisan::call('murmur:install', ['--force' => true, '--no-interaction' => true]))->toBe(0);
+    expect(Artisan::output())->not->toContain('left unchanged');
+});

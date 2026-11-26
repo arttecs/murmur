@@ -95,3 +95,35 @@ it('ends every open stream immediately when spreading is disabled', function () 
     await(timeout($shutdown, 0.5));
     expect($h->trackedSocketCount())->toBe(0);
 });
+
+it('fits the spread inside an explicit shorter grace so every stream gets its retry frame', function () {
+    $config = new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), retryMs: 200, shutdownSpreadSeconds: 2.0);
+    $server = new class($config, new MemoryEventLog) extends Server
+    {
+        protected function randomRetryMs(int $min, int $max): int
+        {
+            return $max;
+        }
+    };
+
+    try {
+        await($server->listen());
+        $url = $server->address().'/sse?topics=news';
+        $readers = [SseReader::open($url), SseReader::open($url), SseReader::open($url)];
+
+        foreach ($readers as $reader) {
+            expect($reader->next()['retry'])->toBe('200');
+        }
+
+        $shutdown = $server->shutdown(0.5);
+
+        foreach ($readers as $reader) {
+            expect($reader->next()['retry'])->toBe('400');
+            expect(fn () => $reader->next())->toThrow(RuntimeException::class, 'stream closed');
+        }
+
+        await(timeout($shutdown, 2.0));
+    } finally {
+        $server->close();
+    }
+});
