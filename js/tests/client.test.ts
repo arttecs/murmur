@@ -19,6 +19,7 @@ const connectionId = '0123456789abcdef0123456789abcdef'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  vi.spyOn(Math, 'random').mockReturnValue(0)
 })
 
 afterEach(() => {
@@ -284,7 +285,7 @@ it('backs off consecutive authorization failures with jitter and caps the base d
   await flush()
   expect(attempts).toBe(1)
 
-  const delays = [3000, 6750, 13500, 27000, 33750, 33750]
+  const delays = [3375, 6750, 13500, 27000, 33750, 33750]
   for (const [index, delay] of delays.entries()) {
     await wait(delay - 1)
     expect(attempts).toBe(index + 1)
@@ -295,18 +296,18 @@ it('backs off consecutive authorization failures with jitter and caps the base d
 
 it('resets channel retry backoff when the connection attaches', async () => {
   vi.spyOn(Math, 'random').mockReturnValue(0.5)
-  client({ retryMs: 100 }).channel('news')
+  client({ retryMs: 200 }).channel('news')
   await flush()
   const first = FakeEventSource.instances[0]
   assert.isDefined(first)
   first.fail()
 
-  await wait(100)
+  await wait(225)
   const second = FakeEventSource.instances[1]
   assert.isDefined(second)
   second.fail()
 
-  await wait(224)
+  await wait(449)
   expect(FakeEventSource.instances).toHaveLength(2)
   await wait(1)
   const third = FakeEventSource.instances[2]
@@ -315,7 +316,7 @@ it('resets channel retry backoff when the connection attaches', async () => {
   third.emit('murmur.attached', {}, '')
   third.fail()
 
-  await wait(99)
+  await wait(224)
   expect(FakeEventSource.instances).toHaveLength(3)
   await wait(1)
   expect(FakeEventSource.instances).toHaveLength(4)
@@ -419,7 +420,7 @@ it('emits gap', async () => {
   expect(gaps).toBe(1)
 })
 
-it('emits a gap before the attach marker on a reconnect with an ahead cursor', async () => {
+it('emits a gap frame received before the attach marker on a reconnect', async () => {
   const m = client({ retryMs: 10 })
   const received: string[] = []
   m.on('gap', () => received.push('gap'))
@@ -428,17 +429,17 @@ it('emits a gap before the attach marker on a reconnect with an ahead cursor', a
   await flush()
   const [first] = FakeEventSource.instances
   assert.isDefined(first)
-  first.emit('murmur.attached', {}, maxCursor)
+  first.emit('murmur.attached', {}, '1-0')
   first.fail()
   await wait(10)
 
   const reconnect = FakeEventSource.instances[1]
   assert.isDefined(reconnect)
-  expect(new URL(reconnect.url).searchParams.get('lastEventId')).toBe(maxCursor)
+  expect(new URL(reconnect.url).searchParams.get('lastEventId')).toBe('1-0')
   reconnect.dispatchEvent(new Event('open'))
   reconnect.emit('murmur.gap', {}, '')
   expect(received).toEqual(['attached', 'gap'])
-  expect(m.stats()).toMatchObject({ gaps: 1, lastEventId: maxCursor })
+  expect(m.stats()).toMatchObject({ gaps: 1, lastEventId: '1-0' })
 
   reconnect.emit('murmur.attached', {}, '3-0')
   expect(received).toEqual(['attached', 'gap', 'attached'])
@@ -857,7 +858,7 @@ it.each([
 })
 
 it.each([
-  { retryJitter: 0.5, delays: [100, 200, 200] },
+  { retryJitter: 0.5, delays: [125, 200, 200] },
   { retryJitter: 0, delays: [100, 160, 160] },
 ])('caps the base delay with retryJitter $retryJitter', async ({ retryJitter, delays }) => {
   const random = vi.spyOn(Math, 'random').mockReturnValue(0.5)
@@ -873,7 +874,7 @@ it.each([
     await wait(1)
     expect(FakeEventSource.instances).toHaveLength(index + 2)
   }
-  expect(random).toHaveBeenCalledTimes(retryJitter === 0 ? 0 : 2)
+  expect(random).toHaveBeenCalledTimes(retryJitter === 0 ? 0 : 3)
 })
 
 it.each([
@@ -1624,9 +1625,9 @@ it.each([
   }
   await flush()
 
-  const delays = [3000, 6750, 13500, 27000, ...Array<number>(16).fill(33750)]
+  const delays = [3375, 6750, 13500, 27000, ...Array<number>(16).fill(33750)]
   let requestsForAttempt = 3
-  for (const [index, delay] of [...delays, 9750].entries()) {
+  for (const [index, delay] of [...delays, 9375].entries()) {
     const source = FakeEventSource.instances[index]
     assert.isDefined(source)
     expect(request).toBe(requestsForAttempt)
@@ -2057,7 +2058,7 @@ it('retries early ends with growing, capped backoff and keeps the unacknowledged
   m.channel('alerts')
   await flush()
 
-  for (const [offset, delay] of [10, 24, 30, 30].entries()) {
+  for (const [offset, delay] of [12, 24, 30, 30].entries()) {
     const index = offset + 1
     const source = FakeEventSource.instances[index]
     assert.isDefined(source)

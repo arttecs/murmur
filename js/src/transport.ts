@@ -18,13 +18,13 @@ type Connection = {
 
 /** Configures the delay between connection attempts. */
 export interface RetryOptions {
-  /** The delay before the first retry, in milliseconds. */
+  /** The base delay before the first retry, in milliseconds. */
   retryMs: number
 
   /** The maximum base delay before jitter, in milliseconds. */
   maxRetryMs: number
 
-  /** The maximum fraction of the base delay added as jitter after the first retry. */
+  /** The maximum fraction of the base delay added as jitter on each retry. */
   retryJitter: number
 }
 
@@ -242,12 +242,9 @@ export class Transport {
   /** Schedules a replacement connection with capped exponential backoff and jitter. */
   protected retry(minimumDelay = 0): void {
     const { retryMs, maxRetryMs, retryJitter } = this.retryOptions
-    let delay = retryMs
-    if (this.failures > 1) {
-      delay = Math.min(retryMs * 2 ** (this.failures - 1), maxRetryMs)
-      if (retryJitter !== 0) {
-        delay += delay * retryJitter * Math.random()
-      }
+    let delay = Math.min(retryMs * 2 ** (this.failures - 1), maxRetryMs)
+    if (retryJitter !== 0) {
+      delay += delay * retryJitter * Math.random()
     }
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined

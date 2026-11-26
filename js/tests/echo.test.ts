@@ -382,7 +382,7 @@ it('can connect again after disconnecting', async () => {
 })
 
 it('reports connection transitions using Echo status names and unsubscribes', async () => {
-  const instance = echo()
+  const instance = echo({ retryJitter: 0 })
   const status = vi.fn()
   const unsubscribe = connectorOf(instance).onConnectionChange(status)
   expect(instance.connectionStatus()).toBe('disconnected')

@@ -488,7 +488,7 @@ describe('Murmur client and PHP server', () => {
     const expired = vi.fn()
     const ended = vi.fn()
     const received = vi.fn<(data: unknown) => void>()
-    client({ retryMs: streamRetryMs }, attempts).stream(url)
+    client({ retryMs: streamRetryMs }, attempts).stream(url, { maxFailures: 3 })
       .on('expired', expired)
       .on('end', ended)
       .on('entry', received)

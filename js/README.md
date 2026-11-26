@@ -43,7 +43,7 @@ Use `murmur.on(event, callback)` to listen for these client events. It returns a
 - `error` receives an `Error` if the shared subscription URL exceeds the request budget or the server announces an unexpected protocol. The first protocol mismatch is reported once and the client continues.
 - `gap` fires when the server reports a gap in replay. Refresh any state that depends on the missing events.
 
-The first retry uses `retryMs` as its base delay. For consecutive failures after the first, the base delay doubles up to `maxRetryMs`, then random jitter of up to `retryJitter` times the base delay is added. The attach marker resets the retry sequence. An EventSource that opens and then ends before attachment counts as a failed attempt.
+The first retry uses `retryMs` as its base delay. For consecutive failures after the first, the base delay doubles up to `maxRetryMs`. Each retry adds random jitter of up to `retryJitter` times its base delay. The attach marker resets the retry sequence. An EventSource that opens and then ends before attachment counts as a failed attempt. Native EventSource handles SSE `retry:` hints internally, so Murmur's replacement connections use the configured retry settings.
 
 `news.stopListening('.updated')` removes the callbacks for that event. `murmur.leave('orders.42')` leaves channels joined under that name. `murmur.close()` closes the channel connection and all streams created by the client, and cancels their retries.
 
@@ -69,9 +69,9 @@ Pass these options to `new Murmur(options)`.
 | `auth` | `AuthOptions` | `undefined` | Headers and credentials for the built-in authorization request. |
 | `authorizer` | `Authorizer` | `undefined` | Function that issues one or more tokens for private topics in place of the built-in request. |
 | `namespace` | `string` | `'App.Events'` | Dotted namespace for unqualified channel event names. |
-| `retryMs` | `number` | `3000` | Delay before the first retry, in milliseconds. Must be finite and greater than zero. |
+| `retryMs` | `number` | `3000` | Base delay before the first retry, in milliseconds. Must be finite and greater than zero. |
 | `maxRetryMs` | `number` | `30000`, or `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be finite and at least `retryMs`. |
-| `retryJitter` | `number` | `0.25` | Maximum fraction of the base delay added as random jitter from the second consecutive failure onward. Must be finite and between 0 and 1, inclusive. Set to `0` to disable jitter. |
+| `retryJitter` | `number` | `0.25` | Maximum fraction of the base delay added as random jitter on each retry. Must be finite and between 0 and 1, inclusive. Set to `0` to disable jitter. |
 | `tokenRefreshMarginSeconds` | `number` | `30` | Remaining lifetime a cached token must exceed to be reused, in seconds. Must be finite and non-negative. |
 | `streamMaxFailures` | `number` | `8` | Consecutive attempts without attachment or replay progress before an independent stream expires. Must be an integer of at least 1. |
 | `fetch` | `typeof fetch` | `globalThis.fetch` | Fetch implementation for the built-in authorization request. |
@@ -159,15 +159,15 @@ Stream event names are literal, and callbacks receive the event payload. The nam
 - `gap` fires when the server sends `murmur.gap` to signal missing events.
 - `expired` fires and the stream closes after `maxFailures` consecutive attempts that end without attachment or replay progress. A replayed event that advances the cursor resets the expiry count. Retry backoff keeps growing until the attach marker. A drop after attachment starts a new retry sequence and leaves the full allowance of eight attempts by default. A private stream URL carries a fixed token, so retries keep using that token.
 
-With the defaults and immediate failures, expiry takes 135–168 seconds when the first connection never attaches, or 165–205.5 seconds after an attached connection drops. These ranges include the client retry delays and jitter. Time spent waiting for connections to open or fail adds to the total. Set `streamMaxFailures` on the client or `maxFailures` on an individual stream to change the number of attempts. Tune `retryMs`, `maxRetryMs`, and `retryJitter` to change the delay between attempts.
+With the defaults and immediate failures, expiry takes 135–168.75 seconds when the first connection never attaches, or 165–206.25 seconds after an attached connection drops. These ranges include the client retry delays and jitter. Time spent waiting for connections to open or fail adds to the total. Set `streamMaxFailures` on the client or `maxFailures` on an individual stream to change the number of attempts. Tune `retryMs`, `maxRetryMs`, and `retryJitter` to change the delay between attempts.
 
 Pass `StreamOptions` as the optional second argument to `murmur.stream(url, options)`. Each field is an optional number and follows the validation rules of its client default.
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `retryMs` | `number` | Client's `retryMs` | Delay before the first retry in milliseconds. |
+| `retryMs` | `number` | Client's `retryMs` | Base delay before the first retry in milliseconds. |
 | `maxRetryMs` | `number` | Client's `maxRetryMs`, or this stream's `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be at least this stream's `retryMs`. |
-| `retryJitter` | `number` | Client's `retryJitter` | Maximum jitter fraction from the second consecutive failure onward. |
+| `retryJitter` | `number` | Client's `retryJitter` | Maximum jitter fraction on each retry. |
 | `maxFailures` | `number` | Client's `streamMaxFailures` | Limit on consecutive attempts without attachment or replay progress for this stream. |
 
 The first connection uses the URL as supplied. On reconnect, the client updates only the `lastEventId` query parameter. The read-only `stream.lastEventId` starts with the URL's valid cursor, if present, and tracks IDs from listened-to events, attach markers, and numbered heartbeats after attachment. It is `undefined` when the stream has no cursor and remains readable after the stream closes.

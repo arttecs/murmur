@@ -7,6 +7,7 @@ const URL_1 = 'https://m.test/sse?topics=private-c&token=t&lastEventId=100-0'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  vi.spyOn(Math, 'random').mockReturnValue(0)
 })
 
 afterEach(() => {
@@ -57,8 +58,8 @@ it('closes on end and does not reconnect', async () => {
 })
 
 it.each([
-  { attached: false, delays: [3000, 6750, 13500, 27000, 33750, 33750, 33750], expiresAt: 151_500 },
-  { attached: true, delays: [3000, 6750, 13500, 27000, 33750, 33750, 33750, 33750], expiresAt: 185_250 },
+  { attached: false, delays: [3375, 6750, 13500, 27000, 33750, 33750, 33750], expiresAt: 151_875 },
+  { attached: true, delays: [3375, 6750, 13500, 27000, 33750, 33750, 33750, 33750], expiresAt: 185_625 },
 ])('allows eight failed attempts with default settings and initial attachment set to $attached', async ({
   attached, delays, expiresAt,
 }) => {
@@ -95,20 +96,20 @@ it.each([
 it('backs off stream retries with jitter and stops on the third failure', async () => {
   vi.spyOn(Math, 'random').mockReturnValue(0.5)
   const expired = vi.fn()
-  client({ retryMs: 100 }).stream(URL_1, { maxFailures: 3 }).on('expired', expired)
+  client({ retryMs: 80 }).stream(URL_1, { maxFailures: 3 }).on('expired', expired)
   await flush()
   const first = FakeEventSource.instances[0]
   assert.isDefined(first)
   first.fail()
 
-  await wait(99)
+  await wait(89)
   expect(FakeEventSource.instances).toHaveLength(1)
   await wait(1)
   const second = FakeEventSource.instances[1]
   assert.isDefined(second)
   second.fail()
 
-  await wait(224)
+  await wait(179)
   expect(FakeEventSource.instances).toHaveLength(2)
   await wait(1)
   const third = FakeEventSource.instances[2]
@@ -183,10 +184,10 @@ it('emits a gap before attachment without resetting the failure count', async ()
 it('expires after three consecutive streams open and end before attachment', async () => {
   vi.spyOn(Math, 'random').mockReturnValue(0.5)
   const expired = vi.fn()
-  client({ retryMs: 100 }).stream(URL_1, { maxFailures: 3 }).on('expired', expired)
+  client({ retryMs: 80 }).stream(URL_1, { maxFailures: 3 }).on('expired', expired)
   await flush()
 
-  for (const [index, delay] of [100, 225].entries()) {
+  for (const [index, delay] of [90, 180].entries()) {
     const source = FakeEventSource.instances[index]
     assert.isDefined(source)
     source.dispatchEvent(new Event('open'))
@@ -464,7 +465,7 @@ it('overrides client retry settings and the failure limit for one stream', async
   m.stream(URL_1, { retryMs: 20, maxRetryMs: 30, retryJitter: 1, maxFailures: 3 }).on('expired', expired)
   await flush()
 
-  for (const [index, delay] of [20, 45].entries()) {
+  for (const [index, delay] of [30, 45].entries()) {
     const source = FakeEventSource.instances[index]
     assert.isDefined(source)
     source.fail()
