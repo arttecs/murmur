@@ -465,7 +465,7 @@ class RecordConnectionOpened implements ShouldQueue
 }
 ```
 
-Murmur attempts delivery in the server's recorded order and hands each batch to the worker at most once. Batches are capped by both `lifecycle.batch` and the worker's 1 MiB input limit. If a listener throws, the worker reports the exception through Laravel's exception handler, stops dispatching that batch, and accepts the next batch. The listener's queue applies its own execution order and retry policy.
+Murmur attempts delivery in the server's recorded order and hands each batch to the worker at most once. Batches are capped by both `lifecycle.batch` and the worker's 1 MiB input limit. If a listener throws, the worker continues with the next event. It reports the first exception in each failed batch through Laravel's exception handler and writes one summary with the count of failed events. The listener's queue applies its own execution order and retry policy.
 
 Use the events for best-effort notifications and a durable audit log for auditing. Buffer overflow drops the oldest records, and worker death and shutdown can also lose events. On shutdown the server sends a final batch if the worker can accept it within the existing shutdown budget.
 

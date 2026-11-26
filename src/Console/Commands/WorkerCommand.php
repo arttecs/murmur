@@ -119,10 +119,7 @@ class WorkerCommand extends Command
                 default => false,
             };
         } catch (Throwable $error) {
-            try {
-                report($error);
-            } catch (Throwable) {
-            }
+            $this->reportFailure($error);
 
             return false;
         } finally {
@@ -173,11 +170,34 @@ class WorkerCommand extends Command
             $batch[] = $event;
         }
 
+        $failures = 0;
+
         foreach ($batch as $event) {
-            $events->dispatch($event);
+            try {
+                $events->dispatch($event);
+            } catch (Throwable $error) {
+                if (++$failures === 1) {
+                    $this->reportFailure($error);
+                }
+            }
         }
 
-        return true;
+        if ($failures > 0) {
+            fwrite(STDERR, "Murmur lifecycle batch had {$failures} failed events.\n");
+        }
+
+        return $failures === 0;
+    }
+
+    /**
+     * Report an application failure without letting its handler interrupt the worker.
+     */
+    protected function reportFailure(Throwable $error): void
+    {
+        try {
+            report($error);
+        } catch (Throwable) {
+        }
     }
 
     /**

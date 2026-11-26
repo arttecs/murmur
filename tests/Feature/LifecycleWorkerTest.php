@@ -79,20 +79,24 @@ it('rejects a malformed lifecycle batch in its entirety and dispatches the next 
     'extra record field' => [fn ($open) => lifecycleWorkerLine([$open, [...$open, 'token' => 'bad']])],
 ]);
 
-it('reports a failed listener and acknowledges the next batch without retrying', function () {
+it('isolates listener failures within a batch and reports one exception and one summary', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-worker-');
 
     try {
-        $open = lifecycleWorkerRecord();
-        $close = lifecycleWorkerRecord(['durationSeconds' => 0.0, 'reason' => 'shutdown']);
-        $process = lifecycleWorkerProcess($file, lifecycleWorkerLine([$open, $close]).lifecycleWorkerLine([$close]), [
+        $records = array_map(fn (int $i) => lifecycleWorkerRecord([
+            'occurredAt' => $i,
+        ] + ($i % 2 === 1 ? ['durationSeconds' => 0.0, 'reason' => 'shutdown'] : [])), range(1, 7));
+        $process = lifecycleWorkerProcess($file, lifecycleWorkerLine(array_slice($records, 0, 5)).lifecycleWorkerLine([$records[6]]), [
+            'MURMUR_LIFECYCLE_BATCH' => '5',
             'MURMUR_TEST_LIFECYCLE_MODE' => 'fail-first',
         ]);
 
         expect($process->getExitCode())->toBe(0, $process->getErrorOutput());
         expect($process->getOutput())->toBe("error\nok\n");
-        expect(array_column(metricsTrace($file), 'phase'))->toBe(['opened', 'reported', 'closed']);
-        expect(metricsTrace($file, 'reported')[0]->message)->toBe('The lifecycle listener failed.');
+        expect($process->getErrorOutput())->toBe("Murmur lifecycle batch had 2 failed events.\n");
+        expect(array_column(metricsTrace($file, 'closed'), 'occurredAt'))->toBe([1, 3, 5, 7]);
+        expect(array_column(metricsTrace($file, 'opened'), 'occurredAt'))->toBe([2, 4]);
+        expect(array_column(metricsTrace($file, 'reported'), 'message'))->toBe(['The lifecycle listener failed.']);
     } finally {
         unlink($file);
     }
