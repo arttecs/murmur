@@ -61,7 +61,7 @@ class TokenVerifier
         $topics = $claims->topics ?? null;
         $expiresAt = $claims->exp ?? null;
 
-        if (! is_array($topics) || ! array_is_list($topics) || array_filter($topics, 'is_string') !== $topics) {
+        if (! is_array($topics)) {
             throw new InvalidToken('The subscription token must contain a list of topic strings.');
         }
 
@@ -69,6 +69,10 @@ class TokenVerifier
             throw new InvalidToken('The subscription token must contain an integer expiration timestamp.');
         }
 
-        return new Grant($topics, $expiresAt);
+        try {
+            return new Grant($topics, $expiresAt);
+        } catch (InvalidArgumentException $exception) {
+            throw new InvalidToken('The subscription token contains an invalid grant.', 0, $exception);
+        }
     }
 }

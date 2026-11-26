@@ -1,11 +1,18 @@
 <?php
 
+use Arttecs\Murmur\Server\Auth\Grant;
 use Arttecs\Murmur\Server\Auth\TokenIssuer;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
+use Arttecs\Murmur\Tests\Support\CallbackSubscriptionAuthorizer;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SlowReplayLog;
 use Arttecs\Murmur\Tests\Support\SseReader;
+use Firebase\JWT\JWT;
+use React\Promise\PromiseInterface;
+
+use function React\Async\delay;
+use function React\Promise\resolve;
 
 it('uses the union of verified tokens to authorize private topics', function () {
     $h = ServerHarness::start();
@@ -38,27 +45,37 @@ it('rejects token lists that are empty, malformed or over the topic limit', func
 })->with(['token=', 'token[]=TOKEN', 'token=TOKEN,,TOKEN', 'token=,TOKEN', 'token=TOKEN,', 'token=TOKEN,TOKEN,TOKEN']);
 
 it('closes at the first expiry that would leave a requested private topic uncovered', function () {
-    $h = ServerHarness::start();
-    $redundant = $h->token(['private-a', 'private-b'], ttl: 1);
-    $early = $h->token(['private-a'], ttl: 3);
-    $late = $h->token(['private-b'], ttl: 15);
-    $r = SseReader::open($h->url("/sse?topics=private-a,private-b&token={$redundant},{$early},{$late}"));
+    $redundantExpiry = null;
+    $authorizer = new CallbackSubscriptionAuthorizer(function (string $token) use (&$redundantExpiry): PromiseInterface {
+        $redundantExpiry ??= time() + 2;
+
+        return resolve(match ($token) {
+            'redundant' => new Grant(['private-a', 'private-b'], $redundantExpiry),
+            'early' => new Grant(['private-a'], $redundantExpiry + 2),
+            'late' => new Grant(['private-b'], $redundantExpiry + 15),
+        });
+    });
+    $h = ServerHarness::start(authorizer: $authorizer);
+    $r = SseReader::open($h->url('/sse?topics=private-a,private-b&token=redundant,early,late'));
 
     expect($r->status())->toBe(200);
     $r->start();
-    React\Async\delay(1.05);
+    delay(max(0.0, $redundantExpiry - microtime(true)) + 0.05);
     expect($h->metrics()->value('murmur_connections'))->toBe(1);
     expect(fn () => $r->next(3.0))->toThrow(RuntimeException::class, 'closed');
 });
 
 it('ignores expiry of unused tokens on a public-only subscription', function () {
-    $h = ServerHarness::start(['heartbeatSeconds' => 0.05]);
-    $token = $h->token(['private-a'], ttl: 1);
-    $r = SseReader::open($h->url("/sse?topics=news&token={$token}"));
+    $expiry = null;
+    $authorizer = new CallbackSubscriptionAuthorizer(function () use (&$expiry): PromiseInterface {
+        return resolve(new Grant(['private-a'], $expiry = time() + 2));
+    });
+    $h = ServerHarness::start(authorizer: $authorizer);
+    $r = SseReader::open($h->url('/sse?topics=news&token=unused'));
     $r->start();
 
-    React\Async\delay(1.05);
-    expect(json_decode((string) $h->pollHealth(1)->getBody(), true)['connections'])->toBe(1);
+    delay(max(0.0, $expiry - microtime(true)) + 0.05);
+    expect($h->metrics()->value('murmur_connections'))->toBe(1);
 });
 
 it('rejects invalid fresh topics and topics outside the subscription', function (string $fresh) {
@@ -104,4 +121,38 @@ it('preserves the trim gap when the missing history may belong to fresh topics',
     expect($r->next()['event'])->toBe('murmur.gap');
     expect($r->next()['id'])->toBe((string) $retained->id);
     expect($r->attached()['id'])->toBe((string) $retained->id);
+});
+
+it('rejects an oversized request head even within the token count limit', function () {
+    $h = ServerHarness::start();
+    $topics = array_map(fn (int $i): string => 'private-'.str_repeat('a', 150).$i, range(1, 30));
+    $tokens = array_map(fn (string $topic): string => $h->token([$topic]), $topics);
+    $path = '/sse?'.http_build_query(['topics' => implode(',', $topics), 'token' => implode(',', $tokens)]);
+
+    expect(SseReader::open($h->url($path))->status())->toBe(431);
+    expect($h->metrics()->value('murmur_connections_opened_total'))->toBe(0);
+});
+
+it('treats a signed token with invalid grant topics as an invalid credential', function () {
+    $secret = str_repeat('x', 32);
+    $h = ServerHarness::start(['secret' => $secret]);
+    $token = JWT::encode(['topics' => ["private-a\n"], 'exp' => time() + 60], $secret, 'HS256');
+
+    expect(SseReader::open($h->url("/sse?topics=news&token={$token}"))->status())->toBe(401);
+});
+
+it('withholds excluded events that arrive while the connection is held', function () {
+    $log = new SlowReplayLog(delaySeconds: 0.05);
+    $h = ServerHarness::start(log: $log);
+    $id = str_repeat('a', 32);
+    $cursor = $log->append(new Event('news', 'cursor'))->id;
+    $r = SseReader::open($h->url("/sse?topics=news&connection={$id}&lastEventId={$cursor}"));
+    $r->start(replaying: true);
+
+    $log->append(new Event('news', 'excluded', except: $id));
+    $visible = $log->append(new Event('news', 'visible'))->id;
+
+    expect($r->attached()['id'])->toBe((string) $cursor);
+    expect($r->next()['id'])->toBe((string) $visible);
+    expect($h->metrics()->value('murmur_events_sent_total'))->toBe(1);
 });

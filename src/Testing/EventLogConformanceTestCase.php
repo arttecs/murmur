@@ -7,27 +7,21 @@ use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use PHPUnit\Framework\TestCase;
 use React\EventLoop\LoopInterface;
-use React\EventLoop\StreamSelectLoop;
 use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use Throwable;
-
-use function React\Promise\Timer\timeout;
 
 /**
  * Verify a custom event log against Murmur's live and replay contract.
  */
 abstract class EventLogConformanceTestCase extends TestCase
 {
+    use AwaitsPromises;
+
     /**
      * The event log opened for the current test.
      */
     protected ?EventLog $log = null;
-
-    /**
-     * The isolated loop used by this test and its fixture.
-     */
-    protected LoopInterface $loop;
 
     /**
      * Create an empty log and an append callback using the supplied ReactPHP loop.
@@ -38,16 +32,6 @@ abstract class EventLogConformanceTestCase extends TestCase
      * @return array{EventLog, callable(Event): (EventId|PromiseInterface<EventId>)}
      */
     abstract protected function createEventLog(int $capacity, LoopInterface $loop): array;
-
-    /**
-     * Create a loop without sharing state with the application's tests.
-     */
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        $this->loop = new StreamSelectLoop;
-    }
 
     /**
      * Start live delivery and verify ordered events with increasing IDs for every subscriber.
@@ -131,6 +115,67 @@ abstract class EventLogConformanceTestCase extends TestCase
         $limited = $this->await($this->log->since($cursor, ['news'], 1));
         self::assertTrue($limited->gap);
         self::assertSame([], $limited->events);
+    }
+
+    /**
+     * An empty topic list samples the tail without replaying events from any topic.
+     */
+    public function test_samples_the_tail_with_no_replay_topics(): void
+    {
+        [$this->log, $append] = $this->createEventLog(10, $this->loop);
+        $cursor = new EventId(0, 0);
+        $empty = $this->await($this->log->since($cursor, [], 10));
+        self::assertNull($empty->tail);
+        self::assertSame([], $empty->events);
+
+        $id = $this->append($append, new Event('news', 'first'));
+        $sample = $this->await($this->log->since($cursor, [], 10));
+        self::assertEquals($id, $sample->tail);
+        self::assertSame([], $sample->events);
+    }
+
+    /**
+     * Hold the tail fixed when an append starts from the replay filter.
+     *
+     * The append can finish during the filter for a synchronous log or after the
+     * query for an asynchronous one. The fixture does not control its exact
+     * completion point on a remote server.
+     */
+    public function test_bounds_replayed_events_by_the_tail_sampled_before_filtering(): void
+    {
+        [$this->log, $append] = $this->createEventLog(3, $this->loop);
+        $cursor = $this->append($append, new Event('news', 'cursor'));
+        $this->append($append, new Event('news', 'first'));
+        $tail = $this->append($append, new Event('news', 'second'));
+        $pending = [];
+
+        $replay = $this->await($this->log->since($cursor, ['news'], 10, function (Event $event) use ($append, &$pending): bool {
+            if ($event->name === 'first') {
+                foreach (['later-one', 'later-two', 'later-three'] as $name) {
+                    $pending[] = $append(new Event('news', $name));
+                }
+            }
+
+            return true;
+        }));
+
+        self::assertCount(3, $pending);
+
+        foreach ($pending as $result) {
+            $id = $result instanceof PromiseInterface ? $this->await($result) : $result;
+            self::assertGreaterThan(0, $id->compare($tail));
+        }
+
+        self::assertEquals($tail, $replay->tail);
+
+        foreach ($replay->events as $event) {
+            self::assertNotNull($event->id);
+            self::assertLessThanOrEqual(0, $event->id->compare($replay->tail));
+        }
+
+        if (! $replay->gap) {
+            self::assertSame(['first', 'second'], array_column($replay->events, 'name'));
+        }
     }
 
     /**
@@ -244,50 +289,5 @@ abstract class EventLogConformanceTestCase extends TestCase
         $id = $append($event);
 
         return $id instanceof PromiseInterface ? $this->await($id) : $id;
-    }
-
-    /**
-     * Drive the fixture loop until a fixture promise settles.
-     *
-     * @template T
-     *
-     * @param  PromiseInterface<T>  $promise
-     * @return T
-     */
-    protected function await(PromiseInterface $promise): mixed
-    {
-        $settled = false;
-        $running = false;
-        $value = null;
-        $error = null;
-
-        $settle = function (mixed $result, ?Throwable $reason) use (&$settled, &$running, &$value, &$error): void {
-            $settled = true;
-            $value = $result;
-            $error = $reason;
-
-            if ($running) {
-                $this->loop->stop();
-            }
-        };
-
-        timeout($promise, 3.0, $this->loop)->then(
-            fn (mixed $result) => $settle($result, null),
-            fn (Throwable $reason) => $settle(null, $reason),
-        );
-
-        if (! $settled) {
-            $running = true;
-            $this->loop->run();
-            $running = false;
-        }
-
-        self::assertTrue($settled, 'The loop stopped before the conformance fixture promise settled.');
-
-        if ($error !== null) {
-            throw $error;
-        }
-
-        return $value;
     }
 }

@@ -15,9 +15,10 @@ interface EventLog
     /**
      * Replay up to the given number of events after the cursor, or report a gap.
      *
-     * Sample the tail before querying history and return it even if no topics were
-     * requested. Replay events up to that tail, applying the optional filter
-     * before counting them against the limit.
+     * Sample the current tail before querying history and return null for an
+     * empty log. With no requested topics, return the tail and no events.
+     * Replay events up to that tail, applying the optional filter before
+     * counting them against the limit.
      *
      * @param  list<string>  $topics
      * @param  (callable(Event): bool)|null  $filter

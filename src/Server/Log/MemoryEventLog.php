@@ -122,8 +122,11 @@ class MemoryEventLog implements EventLog
             return resolve(new Replay(false, [], $tail));
         }
 
+        $snapshot = $this->events;
+        $gap = $after->compare($this->floor) < 0;
+
         for ($offset = 0; $offset < $count; $offset++) {
-            $event = $this->events[($oldest + $offset) % $this->capacity];
+            $event = $snapshot[($oldest + $offset) % $this->capacity];
 
             if ($event->id->compare($after) > 0 && in_array($event->topic, $topics, true) && ($filter === null || $filter($event))) {
                 if (count($events) === $limit) {
@@ -134,7 +137,7 @@ class MemoryEventLog implements EventLog
             }
         }
 
-        return resolve(new Replay($after->compare($this->floor) < 0, $events, $tail));
+        return resolve(new Replay($gap, $events, $tail));
     }
 
     /**

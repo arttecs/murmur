@@ -38,6 +38,11 @@ use function React\Promise\resolve;
 class SseHandler
 {
     /**
+     * The longest grant expiry delay to schedule, in seconds (ten years).
+     */
+    protected const MAX_EXPIRY_DELAY_SECONDS = 315_360_000;
+
+    /**
      * Create an SSE handler that shares the server's hub, log, and loop.
      *
      * @param  Closure(): bool  $accepting
@@ -105,7 +110,7 @@ class SseHandler
 
         $authorization = all(array_map(
             fn (?string $token): PromiseInterface => resolve(null)->then(fn () => $this->authorizer->authorize($token, $topics)),
-            $tokens === [] ? [null] : $tokens,
+            $tokens === [] ? [null] : array_values(array_unique($tokens)),
         ));
 
         $decision = new Deferred(function (callable $resolve) use ($authorization): void {
@@ -180,8 +185,10 @@ class SseHandler
 
         $endStream = fn () => $this->endStream($stream, $client);
 
-        if ($expiresAt !== null) {
-            $timer = $this->loop->addTimer(max(0.0, $expiresAt - microtime(true)), $endStream);
+        $delay = $expiresAt === null ? null : $expiresAt - microtime(true);
+
+        if ($delay !== null && $delay <= self::MAX_EXPIRY_DELAY_SECONDS && $delay < intdiv(PHP_INT_MAX, 1000)) {
+            $timer = $this->loop->addTimer(max(0.0, $delay), $endStream);
             $connection->onClose(fn () => $this->loop->cancelTimer($timer));
         }
 

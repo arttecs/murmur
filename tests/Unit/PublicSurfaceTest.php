@@ -37,11 +37,12 @@ it('marks every type outside the public API as internal', function () {
 
         $relative = substr($file->getPathname(), strlen($directory), -4);
         $class = 'Arttecs\\Murmur\\'.str_replace('/', '\\', $relative);
-        $internal = preg_match('/@internal\b/', (new ReflectionClass($class))->getDocComment() ?: '') === 1;
+        $type = new ReflectionClass($class);
+        $internal = preg_match('/@internal\b/', $type->getDocComment() ?: '') === 1;
         $listed = in_array($class, $public, true)
             || str_starts_with($relative, 'Contracts/')
             || str_starts_with($relative, 'Exceptions/')
-            || str_starts_with($relative, 'Testing/');
+            || (str_starts_with($relative, 'Testing/') && ! $type->isTrait());
 
         if ($internal === $listed) {
             $unmarked[] = $class;
@@ -49,4 +50,15 @@ it('marks every type outside the public API as internal', function () {
     }
 
     expect($unmarked)->toBe([]);
+});
+
+it('keeps development-only async helpers outside package source', function () {
+    $directory = dirname(__DIR__, 2).'/src/';
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, FilesystemIterator::SKIP_DOTS));
+
+    foreach ($files as $file) {
+        if ($file->getExtension() === 'php') {
+            expect(file_get_contents($file->getPathname()))->not->toContain('React\Async');
+        }
+    }
 });
