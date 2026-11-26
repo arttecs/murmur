@@ -4,6 +4,7 @@ namespace Arttecs\Murmur;
 
 use Arttecs\Murmur\Broadcasting\MurmurBroadcaster;
 use Arttecs\Murmur\Console\Commands\ServeCommand;
+use Arttecs\Murmur\Console\Commands\StatusCommand;
 use Arttecs\Murmur\Contracts\Publisher;
 use Illuminate\Broadcasting\BroadcastManager;
 use Illuminate\Contracts\Foundation\Application;
@@ -59,7 +60,7 @@ class MurmurServiceProvider extends ServiceProvider
     }
 
     /**
-     * Register the broadcast driver, authorization route, configuration, and command.
+     * Register the broadcast driver, authorization route, configuration, and commands.
      */
     public function boot(): void
     {
@@ -76,7 +77,7 @@ class MurmurServiceProvider extends ServiceProvider
         ], 'murmur-config');
 
         if ($this->app->runningInConsole()) {
-            $this->commands([ServeCommand::class]);
+            $this->commands([ServeCommand::class, StatusCommand::class]);
         }
     }
 }

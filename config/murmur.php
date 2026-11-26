@@ -67,8 +67,8 @@ return [
     'public_url' => (string) env('MURMUR_PUBLIC_URL', 'http://127.0.0.1:8080'),
 
     /**
-     * Base URL Laravel uses for HTTP publishing. Set it to the address
-     * reachable from the Laravel application when the server is remote.
+     * Base URL Laravel uses for HTTP publishing and metrics. Set it to
+     * the address reachable from the Laravel application.
      */
     'publish_url' => (string) env('MURMUR_PUBLISH_URL', 'http://127.0.0.1:8080'),
 

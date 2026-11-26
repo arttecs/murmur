@@ -4,6 +4,7 @@ namespace Arttecs\Murmur;
 
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Exceptions\MetricsUnavailable;
 use Arttecs\Murmur\Exceptions\PublishFailed;
 use Arttecs\Murmur\Publishers\HttpPublisher;
 use Arttecs\Murmur\Publishers\RedisPublisher;
@@ -18,6 +19,8 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Http\Client\Factory;
 use InvalidArgumentException;
+use stdClass;
+use Throwable;
 
 /**
  * Publish events, create streams and issue subscription tokens.
@@ -151,6 +154,90 @@ class MurmurManager
         $issuer = new TokenIssuer((string) $this->config->get('murmur.secret'), fn () => now()->timestamp);
 
         return $issuer->issue($topics, $ttl ?? $this->config->get('murmur.token_ttl'));
+    }
+
+    /**
+     * Read the metrics of one server process at the configured publish URL.
+     *
+     * @return list<array{name: string, type: 'counter'|'gauge', help: string, labels: array<string, string>, value: int|float}>
+     *
+     * @throws MetricsUnavailable
+     */
+    public function metrics(): array
+    {
+        try {
+            $request = $this->app->make(Factory::class)
+                ->acceptJson()
+                ->timeout($this->config->get('murmur.http.timeout'))
+                ->connectTimeout($this->config->get('murmur.http.connect_timeout'))
+                ->withoutRedirecting();
+
+            if (($token = $this->config->get('murmur.server.metrics.token')) !== null) {
+                $request->withToken($token);
+            }
+
+            $response = $request->get(rtrim($this->config->get('murmur.publish_url'), '/').'/metrics');
+            $status = $response->status();
+            $body = $status === 200 ? $response->body() : '';
+        } catch (Throwable) {
+            throw new MetricsUnavailable('The metrics request to the Murmur server failed.');
+        }
+
+        if ($status !== 200) {
+            throw new MetricsUnavailable("The Murmur server returned HTTP status {$status} for the metrics request.");
+        }
+
+        return $this->decodeMetrics($body);
+    }
+
+    /**
+     * Decode a metrics response and validate its sample and label types.
+     *
+     * @return list<array{name: string, type: 'counter'|'gauge', help: string, labels: array<string, string>, value: int|float}>
+     *
+     * @throws MetricsUnavailable
+     */
+    protected function decodeMetrics(string $body): array
+    {
+        $samples = json_decode($body)->metrics ?? null;
+
+        if (! is_array($samples)) {
+            throw new MetricsUnavailable('The Murmur server returned malformed metrics.');
+        }
+
+        $metrics = [];
+
+        foreach ($samples as $sample) {
+            $labels = $sample->labels ?? null;
+            $value = $sample->value ?? null;
+
+            if (! is_string($sample->name ?? null)
+                || ! in_array($sample->type ?? null, ['counter', 'gauge'], true)
+                || ! is_string($sample->help ?? null)
+                || ($labels !== [] && ! $labels instanceof stdClass)
+                || (! is_int($value) && ! is_float($value))
+                || ! is_finite((float) $value)) {
+                throw new MetricsUnavailable('The Murmur server returned malformed metrics.');
+            }
+
+            $labels = (array) $labels;
+
+            foreach ($labels as $label => $text) {
+                if (! is_string($label) || ! is_string($text)) {
+                    throw new MetricsUnavailable('The Murmur server returned malformed metrics.');
+                }
+            }
+
+            $metrics[] = [
+                'name' => $sample->name,
+                'type' => $sample->type,
+                'help' => $sample->help,
+                'labels' => $labels,
+                'value' => $value,
+            ];
+        }
+
+        return $metrics;
     }
 
     /**
