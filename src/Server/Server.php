@@ -492,7 +492,10 @@ class Server
     }
 
     /**
-     * End streams in order, rearming early wakeups without skipping the final batch.
+     * End streams at an even pace over the spread, in connection order.
+     *
+     * A timer that fires early is rearmed, and the last stream ends no later than
+     * the end of the spread.
      */
     protected function drainStreams(float $spreadSeconds): void
     {

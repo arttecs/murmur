@@ -255,7 +255,7 @@ Keep `POST /publish` on a trusted network. A signed request is replayable within
 
 Without `ext-uv`, `ext-ev`, or `ext-event`, ReactPHP uses `stream_select()` and is limited to about 1000 sockets. `murmur:serve` prints a startup notice for this backend and refuses to start when `server.max_sockets` exceeds 1000. The defaults cap SSE connections at 900 and accepted sockets at 1000. To scale further, install one of the extensions and raise `ulimit -n` before increasing the connection and socket limits.
 
-With PHP 8.5, `ext-uv` 0.3.1 and `react/event-loop` 1.6.0, the extension emits a notice when ReactPHP stops a one-shot timer that has already fired. ReactPHP suppresses it during normal CLI execution. Pest's console printer can still show it during tests.
+`react/event-loop` 1.6.0 calls `@uv_timer_stop()` on one-shot timers that have already fired, and `ext-uv` (seen with 0.3.1) raises a notice that the `@` operator silences. Pest's printer still lists suppressed notices, so test runs on `ext-uv` report them even though they pass.
 
 Use `GET /health` for liveness. It returns HTTP 200 with `"status":"ok"` and the current number of SSE subscriptions in `connections`. Use `GET /ready` to decide where to route new subscriptions. It returns HTTP 200 with `{"status":"ready"}` while the listener and live log are ready, and 503 with `{"status":"unavailable"}` when the live log is unavailable or the server is draining. A Redis-backed server starts listening after it can resolve its starting cursor.
 

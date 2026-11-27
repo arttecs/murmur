@@ -189,7 +189,7 @@ class SseHandler
 
         $delay = $expiresAt === null ? null : $expiresAt - microtime(true);
 
-        if ($delay !== null && $delay <= self::MAX_EXPIRY_DELAY_SECONDS && $delay < intdiv(PHP_INT_MAX, 1000)) {
+        if ($delay !== null && $delay <= static::MAX_EXPIRY_DELAY_SECONDS && $delay < intdiv(PHP_INT_MAX, 1000)) {
             $this->scheduleExpiry($connection, $client, $expiresAt, $delay);
         }
 
@@ -236,15 +236,18 @@ class SseHandler
     }
 
     /**
-     * Recheck the grant's wall-clock deadline when the loop wakes the expiry timer.
+     * End the stream as expired once the grant's deadline has passed on the wall clock.
+     *
+     * A timer that fires early is rearmed for the remaining time. Closing the
+     * connection cancels the pending timer.
      */
     protected function scheduleExpiry(Connection $connection, ConnectionInterface $client, int $expiresAt, float $delay): void
     {
-        $timer = $this->loop->addTimer(max(0.0, $delay), function (TimerInterface $elapsed) use ($connection, $client, $expiresAt, &$timer): void {
+        $timer = $this->loop->addTimer(max(0.0, $delay), function (TimerInterface $fired) use ($connection, $client, $expiresAt, &$timer): void {
             $remaining = $expiresAt - microtime(true);
 
             if ($remaining > 0.0) {
-                $timer = $this->loop->addTimer(max(0.001, $remaining), $elapsed->getCallback());
+                $timer = $this->loop->addTimer(max(0.001, $remaining), $fired->getCallback());
 
                 return;
             }

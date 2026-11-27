@@ -35,6 +35,9 @@ interface EventLog
      * deliver an identifier at or below one already delivered to the listener.
      * Otherwise a numbered heartbeat may cause an idle connection to skip events.
      *
+     * A listener receives only events delivered after it registers. An event
+     * appended earlier that has not been delivered yet may still reach it.
+     *
      * @param  callable(Event): void  $listener
      */
     public function subscribe(callable $listener): void;
