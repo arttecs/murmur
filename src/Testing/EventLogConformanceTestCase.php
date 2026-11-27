@@ -239,19 +239,22 @@ abstract class EventLogConformanceTestCase extends TestCase
     }
 
     /**
-     * Deliver only events appended after a listener subscribed, and nothing after the log closes.
+     * Deliver new events to active listeners, and nothing after the log closes.
      */
     public function test_delivers_only_new_events_and_nothing_after_close(): void
     {
         [$this->log, $append] = $this->createEventLog(10, $this->loop);
         $early = [];
         $late = [];
+        $first = new Deferred;
         $delivered = new Deferred;
-        $this->log->subscribe(function (Event $event) use (&$early): void {
+        $this->log->subscribe(function (Event $event) use (&$early, $first): void {
             $early[] = $event->name;
+            $first->resolve(null);
         });
         $this->await($this->log->ready());
         $this->append($append, new Event('news', 'before'));
+        $this->await($first->promise());
         $this->log->subscribe(function (Event $event) use (&$late, $delivered): void {
             $late[] = $event->name;
             $delivered->resolve(null);
@@ -260,7 +263,7 @@ abstract class EventLogConformanceTestCase extends TestCase
         $this->await($delivered->promise());
 
         self::assertSame(['before', 'after'], $early);
-        self::assertSame(['after'], $late, 'A listener must not receive events appended before it subscribed.');
+        self::assertSame(['after'], $late, 'A listener must not receive events already delivered before it subscribed.');
 
         $this->log->close();
 
@@ -274,6 +277,7 @@ abstract class EventLogConformanceTestCase extends TestCase
         $this->await($settled->promise());
 
         self::assertSame(['before', 'after'], $early, 'A closed log must not deliver events.');
+        self::assertSame(['after'], $late, 'A closed log must not deliver events.');
     }
 
     /**
