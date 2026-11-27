@@ -74,7 +74,8 @@ it('rejects a present but malformed excluded connection identifier', function (m
 
 it('only accepts UTF-8 topics within the byte limit', function (string $topic, bool $valid) {
     $h = ServerHarness::start();
-    $response = $h->rawPublish('{"topic":"'.$topic.'","event":"updated"}');
+    $encoded = json_encode($topic) ?: '"'.$topic.'"';
+    $response = $h->rawPublish('{"topic":'.$encoded.',"event":"updated"}');
 
     expect($response->getStatusCode())->toBe($valid ? 202 : 422);
 })->with('wire topic boundaries');

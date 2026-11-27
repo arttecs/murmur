@@ -14,7 +14,7 @@ class Origin
      */
     public static function normalize(string $origin): ?string
     {
-        $pattern = '/\A([a-z][a-z0-9+.-]*):\/\/(\[[a-f0-9:.]+\]|[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.?)(?::([0-9]+))?\z/i';
+        $pattern = '/\A([A-Za-z][A-Za-z0-9+.-]*):\/\/(\[[A-Fa-f0-9:.]+\]|[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.?)(?::([0-9]+))?\z/';
 
         if (preg_match($pattern, $origin, $parts) !== 1) {
             return null;

@@ -1,5 +1,6 @@
 <?php
 
+use Arttecs\Murmur\Server\Http\Origin;
 use Arttecs\Murmur\Server\ServerConfig;
 
 it('rejects an invalid server setting and names it in the error', function (string $setting, int|float $value) {
@@ -45,4 +46,18 @@ it('normalizes explicit default ports to browser origins while retaining non-def
         'http://app.test:443',
         'https://[::1]',
     ]);
+});
+
+it('accepts uppercase ASCII origins under a locale with a different case table', function () {
+    $previous = setlocale(LC_CTYPE, '0');
+
+    if (setlocale(LC_CTYPE, 'kk_KZ.PT154', 'zh_HK.Big5HKSCS') === false) {
+        $this->markTestSkipped('None of the candidate locales are installed.');
+    }
+
+    try {
+        expect(Origin::normalize('HTTPS://EXAMPLE.COM:443'))->toBe('https://example.com');
+    } finally {
+        setlocale(LC_CTYPE, $previous);
+    }
 });

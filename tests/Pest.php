@@ -295,8 +295,20 @@ function metricsTrace(string $file, ?string $phase = null): array
     return array_values(array_filter($entries, fn (object $entry): bool => $phase === null || $entry->phase === $phase));
 }
 
-dataset('wire topic boundaries', function () {
+/**
+ * Exercise topic byte boundaries and every excluded ASCII control or whitespace byte.
+ */
+function datasetWireTopics(): Generator
+{
     yield 'invalid UTF-8' => [chr(255), false];
+    yield 'accent with A0 continuation' => ['notícias-à-vista', true];
+    yield 'emoji with A0 continuation' => ['😠', true];
+    yield 'NEL with 85 continuation' => ["a\u{0085}b", true];
+    yield 'non-ASCII whitespace and format characters' => ["a\u{00a0}\u{2028}\u{2029}\u{202e}\u{200b}\u{feff}b", true];
+
+    foreach ([...range(0, 32), 127] as $byte) {
+        yield sprintf('excluded ASCII byte 0x%02X', $byte) => ['a'.chr($byte).'b', false];
+    }
 
     foreach (['accent' => 'é', 'CJK' => '界', 'emoji' => '😀'] as $label => $character) {
         foreach ([199, 200, 201] as $length) {
@@ -305,4 +317,6 @@ dataset('wire topic boundaries', function () {
             yield "{$label} at {$length} bytes" => [$topic, $length <= 200];
         }
     }
-});
+}
+
+dataset('wire topic boundaries', datasetWireTopics(...));
