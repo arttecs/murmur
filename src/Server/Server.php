@@ -492,7 +492,7 @@ class Server
     }
 
     /**
-     * End streams at an even pace over the spread, in connection order, using a single timer.
+     * End streams in order, rearming early wakeups without skipping the final batch.
      */
     protected function drainStreams(float $spreadSeconds): void
     {
@@ -509,17 +509,23 @@ class Server
         $ended = 1;
         $startedAt = hrtime(true);
         $interval = max($spreadSeconds / $last, static::DRAIN_INTERVAL);
-        $this->streamEndTimer = $this->loop->addPeriodicTimer($interval, function () use ($connections, $last, $spreadSeconds, $startedAt, &$ended): void {
+        $nextAt = min($spreadSeconds, $interval);
+        $this->streamEndTimer = $this->loop->addTimer($nextAt, function (TimerInterface $timer) use ($connections, $last, $spreadSeconds, $startedAt, $interval, &$ended, &$nextAt): void {
+            $this->streamEndTimer = null;
             $elapsed = (hrtime(true) - $startedAt) / 1_000_000_000;
-            $due = min($last, (int) floor($elapsed / $spreadSeconds * $last)) + 1;
+            $due = $elapsed >= $spreadSeconds ? $last + 1 : (int) floor($elapsed / $spreadSeconds * $last) + 1;
 
             while ($ended < $due) {
                 $this->endStream($connections[$ended++]);
             }
 
-            if ($ended > $last && $this->streamEndTimer !== null) {
-                $this->loop->cancelTimer($this->streamEndTimer);
-                $this->streamEndTimer = null;
+            if ($ended <= $last && ! $this->closed) {
+                if ($elapsed >= $nextAt) {
+                    $nextAt = min($spreadSeconds, $elapsed + $interval);
+                }
+
+                $remaining = $nextAt - (hrtime(true) - $startedAt) / 1_000_000_000;
+                $this->streamEndTimer = $this->loop->addTimer(max(0.001, $remaining), $timer->getCallback());
             }
         });
     }
