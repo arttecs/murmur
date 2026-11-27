@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## Unreleased
 
+## 0.1.0 - 2026-11-27
+
 ### Added
 
 - ReactPHP SSE server with live subscriptions, heartbeats, bounded event replay, and graceful shutdown.
