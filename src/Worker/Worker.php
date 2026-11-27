@@ -69,6 +69,11 @@ class Worker
     protected bool $lifecycleDue = false;
 
     /**
+     * Whether a full batch already has a flush scheduled for the next tick.
+     */
+    protected bool $flushScheduled = false;
+
+    /**
      * The kind of message last handed to the worker.
      */
     protected ?string $lastSent = null;
@@ -196,6 +201,12 @@ class Worker
         $this->metrics = $metrics;
 
         if ($this->lifecycle !== null) {
+            $this->recorder->whenBatchReady($this->lifecycle->batch, $this->scheduleLifecycle(...));
+
+            if ($this->recorder->pending($this->lifecycle->batch)) {
+                $this->scheduleLifecycle();
+            }
+
             $this->lifecycleInterval = $this->loop->addPeriodicTimer($this->lifecycle->interval, function (): void {
                 $this->lifecycleDue = $this->recorder->pending();
                 $this->flush();
@@ -206,6 +217,22 @@ class Worker
             $this->interval = $this->loop->addPeriodicTimer($this->config->interval, $this->scheduleMetrics(...));
             $this->scheduleMetrics();
         }
+    }
+
+    /**
+     * Schedule one flush for a full batch without writing from the enqueue path.
+     */
+    protected function scheduleLifecycle(): void
+    {
+        if ($this->flushScheduled || ! $this->available()) {
+            return;
+        }
+
+        $this->flushScheduled = true;
+        $this->loop->futureTick(function (): void {
+            $this->flushScheduled = false;
+            $this->flush();
+        });
     }
 
     /**

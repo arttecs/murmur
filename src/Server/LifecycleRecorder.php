@@ -2,6 +2,7 @@
 
 namespace Arttecs\Murmur\Server;
 
+use Closure;
 use RuntimeException;
 use SplQueue;
 use Throwable;
@@ -21,11 +22,34 @@ class LifecycleRecorder
     protected ?SplQueue $records;
 
     /**
+     * The number of waiting records that makes a batch ready.
+     */
+    protected int $batchSize = 0;
+
+    /**
+     * The worker's callback for scheduling a flush when a full batch is ready.
+     *
+     * @var (Closure(): void)|null
+     */
+    protected ?Closure $batchReady = null;
+
+    /**
      * Create an empty queue with a fixed record capacity.
      */
     public function __construct(protected int $capacity)
     {
         $this->records = new SplQueue;
+    }
+
+    /**
+     * Notify the worker when an enqueue leaves a full batch waiting.
+     *
+     * @param  Closure(): void  $callback
+     */
+    public function whenBatchReady(int $batchSize, Closure $callback): void
+    {
+        $this->batchSize = $batchSize;
+        $this->batchReady = $callback;
     }
 
     /**
@@ -46,6 +70,10 @@ class LifecycleRecorder
         }
 
         $this->records->enqueue($record);
+
+        if ($this->batchReady !== null && $this->records->count() >= $this->batchSize) {
+            ($this->batchReady)();
+        }
 
         return (int) $full;
     }
@@ -120,6 +148,7 @@ class LifecycleRecorder
     {
         $dropped = $this->records?->count() ?? 0;
         $this->records = null;
+        $this->batchReady = null;
 
         return $dropped;
     }

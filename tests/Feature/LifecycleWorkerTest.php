@@ -8,6 +8,7 @@ use Arttecs\Murmur\Worker\LifecycleConfig;
 use Arttecs\Murmur\Worker\Worker;
 use Psr\Log\NullLogger;
 use React\EventLoop\Loop;
+use React\EventLoop\StreamSelectLoop;
 use Symfony\Component\Process\Process;
 
 use function React\Async\await;
@@ -132,7 +133,55 @@ it('isolates listener failures within a batch and reports one exception and one 
     }
 });
 
-it('flushes on its interval and caps ordered batches by count and by encoded size', function (bool $large, array $counts) {
+it('flushes 3000 records in idle bursts before the interval with one callback per burst', function () {
+    $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-burst-');
+    $loop = new StreamSelectLoop;
+    $ticks = (new ReflectionProperty($loop, 'futureTickQueue'))->getValue($loop);
+    $scheduled = (new ReflectionProperty($ticks, 'queue'))->getValue($ticks);
+    $pending = new ReflectionProperty(Worker::class, 'pending');
+    $recorder = new LifecycleRecorder(1000);
+    $metrics = new Metrics;
+    $hub = new Hub($metrics, $recorder);
+    config(['murmur.lifecycle.enabled' => true, 'murmur.lifecycle.interval' => 60]);
+    $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg('$ack = fopen("php://fd/3", "w"); while ($line = fgets(STDIN)) { file_put_contents($argv[1], $line, FILE_APPEND | LOCK_EX); fwrite($ack, "ok\n"); }').' '.escapeshellarg($file);
+    $worker = new Worker($loop, null, 'edge', $command, LifecycleConfig::from(config()), $recorder);
+
+    try {
+        $worker->launch();
+        $worker->start($metrics);
+
+        for ($burst = 0; $burst < 6; $burst++) {
+            $before = count($scheduled);
+            for ($i = 0; $i < 250; $i++) {
+                [$connection] = fakeConnection();
+                $hub->attach($connection, ['news']);
+                $connection->close();
+            }
+
+            expect($metrics->value('murmur_lifecycle_sent_total'))->toBe($burst * 500);
+            expect(count($scheduled) - $before)->toBe(1);
+            $watch = $loop->addPeriodicTimer(0.002, function () use ($worker, $pending, $loop, $recorder): void {
+                if (! $recorder->pending() && $pending->getValue($worker) === null) {
+                    $loop->stop();
+                }
+            });
+            $deadline = $loop->addTimer(2, $loop->stop(...));
+            $loop->run();
+            $loop->cancelTimer($watch);
+            $loop->cancelTimer($deadline);
+            expect(count(file($file)))->toBe(($burst + 1) * 5);
+            expect($metrics->value('murmur_lifecycle_sent_total'))->toBe(($burst + 1) * 500);
+        }
+
+        expect($metrics->value('murmur_lifecycle_dropped_total'))->toBe(0);
+    } finally {
+        $worker->stop()->then($loop->stop(...));
+        $loop->run();
+        unlink($file);
+    }
+});
+
+it('flushes partial batches on its interval and caps ordered batches by count and by encoded size', function (bool $large, array $counts) {
     $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-batch-');
     $loop = Loop::get();
     $recorder = new LifecycleRecorder(400);

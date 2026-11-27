@@ -182,7 +182,7 @@ it('sends every final batch for connections closed together on shutdown', functi
         'MURMUR_METRICS_STORE' => '',
         'MURMUR_LIFECYCLE_EVENTS' => 'true',
         'MURMUR_LIFECYCLE_INTERVAL' => '60',
-        'MURMUR_LIFECYCLE_BATCH' => '2',
+        'MURMUR_LIFECYCLE_BATCH' => '4',
         'MURMUR_TEST_LIFECYCLE_FILE' => $file,
         'MURMUR_SHUTDOWN_SPREAD' => '0',
     ]);
