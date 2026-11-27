@@ -91,20 +91,23 @@ it('reports each subscription that loses its tail sample or replay on the shared
     $socket = new SocketServer('127.0.0.1:0');
     $log = new RedisEventLog(str_replace('tcp://', 'redis://', $socket->getAddress()), 'test', queryTimeoutSeconds: 0.25);
     $clients = [];
+    $stalled = new Deferred;
     $queued = new Deferred;
 
-    $socket->on('connection', function (ConnectionInterface $client) use (&$clients, $queued, $stalledCommand): void {
+    $socket->on('connection', function (ConnectionInterface $client) use (&$clients, $stalled, $queued, $stalledCommand): void {
         $clients[] = $client;
         $shared = count($clients) === 2;
         $parser = (new ProtocolFactory)->createRequestParser();
         $pending = 0;
 
-        $client->on('data', function (string $data) use ($parser, $client, $shared, $queued, $stalledCommand, &$pending): void {
+        $client->on('data', function (string $data) use ($parser, $client, $shared, $stalled, $queued, $stalledCommand, &$pending): void {
             foreach ($parser->pushIncoming($data) as $message) {
                 $command = strtoupper($message->getValueNative()[0]);
 
                 if ($shared && ($pending > 0 || $command === $stalledCommand)) {
-                    if (++$pending === 2) {
+                    if (++$pending === 1) {
+                        $stalled->resolve(null);
+                    } elseif ($pending === 2) {
                         $queued->resolve(null);
                     }
 
@@ -123,6 +126,7 @@ it('reports each subscription that loses its tail sample or replay on the shared
         $path = $h->url('/sse?topics=news');
         $first = SseReader::open($path, ['Last-Event-ID' => '0-0']);
         $first->start(replaying: true);
+        await(timeout($stalled->promise(), 1.0));
         $second = SseReader::open($path);
         $second->start(replaying: true);
         await(timeout($queued->promise(), 1.0));
