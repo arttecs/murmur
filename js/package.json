@@ -4,6 +4,16 @@
   "description": "JavaScript client for Murmur server-sent events.",
   "type": "module",
   "license": "MIT",
+  "author": "Arthur Purcino (https://github.com/pvrcino)",
+  "homepage": "https://github.com/arttecs/murmur/tree/main/js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arttecs/murmur.git",
+    "directory": "js"
+  },
+  "bugs": {
+    "url": "https://github.com/arttecs/murmur/issues"
+  },
   "keywords": [
     "sse",
     "server-sent-events",

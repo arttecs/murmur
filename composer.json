@@ -11,6 +11,18 @@
     ],
     "type": "library",
     "license": "MIT",
+    "homepage": "https://github.com/arttecs/murmur",
+    "support": {
+        "issues": "https://github.com/arttecs/murmur/issues",
+        "source": "https://github.com/arttecs/murmur",
+        "security": "https://github.com/arttecs/murmur/security/policy"
+    },
+    "authors": [
+        {
+            "name": "Arthur Purcino",
+            "homepage": "https://github.com/pvrcino"
+        }
+    ],
     "require": {
         "php": "^8.3",
         "react/http": "^1.12",
