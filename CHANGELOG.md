@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## Unreleased
 
+### Changed
+
+- The documentation has moved to the [Murmur website](https://murmur.arttecs.com/docs/) and is maintained in [arttecs/murmur-docs](https://github.com/arttecs/murmur-docs).
+
 ## 0.1.2 - 2026-11-27
 
 ### Fixed

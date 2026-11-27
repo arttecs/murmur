@@ -7,15 +7,17 @@
 
 # Murmur JavaScript client
 
+Subscribe to public and private Laravel channels over Server-Sent Events with the Murmur JavaScript client.
+
 Install the ESM-only package with npm.
 
 ```sh
 npm install @arttecs/murmur
 ```
 
-## Channels
+## Subscribe to a channel
 
-Create a client with your Murmur server's SSE endpoint. Public and private channels share one connection.
+Create a client with your Murmur server's SSE endpoint.
 
 ```js
 import { Murmur } from '@arttecs/murmur'
@@ -24,215 +26,6 @@ const murmur = new Murmur({ url: 'https://events.example.com/sse' })
 
 const news = murmur.channel('news')
 news.listen('.updated', data => console.log(data))
-
-murmur.private('orders.42')
-  .listen('OrderShipped', data => console.log(data))
-```
-
-`channel('news')` subscribes to `news` and `private('orders.42')` subscribes to `private-orders.42`. Each callback receives the event payload for its channel.
-
-Joining or leaving a channel rebuilds the shared connection with the current topics and replay cursor. On attempts with a cursor, the client sends a pending topic as `fresh` until the server acknowledges it with `murmur.attached`. A fresh topic starts strictly after the sampled log tail. After attachment, the topic participates in ordinary replay and can receive retained events from an outage. Pending joins are tracked by wire topic, so leaving one alias preserves attachment while another alias remains joined.
-
-A cursorless connection skips replay of stored history. Before the attach marker, it can receive events the server dispatched while sampling the log tail. With Redis, that can include events published shortly before the request. Wait for `attached` before fetching initial state. Matching events published after you receive the marker are delivered while the subscription remains active, subject to sender exclusion and any reported history loss.
-
-Each retry opens a new EventSource with the current cursor, credentials, and pending joins. If the stream ends before the attach marker, the retry uses the client's backoff and the unacknowledged joins remain pending. A numbered attach marker or a numbered heartbeat after attachment replaces the saved cursor even when its ID is lower. Heartbeats stay out of application callbacks and event counts.
-
-The default namespace is `App.Events`. The client resolves `OrderShipped` to `App\Events\OrderShipped`, converting namespace dots to backslashes. Set `namespace` to use a different namespace. Prefix an event name with a dot to use the literal name. For example, `.updated` listens for `updated`.
-
-Laravel Echo converts dots in relative class names such as `Sub.Event` to namespace separators. Murmur applies the configured namespace prefix and preserves those dots. To listen for a class in the `Sub` sub-namespace, pass `'Sub\\Event'` in JavaScript.
-
-Use `murmur.on(event, callback)` to listen for these client events. It returns a function that removes the listener.
-
-- `connected` fires when the shared EventSource opens.
-- `attached` fires each time the server confirms attachment, after tail sampling and any replay on that connection. Register the listener before joining channels if you need the first notification.
-- `disconnected` fires when a shared transport or authorization attempt fails and enters backoff. Leaving the last channel, having every topic denied, exceeding the URL budget, and closing the client do not fire this event.
-- `unauthorized` fires as `(status, channelName)` for each denied private channel. The name is the one passed to `murmur.private()`. Register `murmur.private(name).error(callback)` to receive the numeric status for just that channel.
-- `error` receives an `Error` if the shared subscription URL exceeds the request budget or the server announces an unexpected protocol. The first protocol mismatch is reported once and the client continues.
-- `gap` fires when the server reports a gap in replay. Refresh any state that depends on the missing events.
-
-The first retry uses `retryMs` as its base delay. For consecutive failures after the first, the base delay doubles up to `maxRetryMs`. Each retry adds random jitter of up to `retryJitter` times its base delay. The attach marker resets the retry sequence. An EventSource that opens and then ends before attachment counts as a failed attempt. Native EventSource handles SSE `retry:` hints internally, so Murmur's replacement connections use the configured retry settings.
-
-`news.stopListening('.updated')` removes the callbacks for that event. `murmur.leave('orders.42')` leaves channels joined under that name. `murmur.close()` closes the channel connection and all streams created by the client, and cancels their retries.
-
-## Sender exclusion
-
-`murmur.socketId()` returns the shared connection ID announced by Murmur. It returns `undefined` until that first announcement, which follows the EventSource open event. The client reuses the ID across reconnects.
-
-Send the ID as `X-Socket-ID` on Laravel requests that broadcast with `toOthers()`. Once the ID is available, use either of these forms.
-
-```js
-fetch('/orders/42/ship', { method: 'POST', headers: { 'X-Socket-ID': murmur.socketId() ?? '' } })
-axios.post('/orders/42/ship', {}, { headers: { 'X-Socket-ID': murmur.socketId() ?? '' } })
-```
-
-## Options
-
-Pass these options to `new Murmur(options)`.
-
-| Field | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `url` | `string` | Required | SSE endpoint for the shared channel connection. |
-| `authEndpoint` | `string` | `'/broadcasting/auth'` | Endpoint used by the built-in authorization request. |
-| `auth` | `AuthOptions` | `undefined` | Headers and credentials for the built-in authorization request. |
-| `authorizer` | `Authorizer` | `undefined` | Function that issues one or more tokens for private topics in place of the built-in request. |
-| `namespace` | `string` | `'App.Events'` | Dotted namespace for unqualified channel event names. |
-| `retryMs` | `number` | `3000` | Base delay before the first retry, in milliseconds. Must be finite and greater than zero. |
-| `maxRetryMs` | `number` | `30000`, or `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be finite and at least `retryMs`. |
-| `retryJitter` | `number` | `0.25` | Maximum fraction of the base delay added as random jitter on each retry. Must be finite and between 0 and 1, inclusive. Set to `0` to disable jitter. |
-| `tokenRefreshMarginSeconds` | `number` | `30` | Remaining lifetime a cached token must exceed to be reused, in seconds. Must be finite and non-negative. |
-| `streamMaxFailures` | `number` | `8` | Consecutive attempts without attachment or replay progress before an independent stream expires. Must be an integer of at least 1. |
-| `fetch` | `typeof fetch` | `globalThis.fetch` | Fetch implementation for the built-in authorization request. |
-| `EventSource` | `typeof EventSource` | `globalThis.EventSource` | Constructor used for the shared connection and independent streams. |
-| `withCredentials` | `boolean` | `false` | Set to `true` to pass `{ withCredentials: true }` to `EventSource` for the shared connection and streams. |
-
-## Authorization
-
-For each private channel that needs a token, the client sends a JSON `POST` to `authEndpoint` with a body such as `{ "channel_name": "private-orders.42" }`. Once the shared connection ID is known, the body also includes `socket_id`. Up to four requests run concurrently per connection attempt. A change that replaces a pending attempt or closes the client aborts its outstanding requests. By default the client uses `credentials: 'include'`, the `Accept: application/json` and `Content-Type: application/json` headers, and the URL-decoded `XSRF-TOKEN` cookie as `X-XSRF-TOKEN` when the cookie is readable. For Laravel session authentication, make the session and CSRF cookies available and configure CORS if the endpoint is cross-origin.
-
-`auth.headers` accepts a `Record<string, string>` or a function that returns one synchronously or asynchronously. The client calls the function for each token request and merges the headers over the defaults case-insensitively. A supplied `X-XSRF-TOKEN` takes precedence over the cookie. `auth.credentials` is a Fetch `RequestCredentials` value and defaults to `'include'`. Setting `credentials: 'omit'` skips reading the `XSRF-TOKEN` cookie. Use `withCredentials` to configure credentials on the SSE connections.
-
-For an API that uses bearer tokens, read the current access token when authorization runs.
-
-```js
-const murmur = new Murmur({
-  url: 'https://events.example.com/sse',
-  authEndpoint: 'https://api.example.com/realtime/token',
-  auth: {
-    credentials: 'omit',
-    headers: () => {
-      const token = sessionStorage.getItem('access_token')
-      if (!token) {
-        throw new Error('Sign in to authorize private channels')
-      }
-      return { Authorization: `Bearer ${token}` }
-    },
-  },
-})
-```
-
-A successful request returns `{ token, expires_at }`, with expiry in Unix seconds. The client caches credentials by private channel and normally refreshes them when their remaining lifetime reaches `tokenRefreshMarginSeconds` or less on a new attempt. Leaving a topic drops its cached credentials.
-
-The client counts SSE failures before the EventSource opens when the attempt sent credentials and the failure either reports HTTP 401 or 403 or exposes no status. Native EventSource does not expose HTTP status. The client drops the credentials sent on the second, fourth, eighth, and subsequent power-of-two failures. If the first counted failure exposes 401 or 403, the client drops credentials immediately and then on the fourth, eighth, and subsequent power-of-two failures. Known failures with other statuses leave this count and the cache unchanged. An attach marker resets the schedule. The normal expiry margin still applies on every attempt.
-
-Authorization responses with status 408, 425, or 429 retry with backoff, as do 5xx responses, network errors, and invalid token responses. A valid `Retry-After` header in whole seconds or IMF-fixdate form, such as `Sun, 06 Nov 1994 08:49:37 GMT`, sets a minimum delay for the failed attempt, capped at `maxRetryMs`. Other 4xx responses, including 401, 403, 419, and 422, leave the affected channel out of the shared connection. Call `murmur.reauthorize('orders.42')` to retry a denied channel, call `murmur.reauthorize()` to retry all denied channels, or leave and rejoin the channel.
-
-To control how tokens are requested, pass an `authorizer(channels, signal)` function. Whenever an eligible private topic needs credentials, the function receives all eligible private wire topic names, including those with cached credentials. A rejection with a numeric 4xx `status`, except for 408, 425, and 429, denies only the topics without valid cached credentials. The client can keep unexpired batch credentials on a rejection even if it was attempting to refresh them. Other rejections retry with backoff. Reject with the HTTP `Response` to pass its `Retry-After` header through to the retry logic. The custom authorizer takes over requests from `authEndpoint`, `auth`, and the client's `fetch` option.
-
-Resolve with one token result or an array of results. Use `{ token, expires_at, channels }` to declare the full wire topic names covered by each token. When `channels` is omitted, the client treats the token as covering the whole batch. Multiple tokens are cached as a group only when every token in the result omits `channels`. The result must cover every requested topic the application still grants. A successful result denies each uncovered topic with a 403, discards its cached credentials, and leaves it out of the SSE request. An empty result array denies the entire batch.
-
-```js
-const murmur = new Murmur({
-  url: 'https://events.example.com/sse',
-  authorizer: async (channels, signal) => {
-    const response = await fetch('/api/realtime/authorize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topics: channels }),
-      signal,
-    })
-    if (!response.ok) {
-      throw response
-    }
-    return response.json()
-  },
-})
-```
-
-The server defaults to 50 topics per connection and has an 8 KiB limit for the request line and headers. The client limits the UTF-8 byte length of the path and query to 6 KiB to reserve room for headers. It checks the largest possible reconnect URL, reserving a 32-character `connection` ID, a `lastEventId` with two 18-digit components, and a `fresh` list containing every topic.
-
-| Example wire topic | Guaranteed client capacity | Largest reconnect URL path and query |
-| --- | ---: | ---: |
-| `private-orders.0042` | 30 | 5,991 bytes |
-| `private-orders.00000000-0000-4000-8000-000000000042` | 19 | 5,868 bytes |
-| `private-a` | 37 | 6,142 bytes |
-
-These measurements use `/sse`, distinct topics of each example's length, the client's URL encoding, the full reconnect reservation, and one default-shaped HS256 JWT per topic with a 10-digit Unix expiry. The guaranteed capacity is lower than what a single request can carry. Extra query parameters or longer tokens take up part of the same budget. If a subscription exceeds that budget, the client emits `error` and waits for a subscription change. For pages with many private channels, configure a custom `authorizer` that returns one multi-topic token.
-
-## Streams
-
-Pass the subscription URL returned by Laravel's `$stream->url()` to `murmur.stream(url)`. Each stream opens its own connection.
-
-```js
-const stream = murmur.stream(subscriptionUrl)
-  .on('token', data => console.log(data))
-  .on('end', () => console.log('Stream finished'))
-  .on('gap', () => console.log('Some events are missing'))
-  .on('expired', () => console.log('Stream stopped after repeated failures'))
-```
-
-Stream event names are literal, and callbacks receive the event payload. The names `end`, `gap`, and `expired` are reserved for the control callbacks, so a server event with one of those names cannot be consumed through a stream. The `end`, `gap`, and `expired` callbacks take no arguments.
-
-- `end` fires when the server sends `murmur.end`. The stream closes permanently.
-- `gap` fires when the server sends `murmur.gap` to signal missing events.
-- `expired` fires and the stream closes after `maxFailures` consecutive attempts that end without attachment or replay progress. A replayed event that advances the cursor resets the expiry count. Retry backoff keeps growing until the attach marker. A drop after attachment starts a new retry sequence and leaves the full allowance of eight attempts by default. A private stream URL carries a fixed token, so retries keep using that token.
-
-With the defaults and immediate failures, expiry takes 135–168.75 seconds when the first connection never attaches, or 165–206.25 seconds after an attached connection drops. These ranges include the client retry delays and jitter. Time spent waiting for connections to open or fail adds to the total. Set `streamMaxFailures` on the client or `maxFailures` on an individual stream to change the number of attempts. Tune `retryMs`, `maxRetryMs`, and `retryJitter` to change the delay between attempts.
-
-Pass `StreamOptions` as the optional second argument to `murmur.stream(url, options)`. Each field is an optional number and follows the validation rules of its client default.
-
-| Field | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `retryMs` | `number` | Client's `retryMs` | Base delay before the first retry in milliseconds. |
-| `maxRetryMs` | `number` | Client's `maxRetryMs`, or this stream's `retryMs` when that is larger | Cap on the base retry delay before jitter, in milliseconds. Must be at least this stream's `retryMs`. |
-| `retryJitter` | `number` | Client's `retryJitter` | Maximum jitter fraction on each retry. |
-| `maxFailures` | `number` | Client's `streamMaxFailures` | Limit on consecutive attempts without attachment or replay progress for this stream. |
-
-The first connection uses the URL as supplied. On reconnect, the client updates only the `lastEventId` query parameter. The read-only `stream.lastEventId` starts with the URL's valid cursor, if present, and tracks IDs from listened-to events, attach markers, and numbered heartbeats after attachment. It is `undefined` when the stream has no cursor and remains readable after the stream closes.
-
-To resume after `expired`, get a subscription URL for the same stream from your application and replace its `lastEventId` query parameter with the saved cursor. A fresh URL also provides a fresh token for a private stream. Pass the updated URL to `murmur.stream()` and register the listeners on the new stream. A new EventSource starts without a `Last-Event-ID` header. If a custom transport sends a valid `Last-Event-ID` header, the server gives it precedence over the query parameter.
-
-```js
-function consumeStream(subscriptionUrl, lastEventId) {
-  const url = new URL(subscriptionUrl, window.location.href)
-  if (lastEventId !== undefined) {
-    url.searchParams.set('lastEventId', lastEventId)
-  }
-
-  const stream = murmur.stream(url.href)
-    .on('token', data => console.log(data))
-    .on('gap', () => console.log('Some events are missing'))
-
-  stream.on('expired', async () => {
-    try {
-      consumeStream(await getSubscriptionUrl(), stream.lastEventId)
-    } catch (error) {
-      console.error('Could not resume the stream', error)
-    }
-  })
-  return stream
-}
-
-consumeStream(await getSubscriptionUrl())
-```
-
-This example resumes every time the stream expires, without a limit. Add your own limit or delay if the application should eventually give up.
-
-Call `stream.close()` to stop the stream and cancel any pending retry.
-
-## Statistics
-
-`murmur.stats()` returns a fresh `MurmurStats` snapshot. Cumulative counters survive reconnects. Closing the client clears the live state and preserves the final counters, connection ID, replay cursor, and event timestamp.
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `connected` | `boolean` | Whether the shared connection is open. |
-| `connections` | `number` | How many times the shared connection opened. |
-| `disconnections` | `number` | Shared connection failures that enter backoff and unexpected drops. |
-| `events` | `number` | Valid data envelopes received on a listened-to shared event name and passed to channel dispatch, once per received event. |
-| `gaps` | `number` | `murmur.gap` signals received on the shared connection. |
-| `tokenRequests` | `number` | Authorization attempts, including custom authorizer calls and attempts cancelled before completing. Reusing a cached token skips the request. |
-| `tokenFailures` | `number` | Authorization attempts that failed before cancellation, including invalid token responses. An accepted partial grant is a successful request. |
-| `channels` | `number` | Currently joined channels. |
-| `streams` | `number` | Independent streams that have started and have yet to close, including streams waiting to retry. |
-| `lastEventId` | `string \| undefined` | Shared replay cursor. It tracks IDs from attach markers, listened-to data events, and numbered heartbeats after attachment. |
-| `connectionId` | `string \| undefined` | The most recently announced ID of the shared connection. |
-| `lastEventAt` | `number \| undefined` | `Date.now()` when the last valid shared data event was received. |
-
-```js
-murmur.on('disconnected', () => {
-  const { disconnections, lastEventAt } = murmur.stats()
-  console.log({ disconnections, lastEventAt })
-})
 ```
 
 ## Laravel Echo
@@ -259,68 +52,12 @@ echo.private('orders.1')
   .listen('OrderShipped', event => console.log(event))
 ```
 
-| Echo option | Murmur behavior |
-| --- | --- |
-| `broadcaster` | Set to `MurmurConnector` to use SSE. |
-| `url` | Required SSE endpoint. |
-| `authEndpoint` | Private token endpoint. Defaults to `/broadcasting/auth`. |
-| `auth.headers`, `auth.credentials` | Headers and Fetch credential mode for the token request. |
-| `csrfToken` | CSRF token to use when `window.Laravel.csrfToken` is empty or absent. |
-| `bearerToken` | A non-empty token sets `Authorization: Bearer <token>`, replacing any supplied authorization header. |
-| `authorizer` | Replaces the built-in token request. Accepts private wire topic names and an abort signal. |
-| `withCredentials` | Sends browser credentials with SSE requests. |
-| `namespace` | Defaults to `App.Events`. Set to `false` to omit the prefix. |
-| `retryMs`, `maxRetryMs`, `retryJitter` | Control the retry delay with the same defaults as the standalone client. |
-| `tokenRefreshMarginSeconds` | Controls when a cached private token needs refreshing. |
-| `streamMaxFailures` | Sets the failure limit for independent streams opened on the underlying client. |
-| `fetch`, `EventSource` | Override the Fetch implementation for token requests and the EventSource constructor for SSE. |
+## Documentation
 
-The built-in token request uses Murmur's JSON and CSRF cookie conventions. For each built-in token request, the connector resolves `X-CSRF-TOKEN` from the first non-empty value among `window.Laravel.csrfToken`, the `csrfToken` option, and the `content` attribute of `<meta name="csrf-token">`. That value overrides a supplied `X-CSRF-TOKEN` header. After a 419, refresh the application's CSRF token and call `echo.connector.murmur.reauthorize(name)` with the private channel name. A custom `authorizer` handles its own headers. Echo 2.6.3's TypeScript declarations specify static authorization headers. To pass a header provider or set `auth.credentials`, build a `MurmurConnectorOptions` value and cast the Echo options. [Authorization options](#authorization)
+- [JavaScript client](https://murmur.arttecs.com/docs/javascript/)
+- [JavaScript authorization](https://murmur.arttecs.com/docs/javascript-authorization/)
+- [Laravel Echo connector](https://murmur.arttecs.com/docs/laravel-echo/)
 
-```ts
-import Echo, { type EchoOptions } from 'laravel-echo'
-import { MurmurConnector, type MurmurConnectorOptions } from '@arttecs/murmur/echo'
+## License
 
-const options: MurmurConnectorOptions = {
-  url: 'https://events.example.com/sse',
-  auth: { credentials: 'omit', headers: () => ({ Authorization: `Bearer ${currentToken()}` }) },
-}
-
-const echo = new Echo<'function'>({ broadcaster: MurmurConnector, ...options } as EchoOptions<'function'>)
-```
-
-Laravel Echo 2.6.3's axios, Vue, jQuery, and Turbo interceptors send the announced ID as `X-Socket-ID` once it is available. Before the first announcement, `echo.socketId()` returns an empty string. The first three interceptors skip the header in that case, while Turbo sends an empty header value.
-
-Public channels, private channels, and Laravel broadcast notifications share one SSE connection. Event names follow Echo's formatter. For example, `Sub.OrderShipped` resolves to `App\Events\Sub\OrderShipped`, while `.order.shipped` listens for the literal `order.shipped`. An initial backslash also marks a literal event name.
-
-- `stopListening(event, callback)` removes one callback. Omit the callback to remove all listeners for the event. `stopListeningForNotification(callback)` removes one notification callback.
-- Register `subscribed(callback)` before attachment to receive the initial notification. It fires on the first `murmur.attached` that includes the channel and on successful attachment after a connection failure. Joining or leaving another channel preserves the existing channels' subscription state. Wait for this callback before fetching initial state.
-- On a private channel, `error(callback)` receives that channel's numeric authorization denial status. Other authorized and public channels remain eligible for the shared connection. Retry a denied channel through `echo.connector.murmur.reauthorize(name)` or by leaving and rejoining it.
-- `leave('orders.1')` leaves both public and private variants. `leaveChannel('private-orders.1')` leaves just the private one. The `private-` prefix identifies an authorized topic.
-- `echo.connector.murmur` exposes the underlying client for statistics, streams, and replay gaps. In TypeScript, read `echo.connector` into an `unknown` variable and narrow it with `instanceof MurmurConnector` to access the typed client.
-- `echo.disconnect()` closes the shared connection, cancels retries, and closes independent streams. Call `echo.connect()` to create a fresh connector, then rejoin the channels you need.
-
-`connectionStatus()` reports the shared connection's state. `onConnectionChange(callback)` on the connector returns an unsubscribe function.
-
-| Status | Meaning |
-| --- | --- |
-| `disconnected` | No shared connection is needed, the client is closed, or every joined topic is unauthorized. |
-| `connecting` | The client is preparing or opening the stream after a subscription change or explicit reauthorization. |
-| `connected` | The shared EventSource is open. Attachment is reported through `subscribed(callback)`. |
-| `reconnecting` | An attempt failed or the connection dropped, and the client is retrying with backoff. |
-| `failed` | The shared subscription URL exceeds the request budget. Change the subscription to try again. |
-
-Murmur's Echo connector has these limitations.
-
-- Presence and encrypted private channels throw an unsupported-channel error.
-- Client events are unavailable. `whisper`, `listenForWhisper`, and `stopListeningForWhisper` are chainable no-ops; the first `whisper` or `listenForWhisper` call on a connector prints one console warning.
-- Wildcard event listeners are unavailable. Register named events with `listen`.
-
-`@laravel/echo-react` and `@laravel/echo-vue` 2.6.3 were checked once by hand with the built connector in jsdom using a fake EventSource; that check is not part of this repository's test suite. In both packages, mounted consumers received public events, private events, and notifications. The connection-status hook reached `connected`, and unmounting released the channels and closed the connection.
-
-## Development
-
-- The build and test tooling requires Node.js `^22.18.0 || ^24.11.0 || >=26.0.0`.
-- `npm test` runs the unit tests.
-- `npm run test:integration` runs the client against the real Murmur server. It requires PHP on `PATH` and `composer install` at the repository root.
-- `npm run build` builds the ESM package and its TypeScript declarations.
+Murmur is released under the [MIT License](https://github.com/arttecs/murmur/blob/main/js/LICENSE).
