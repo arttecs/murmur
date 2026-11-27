@@ -133,13 +133,15 @@ it('bounds unsettled authorization by the request deadline and ignores a late gr
     expect($h->metrics()->value('murmur_errors_total'))->toBe(0);
 });
 
-it('closes a subscription when the custom grant expires', function () {
-    $authorizer = new CallbackSubscriptionAuthorizer(fn (): PromiseInterface => resolve(new Grant(['private-a'], time() + 2)));
+it('closes a subscription no earlier than its custom grant expires', function () {
+    $expiresAt = time() + 2;
+    $authorizer = new CallbackSubscriptionAuthorizer(fn (): PromiseInterface => resolve(new Grant(['private-a'], $expiresAt)));
     $h = ServerHarness::start(authorizer: $authorizer);
     $r = SseReader::open($h->url('/sse?topics=private-a&token=opaque'));
     expect($r->status())->toBe(200);
     $r->start();
     expect(fn () => $r->next(3.0))->toThrow(RuntimeException::class, 'closed');
+    expect(time())->toBeGreaterThanOrEqual($expiresAt);
 });
 
 it('refuses an already expired custom grant', function () {

@@ -21,6 +21,7 @@ use Closure;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use React\EventLoop\LoopInterface;
+use React\EventLoop\TimerInterface;
 use React\Http\Message\Response;
 use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
@@ -189,8 +190,7 @@ class SseHandler
         $delay = $expiresAt === null ? null : $expiresAt - microtime(true);
 
         if ($delay !== null && $delay <= self::MAX_EXPIRY_DELAY_SECONDS && $delay < intdiv(PHP_INT_MAX, 1000)) {
-            $timer = $this->loop->addTimer(max(0.0, $delay), fn () => $endStream('expired'));
-            $connection->onClose(fn () => $this->loop->cancelTimer($timer));
+            $this->scheduleExpiry($connection, $client, $expiresAt, $delay);
         }
 
         $replayTopics = $cursor === null ? [] : array_values(array_diff($topics, $fresh));
@@ -233,6 +233,32 @@ class SseHandler
             'X-Accel-Buffering' => 'no',
             'Connection' => 'close',
         ], $stream);
+    }
+
+    /**
+     * Recheck the grant's wall-clock deadline when the loop wakes the expiry timer.
+     */
+    protected function scheduleExpiry(Connection $connection, ConnectionInterface $client, int $expiresAt, float $delay): void
+    {
+        $timer = $this->loop->addTimer(max(0.0, $delay), function (TimerInterface $elapsed) use ($connection, $client, $expiresAt, &$timer): void {
+            $remaining = $expiresAt - microtime(true);
+
+            if ($remaining > 0.0) {
+                $timer = $this->loop->addTimer(max(0.001, $remaining), $elapsed->getCallback());
+
+                return;
+            }
+
+            $timer = null;
+            $this->endStream($connection, $client, 'expired');
+        });
+
+        $connection->onClose(function () use (&$timer): void {
+            if ($timer !== null) {
+                $this->loop->cancelTimer($timer);
+                $timer = null;
+            }
+        });
     }
 
     /**
