@@ -36,7 +36,7 @@ it('publishes configuration and installs a fresh environment without leaking its
     expect(file_get_contents($this->configFile))->toBe(file_get_contents(__DIR__.'/../../config/murmur.php'));
     $output = Artisan::output();
     expect($output)->not->toContain($env['MURMUR_SECRET']);
-    expect($output)->toContain('php artisan murmur:serve', 'npm install @arttecs/murmur', 'README');
+    expect($output)->toContain('php artisan murmur:serve', 'npm install @arttecs/murmur', 'https://murmur.arttecs.com/docs/');
 
     config(['murmur.secret' => $env['MURMUR_SECRET']]);
     expect(Broadcast::connection('murmur'))->toBeInstanceOf(MurmurBroadcaster::class);

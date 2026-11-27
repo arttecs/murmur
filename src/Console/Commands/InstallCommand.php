@@ -94,7 +94,7 @@ class InstallCommand extends Command
 
         $this->line('Start the server with php artisan murmur:serve.');
         $this->line('Install the JavaScript client with npm install @arttecs/murmur.');
-        $this->line('See the Murmur README for usage and deployment.');
+        $this->line('See https://murmur.arttecs.com/docs/ for usage and deployment.');
 
         return self::SUCCESS;
     }
