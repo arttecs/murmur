@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## Unreleased
 
+## 0.1.2 - 2026-11-27
+
 ### Fixed
 
 - On `ext-uv`, a timer cancelled after it was already due could still run. Murmur now ignores such timers: the worker no longer crashes the server after it is reaped, closed servers stop sending heartbeats and sampling lag, a finished request's deadline no longer closes its SSE stream, and a closed Redis log no longer retries or disconnects.
