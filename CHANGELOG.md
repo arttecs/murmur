@@ -6,10 +6,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
-- Worker exit and shutdown timers can no longer crash the server when ext-uv dispatches a cancelled timer. Cancelled worker timers stop repeating and acknowledgement deadlines no longer report stale timeouts.
-- Cancelled heartbeat and loop-lag timers stop repeating after server close.
-- A cancelled HTTP request deadline no longer closes an established SSE stream, and closing an SSE stream no longer lets a cancelled expiry timer rearm itself.
-- Cancelled Redis reader timers no longer disconnect a reader after a completed read or attempt a retry after close.
+- On `ext-uv`, a timer cancelled after it was already due could still run. Murmur now ignores such timers: the worker no longer crashes the server after it is reaped, closed servers stop sending heartbeats and sampling lag, a finished request's deadline no longer closes its SSE stream, and a closed Redis log no longer retries or disconnects.
 
 ## 0.1.1 - 2026-11-27
 

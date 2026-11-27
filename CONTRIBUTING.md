@@ -44,7 +44,7 @@ npm run build
 
 `composer lint` without `--test` fixes the style in place. The JavaScript integration tests start a real `murmur:serve` process, so run `composer install` at the root first.
 
-CI runs the PHP suite on PHP 8.3, 8.4, and 8.5 with Laravel 12 and 13, with both Redis clients, and on the `ext-uv`, `ext-ev`, and `ext-event` loops. A change that touches timers, shutdown, or socket handling should be considered against all of them: extension loops can fire a timer slightly early. `tests/Support/EarlyTimerLoop.php` reproduces that on any loop.
+CI runs the PHP suite on PHP 8.3, 8.4, and 8.5 with Laravel 12 and 13, with both Redis clients, and on the `ext-uv`, `ext-ev`, and `ext-event` loops. A change that touches timers, shutdown, or socket handling should be considered against all of them: extension loops can fire a timer slightly early. `tests/Support/EarlyTimerLoop.php` reproduces that on any loop. On `ext-uv`, a timer cancelled after it became due can still run: repeat work with `Arttecs\Murmur\Server\PeriodicTimer` instead of `addPeriodicTimer()`, and make a one-shot callback check that it is still the current timer before acting. `tests/Support/ReadyTimerLoop.php` reproduces that on any loop.
 
 ## Coding standards
 
