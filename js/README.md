@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/arttecs/murmur/main/art/logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/arttecs/murmur/main/art/logo-light.svg" alt="Murmur" width="300">
+  </picture>
+</p>
+
 # Murmur JavaScript client
 
 Install the ESM-only package with npm.
