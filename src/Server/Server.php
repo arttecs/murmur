@@ -108,12 +108,12 @@ class Server
     /**
      * The timer that sends periodic heartbeats.
      */
-    protected ?TimerInterface $heartbeat = null;
+    protected ?PeriodicTimer $heartbeat = null;
 
     /**
      * The timer that measures event loop lag.
      */
-    protected ?TimerInterface $lagTimer = null;
+    protected ?PeriodicTimer $lagTimer = null;
 
     /**
      * The largest event loop lag in seconds seen during the last completed measurement window.
@@ -266,10 +266,15 @@ class Server
             }
 
             $key = $client->getLocalAddress().' '.$client->getRemoteAddress();
+            $id = spl_object_id($client);
             $this->clients[$key] = $client;
-            $this->requestDeadlines[spl_object_id($client)] = $this->loop->addTimer(
+            $this->requestDeadlines[$id] = $this->loop->addTimer(
                 $this->config->requestTimeoutSeconds,
-                $client->close(...),
+                function (TimerInterface $timer) use ($client, $id): void {
+                    if (($this->requestDeadlines[$id] ?? null) === $timer) {
+                        $client->close();
+                    }
+                },
             );
             $client->once('close', function () use ($key, $client): void {
                 $this->cancelRequestDeadline($client);
@@ -293,11 +298,11 @@ class Server
             ErrorReporter::logUsing($this->logger);
         }
 
-        $this->heartbeat = $this->loop->addPeriodicTimer($this->config->heartbeatSeconds, $this->hub->heartbeat(...));
+        $this->heartbeat = new PeriodicTimer($this->loop, $this->config->heartbeatSeconds, $this->hub->heartbeat(...));
         $previousTick = hrtime(true);
         $ticks = 0;
         $worst = 0.0;
-        $this->lagTimer = $this->loop->addPeriodicTimer(static::LAG_INTERVAL, function () use (&$previousTick, &$ticks, &$worst): void {
+        $this->lagTimer = new PeriodicTimer($this->loop, static::LAG_INTERVAL, function () use (&$previousTick, &$ticks, &$worst): void {
             $now = hrtime(true);
             $lag = max(0.0, ($now - $previousTick) / 1_000_000_000 - static::LAG_INTERVAL);
             $previousTick = $now;
@@ -571,15 +576,10 @@ class Server
             $client->close();
         }
 
-        if ($this->heartbeat !== null) {
-            $this->loop->cancelTimer($this->heartbeat);
-            $this->heartbeat = null;
-        }
-
-        if ($this->lagTimer !== null) {
-            $this->loop->cancelTimer($this->lagTimer);
-            $this->lagTimer = null;
-        }
+        $this->heartbeat?->cancel();
+        $this->heartbeat = null;
+        $this->lagTimer?->cancel();
+        $this->lagTimer = null;
 
         if ($this->shutdownDeadline !== null) {
             $this->loop->cancelTimer($this->shutdownDeadline);

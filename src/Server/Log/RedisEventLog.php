@@ -357,7 +357,12 @@ class RedisEventLog implements EventLog
             return;
         }
 
-        $this->readDeadline = $this->loop->addTimer($this->blockMs / 1000 + 5.0, fn () => $this->disconnect($this->reader));
+        $this->readDeadline = $this->loop->addTimer($this->blockMs / 1000 + 5.0, function (TimerInterface $timer): void {
+            if ($this->readDeadline === $timer) {
+                $this->readDeadline = null;
+                $this->disconnect($this->reader);
+            }
+        });
 
         $this->reader->xread('COUNT', static::READ_COUNT, 'BLOCK', $this->blockMs, 'STREAMS', $this->streamKey, $this->cursor)->then(function (?array $streams): void {
             $this->cancelReadDeadline();
@@ -457,7 +462,11 @@ class RedisEventLog implements EventLog
             error_log($this->cursor === null ? 'Murmur is waiting for Redis.' : 'Murmur Redis reader lost its connection.');
         }
 
-        $this->retry = $this->loop->addTimer(1.0, function (): void {
+        $this->retry = $this->loop->addTimer(1.0, function (TimerInterface $timer): void {
+            if ($this->retry !== $timer) {
+                return;
+            }
+
             $this->retry = null;
 
             if ($this->cursor !== null) {
