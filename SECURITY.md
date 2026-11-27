@@ -10,6 +10,8 @@ Please do not report security vulnerabilities through public GitHub issues, disc
 
 Report them privately through GitHub: open the [Security tab](https://github.com/arttecs/murmur/security/advisories/new) of this repository and choose "Report a vulnerability".
 
+If you cannot use GitHub's private reporting, email [security@arttecs.com](mailto:security@arttecs.com?subject=%5BMURMUR%5D). The subject must start with `[MURMUR]` so the report is routed correctly.
+
 Include as much of the following as you can:
 
 - the affected version of `arttecs/murmur` or `@arttecs/murmur`, and the PHP, Laravel, and Redis versions in use;
