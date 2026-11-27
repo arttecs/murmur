@@ -1,10 +1,44 @@
 # Murmur
 
+[![Tests](https://github.com/arttecs/murmur/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/arttecs/murmur/actions/workflows/tests.yml)
+[![Packagist Version](https://img.shields.io/packagist/v/arttecs/murmur)](https://packagist.org/packages/arttecs/murmur)
+[![npm Version](https://img.shields.io/npm/v/%40arttecs%2Fmurmur)](https://www.npmjs.com/package/@arttecs/murmur)
+[![PHP Version](https://img.shields.io/packagist/dependency-v/arttecs/murmur/php)](https://packagist.org/packages/arttecs/murmur)
+[![License](https://img.shields.io/github/license/arttecs/murmur)](LICENSE)
+
 Murmur is a ReactPHP Server-Sent Events (SSE) server with a Laravel bridge. An SSE subscription can stay open for minutes or hours. When Laravel serves the stream directly through PHP-FPM, that connection holds a worker for its lifetime. Murmur keeps subscriptions in a separate, long-running process. Laravel publishes events over HTTP or Redis and continues serving requests with its workers available.
+
+- **No held workers.** Subscriptions live in one event-loop process; PHP-FPM and Octane workers stay free.
+- **Laravel broadcasting.** A `murmur` broadcaster, private channels authorized by Laravel's own `/broadcasting/auth`, `toOthers()`, and a [Laravel Echo connector](js/README.md).
+- **Replay on reconnect.** Clients resume from their last event ID, and are told when history was lost.
+- **Scales out.** Redis Streams share events and history across any number of Murmur nodes.
+- **Closed by default.** Signed publishing, an empty origin allowlist, no metrics route, and optional features off until enabled.
+- **Observable.** Health and readiness endpoints, Prometheus-format metrics, optional persisted snapshots, and connection lifecycle events.
+
+## Contents
+
+- [Installation](#installation)
+- [Laravel broadcasting](#laravel-broadcasting)
+- [Stream API](#stream-api)
+- [JavaScript client](#javascript-client)
+- [Migrating from Laravel Reverb](#migrating-from-laravel-reverb)
+- [Testing](#testing)
+- [Configuration](#configuration)
+- [Writing a driver](#writing-a-driver)
+- [Deployment](#deployment)
+- [Scaling with Redis](#scaling-with-redis)
+- [Metrics](#metrics)
+- [Lifecycle events](#lifecycle-events)
+- [Logging](#logging)
+- [Version 1 limits](#version-1-limits)
+- [Compatibility](#compatibility)
+- [Contributing](#contributing)
+- [Security](#security)
+- [License](#license)
 
 ## Installation
 
-Murmur requires PHP 8.3 or later and Laravel 12 or 13.
+Murmur requires PHP 8.3 or later and Laravel 12 or 13. The server runs on Linux and macOS; Windows is not supported.
 
 ```sh
 composer require arttecs/murmur
@@ -501,6 +535,14 @@ Semantic versioning covers the `Murmur` facade and the public methods of `Murmur
 It also covers `Events\ConnectionOpened`, `Events\ConnectionClosed`, `Server\Server`, `Server\ServerConfig`, `Server\Auth\Grant`, `Server\Metrics` (`snapshot()`, `value()`, `toPrometheus()`, and `names()`), `Server\Event`, `Server\EventId`, `Server\Replay`, `Stream`, the classes in `Testing\`, and the [wire protocol](docs/protocol.md).
 
 The lifecycle recorder, worker, worker configuration, and hidden `murmur:worker` command are internal.
+
+## Contributing
+
+Bug reports and pull requests are welcome. Read the [contributing guide](CONTRIBUTING.md) for the development setup, the checks CI runs, and the coding standards. Participation is governed by the [code of conduct](CODE_OF_CONDUCT.md). Changes are recorded in the [changelog](CHANGELOG.md).
+
+## Security
+
+Do not report vulnerabilities in public issues. Follow the [security policy](SECURITY.md).
 
 ## License
 
