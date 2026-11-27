@@ -270,6 +270,17 @@ function workerServingProcess(int $port, array $env): Process
 }
 
 /**
+ * Assert the expected serving process exit and expose PHP crashes on stderr.
+ */
+function assertServingProcessExit(Process $process, int $code = 0): void
+{
+    $stderr = $process->getErrorOutput();
+
+    expect($process->getExitCode())->toBe($code, $process->getOutput().$stderr);
+    expect($stderr)->not->toMatch('/TypeError|Fatal error|Uncaught/i');
+}
+
+/**
  * Wait for a metrics write or subprocess state without blocking the test loop.
  */
 function waitForMetricsCondition(Closure $condition, ?Process $process = null): void

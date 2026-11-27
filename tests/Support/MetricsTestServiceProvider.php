@@ -152,6 +152,10 @@ class MetricsTestServiceProvider extends ServiceProvider
             $fields['topics'] = array_map(base64_encode(...), $event->topics);
             $record(['phase' => $event instanceof ConnectionOpened ? 'opened' : 'closed', ...$fields]);
 
+            if ($mode === 'hold-ack' && $event instanceof ConnectionOpened) {
+                $record(['phase' => 'descendant', 'child' => (int) shell_exec('sleep 30 </dev/null >/dev/null 2>&1 & echo $!')]);
+            }
+
             if ($mode === 'noisy') {
                 echo "listener echo\n";
                 dump('listener dump');

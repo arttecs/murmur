@@ -204,6 +204,7 @@ it('runs murmur serve and exits cleanly on SIGTERM', function (string $driver) {
     } finally {
         $process->stop(0.1, SIGKILL);
         $reader?->close();
+        assertServingProcessExit($process);
     }
 })->with(['http', 'redis'])->skip(! extension_loaded('pcntl'), 'SIGTERM handling requires ext-pcntl.');
 

@@ -91,6 +91,7 @@ done
 docker stop --time 10 "$container" > /dev/null
 [ "$(docker inspect --format '{{.State.ExitCode}}' "$container")" -eq 0 ] || fail 'the server did not exit cleanly'
 docker logs "$container" 2>&1 | grep -q 'recording has stopped' && fail 'the writer exited while serving'
+docker logs "$container" 2>&1 | grep -Ei 'TypeError|Fatal error|Uncaught' && fail 'the server logged a PHP crash'
 
 failing=$(docker run --detach \
     --env MURMUR_SECRET="$secret" \
@@ -110,5 +111,6 @@ done
 
 docker stop --time 10 "$failing" > /dev/null
 [ "$(docker inspect --format '{{.State.ExitCode}}' "$failing")" -eq 0 ] || fail 'the server with a failing store did not exit cleanly'
+docker logs "$failing" 2>&1 | grep -Ei 'TypeError|Fatal error|Uncaught' && fail 'the server with a failing store logged a PHP crash'
 
 echo 'smoke: ok'

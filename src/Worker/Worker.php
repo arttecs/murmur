@@ -104,6 +104,11 @@ class Worker
     protected ?TimerInterface $shutdownTimer = null;
 
     /**
+     * The timer that detects process exit independently of pipe EOF.
+     */
+    protected ?TimerInterface $exitMonitor = null;
+
+    /**
      * The worker started before the server opened any sockets.
      */
     protected ?Process $process = null;
@@ -175,9 +180,35 @@ class Worker
 
         $this->process = $process;
         $process->on('exit', $this->exited(...));
-        $process->pipes[static::ACK_DESCRIPTOR]->on('data', $this->receive(...));
+        $ack = $process->pipes[static::ACK_DESCRIPTOR];
+        $ack->on('data', $this->receive(...));
+        $ack->on('end', $ack->pause(...));
+        $ack->on('error', $ack->pause(...));
+        $this->exitMonitor = $this->loop->addPeriodicTimer(0.1, $this->pollExit(...));
         $process->stdin->on('drain', function (): void {
             $this->backpressured = false;
+        });
+    }
+
+    /**
+     * Close the pipes after exit even if a descendant holds the acknowledgement descriptor.
+     */
+    protected function pollExit(): void
+    {
+        $process = $this->process;
+
+        if ($process->isRunning()) {
+            return;
+        }
+
+        $this->loop->cancelTimer($this->exitMonitor);
+        $this->exitMonitor = null;
+        $process->stdin->close();
+
+        $this->loop->futureTick(static function () use ($process): void {
+            $ack = $process->pipes[static::ACK_DESCRIPTOR];
+            $ack->pause();
+            $ack->close();
         });
     }
 
@@ -350,6 +381,11 @@ class Worker
             $dropped = $this->recorder->stop() + $this->pendingLifecycle;
             $this->pendingLifecycle = 0;
             $this->metrics?->increment('murmur_lifecycle_dropped_total', $dropped);
+
+            if ($dropped > 0 && $this->stopping !== null) {
+                $records = $dropped === 1 ? 'record' : 'records';
+                ErrorReporter::report(new RuntimeException("Murmur dropped {$dropped} lifecycle {$records} during shutdown."), force: true);
+            }
         }
     }
 
@@ -492,6 +528,11 @@ class Worker
         $this->cancelWrites();
         $this->discardLifecycle();
 
+        if ($this->exitMonitor !== null) {
+            $this->loop->cancelTimer($this->exitMonitor);
+            $this->exitMonitor = null;
+        }
+
         if ($this->shutdownTimer !== null) {
             $this->loop->cancelTimer($this->shutdownTimer);
             $this->shutdownTimer = null;
@@ -541,16 +582,13 @@ class Worker
      */
     protected function terminate(): void
     {
-        if ($this->recorder !== null) {
-            $this->discardLifecycle();
-            $this->finishInput();
-        }
+        $this->discardLifecycle();
+        $this->cancelWrites();
+        $this->inputClosing = true;
 
         $process = $this->process;
-        $this->shutdownTimer = $this->loop->addTimer(0.2, function () use ($process): void {
-            $process->terminate(static::KILL_SIGNAL);
-            $process->pipes[static::ACK_DESCRIPTOR]->close();
-        });
+        $process->stdin->close();
         $process->terminate();
+        $this->shutdownTimer = $this->loop->addTimer(0.2, fn () => $process->terminate(static::KILL_SIGNAL));
     }
 }

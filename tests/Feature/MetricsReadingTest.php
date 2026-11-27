@@ -177,6 +177,7 @@ it('reads and displays a database snapshot written by a real murmur server after
         $process->stop(0.5);
         DB::disconnect('sqlite');
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
 

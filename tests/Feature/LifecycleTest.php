@@ -91,6 +91,7 @@ it('dispatches accepted connections in order outside the server with the exact c
         $reader?->close();
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 })->with(['client', 'expired', 'slow_consumer', 'error', 'shutdown']);
 
@@ -149,6 +150,7 @@ it('takes turns using the same worker after a slow store and discards the oldest
             unlink($file.'.release');
         }
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
 
@@ -207,6 +209,7 @@ it('sends every final batch for connections closed together on shutdown', functi
     } finally {
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 })->skip(! extension_loaded('pcntl'), 'Signal-driven shutdown requires ext-pcntl.');
 
@@ -240,8 +243,55 @@ it('keeps serving and sends subsequent batches after a lifecycle listener fails'
         $reader?->close();
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
+
+it('reports the worker exit while a listener descendant still holds its acknowledgement pipe', function () {
+    $port = ServerHarness::availablePort();
+    $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-');
+    $process = workerServingProcess($port, [
+        'MURMUR_METRICS_STORE' => '',
+        'MURMUR_LIFECYCLE_EVENTS' => 'true',
+        'MURMUR_LIFECYCLE_BATCH' => '1',
+        'MURMUR_TEST_LIFECYCLE_FILE' => $file,
+        'MURMUR_TEST_LIFECYCLE_MODE' => 'hold-ack',
+    ]);
+    $child = null;
+    $reader = null;
+
+    try {
+        $process->start();
+        waitForMetricsCondition(fn () => str_contains($process->getOutput(), 'Murmur is listening'), $process);
+        $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
+        $reader->start();
+        waitForMetricsCondition(fn () => count(metricsTrace($file, 'descendant')) === 1, $process);
+        $descendant = metricsTrace($file, 'descendant')[0];
+        $child = $descendant->child;
+
+        expect($child)->toBeGreaterThan(0);
+        expect(posix_kill($descendant->pid, SIGKILL))->toBeTrue();
+        $deadline = hrtime(true) + 2_000_000_000;
+        $reported = fn (): bool => str_contains($process->getErrorOutput(), 'worker recording has stopped');
+        waitForMetricsCondition(fn () => $reported() || hrtime(true) >= $deadline, $process);
+        expect($reported())->toBeTrue($process->getErrorOutput());
+        expect($process->getErrorOutput())->toContain('signal '.SIGKILL);
+
+        $reader->close();
+        $reader = SseReader::open("http://127.0.0.1:{$port}/sse?topics=news");
+        expect($reader->start()['retry'])->toBe('3000');
+        expect(posix_kill($child, 0))->toBeTrue();
+        expect(substr_count($process->getErrorOutput(), 'worker recording has stopped'))->toBe(1);
+    } finally {
+        $reader?->close();
+        if ($child > 0) {
+            posix_kill($child, SIGKILL);
+        }
+        $process->stop(2);
+        unlink($file);
+        assertServingProcessExit($process);
+    }
+})->skip(! extension_loaded('posix') || ! extension_loaded('pcntl'), 'Checking descriptor inheritance requires ext-posix and ext-pcntl.');
 
 it('forwards listener output to server stderr without consuming acknowledgement slots', function () {
     $port = ServerHarness::availablePort();
@@ -275,6 +325,7 @@ it('forwards listener output to server stderr without consuming acknowledgement 
     } finally {
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
 
@@ -311,7 +362,8 @@ it('flushes every shutdown close with the default spread or counts undelivered r
             expect($elapsed)->toBeGreaterThanOrEqual(5.0)
                 ->and($closed)->toBe([])
                 ->and(metricsTrace($file, 'waiting'))->toHaveCount(1)
-                ->and(metricsTrace($file, 'shutdown')[0]->dropped)->toBe($count);
+                ->and(metricsTrace($file, 'shutdown')[0]->dropped)->toBe($count)
+                ->and(substr_count($process->getErrorOutput(), "Murmur dropped {$count} lifecycle records during shutdown."))->toBe(1);
         } else {
             expect(array_column($closed, 'connectionId'))->toBe($ids)
                 ->and(array_unique(array_column($closed, 'reason')))->toBe(['shutdown']);
@@ -319,6 +371,7 @@ it('flushes every shutdown close with the default spread or counts undelivered r
     } finally {
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 })->with([
     '10 healthy streams' => [10, ''],
@@ -362,5 +415,6 @@ it('uses the lifecycle deadline independently of the metrics timeout', function 
         $process->stop(2);
         unlink($file.'.release');
         unlink($file);
+        assertServingProcessExit($process);
     }
 })->with(['without metrics' => [''], 'with metrics' => ['fake']]);

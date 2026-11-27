@@ -33,6 +33,7 @@ it('records the first snapshot as soon as the server listens', function () {
     } finally {
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
 
@@ -67,6 +68,7 @@ it('records filtered snapshots on the interval with the same writer', function (
         $reader?->close();
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
 
@@ -109,6 +111,7 @@ it('keeps HTTP responsive while a write is pending and resumes without queued ti
             unlink($file.'.release');
         }
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
 
@@ -135,6 +138,7 @@ it('reports failed acknowledgements and keeps recording with the same writer', f
     } finally {
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
 
@@ -158,6 +162,7 @@ it('forwards noisy store output and diagnostics to stderr without acknowledgemen
     } finally {
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
 
@@ -180,6 +185,7 @@ it('keeps recording when a store writes output without a line break', function (
     } finally {
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 });
 
@@ -242,6 +248,7 @@ it('exits after its parent is killed while a store write is pending', function (
             posix_kill($child, SIGKILL);
         }
         unlink($file);
+        assertServingProcessExit($process, 128 + SIGKILL);
     }
 })->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'Checking for an orphan requires ext-pcntl and ext-posix.');
 
@@ -274,6 +281,7 @@ it('reports writer death once and keeps accepting SSE connections without respaw
         $reader?->close();
         $process->stop(2);
         unlink($file);
+        assertServingProcessExit($process);
     }
 })->skip(! extension_loaded('posix') || ! extension_loaded('pcntl'), 'Killing and checking the writer requires ext-posix and ext-pcntl.');
 
@@ -317,6 +325,7 @@ it('reaps the writer on signal-driven shutdown', function (string $mode, string 
             unlink($file.'.release');
         }
         unlink($file);
+        assertServingProcessExit($process);
     }
 })->with([
     'idle on SIGTERM' => ['', 'saved', ['start', 'saved'], false],
@@ -330,6 +339,7 @@ it('does not load the process dependency when metrics and lifecycle delivery are
         'MURMUR_TEST_METRICS_DISABLED' => '1',
     ]);
     $process->mustRun();
+    assertServingProcessExit($process);
 
     expect($process->getOutput())->toContain('Recorder inactive')->not->toContain('Recorder loaded');
 });
@@ -365,6 +375,7 @@ it('releases listening and accepted sockets while the writer is running', functi
             unlink($file.'.release');
         }
         unlink($file);
+        assertServingProcessExit($process);
     }
 })->skip(! extension_loaded('posix') || ! extension_loaded('pcntl'), 'Checking child liveness requires ext-posix and ext-pcntl.');
 
@@ -396,7 +407,7 @@ it('refuses to serve when the host cannot launch the metrics recorder', function
 
     $process->run();
 
-    expect($process->getExitCode())->toBe(1);
+    assertServingProcessExit($process, 1);
     expect($process->getOutput())->not->toContain('Murmur is listening');
     expect($process->getOutput().$process->getErrorOutput())->toContain('Murmur worker requires proc_open() on Linux or macOS.');
 });
@@ -408,7 +419,7 @@ it('refuses to serve when the Artisan entry point cannot be resolved', function 
     ]);
     $process->run();
 
-    expect($process->getExitCode())->toBe(1);
+    assertServingProcessExit($process, 1);
     expect($process->getOutput())->not->toContain('Murmur is listening');
     expect($process->getOutput().$process->getErrorOutput())->toMatch('/\A[^\r\n]*could not locate the Artisan entry point[^\r\n]*\n\z/');
 });
