@@ -23,7 +23,7 @@ use React\Socket\ConnectionInterface;
 use function React\Async\await;
 use function React\Promise\resolve;
 
-it('preserves the backend cadence for sub-millisecond repeating timers', function () {
+it('keeps the one-millisecond repeat floor for sub-millisecond repeating timers', function () {
     $backend = Loop::get()::class;
     $loop = new $backend;
     $interval = 0.0005;
