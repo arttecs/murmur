@@ -6,8 +6,10 @@ use Arttecs\Murmur\Server\Http\SseHandler;
 use Arttecs\Murmur\Server\Hub;
 use Arttecs\Murmur\Server\LifecycleRecorder;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
+use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Arttecs\Murmur\Tests\Support\CallbackSubscriptionAuthorizer;
+use Arttecs\Murmur\Tests\Support\EarlyTimerLoop;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
 use React\EventLoop\Loop;
@@ -142,6 +144,48 @@ it('closes a subscription no earlier than its custom grant expires', function ()
     $r->start();
     expect(fn () => $r->next(3.0))->toThrow(RuntimeException::class, 'closed');
     expect(time())->toBeGreaterThanOrEqual($expiresAt);
+});
+
+it('rearms an expiry timer that fires early and cancels it when the connection closes', function () {
+    $loop = new EarlyTimerLoop(Loop::get());
+    $expiresAt = time() + 2;
+    $authorizer = new CallbackSubscriptionAuthorizer(fn (): PromiseInterface => resolve(new Grant(['private-a'], $expiresAt)));
+    $config = new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort());
+    $server = new Server($config, new MemoryEventLog, $loop, authorizer: $authorizer);
+
+    try {
+        await($server->listen());
+        $idle = $loop->pendingTimers();
+        $r = SseReader::open($server->address().'/sse?topics=private-a&token=opaque');
+        $r->start();
+        expect($loop->pendingTimers())->toBeGreaterThan($idle);
+        expect(fn () => $r->next(3.0))->toThrow(RuntimeException::class, 'closed');
+        expect(time())->toBeGreaterThanOrEqual($expiresAt);
+
+        $far = new CallbackSubscriptionAuthorizer(fn (): PromiseInterface => resolve(new Grant(['private-a'], time() + 600)));
+        $second = new Server(new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort()), new MemoryEventLog, $loop, authorizer: $far);
+
+        try {
+            await($second->listen());
+            $before = $loop->pendingTimers();
+            $open = SseReader::open($second->address().'/sse?topics=private-a&token=opaque');
+            $open->start();
+            $during = $loop->pendingTimers();
+            expect($during)->toBeGreaterThan($before);
+            $open->close();
+            $deadline = microtime(true) + 2.0;
+
+            while ($loop->pendingTimers() !== $before && microtime(true) < $deadline) {
+                await(sleep(0.01));
+            }
+
+            expect($loop->pendingTimers())->toBe($before);
+        } finally {
+            $second->close();
+        }
+    } finally {
+        $server->close();
+    }
 });
 
 it('refuses an already expired custom grant', function () {

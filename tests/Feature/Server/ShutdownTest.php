@@ -4,8 +4,10 @@ use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\Log\MemoryEventLog;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
+use Arttecs\Murmur\Tests\Support\EarlyTimerLoop;
 use Arttecs\Murmur\Tests\Support\ServerHarness;
 use Arttecs\Murmur\Tests\Support\SseReader;
+use React\EventLoop\Loop;
 use React\Promise\Deferred;
 use React\Socket\Connector;
 
@@ -96,9 +98,9 @@ it('ends every open stream immediately when spreading is disabled', function () 
     expect($h->trackedSocketCount())->toBe(0);
 });
 
-it('fits the spread inside an explicit shorter grace so every stream gets its retry frame', function () {
+it('fits the spread inside an explicit shorter grace so every stream gets its retry frame', function (bool $early) {
     $config = new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), retryMs: 200, shutdownSpreadSeconds: 2.0);
-    $server = new class($config, new MemoryEventLog) extends Server
+    $server = new class($config, new MemoryEventLog, $early ? new EarlyTimerLoop(Loop::get()) : null) extends Server
     {
         protected function randomRetryMs(int $min, int $max): int
         {
@@ -126,4 +128,4 @@ it('fits the spread inside an explicit shorter grace so every stream gets its re
     } finally {
         $server->close();
     }
-});
+})->with(['punctual timers' => false, 'early timers' => true]);
