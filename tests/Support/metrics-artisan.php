@@ -18,4 +18,10 @@ if ($entry = getenv('MURMUR_TEST_ARTISAN_BINARY')) {
 
 $app = Testbench::create(options: ['extra' => ['providers' => [MurmurServiceProvider::class, MetricsTestServiceProvider::class]]]);
 
-exit($app->handleCommand(new ArgvInput));
+try {
+    exit($app->handleCommand(new ArgvInput));
+} catch (Throwable $error) {
+    fwrite(STDERR, 'Uncaught '.$error::class.': '.$error->getMessage().PHP_EOL);
+
+    exit(1);
+}

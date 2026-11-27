@@ -93,6 +93,7 @@ class ServeCommand extends Command
 
         $server = null;
         $signals = [];
+        $deferShutdown = null;
         $shuttingDown = false;
         $exitCode = self::SUCCESS;
 
@@ -135,8 +136,10 @@ class ServeCommand extends Command
                 all([$stopped, $drained->promise()])->then($loop->stop(...));
             };
 
+            $deferShutdown = fn () => $loop->futureTick($shutdown);
+
             foreach ($signals as $signal) {
-                $loop->addSignal($signal, $shutdown);
+                $loop->addSignal($signal, $deferShutdown);
             }
 
             $server->listen()->then(function () use ($server, $worker): void {
@@ -154,8 +157,10 @@ class ServeCommand extends Command
 
             $loop->run();
         } finally {
-            foreach ($signals as $signal) {
-                $loop->removeSignal($signal, $shutdown);
+            if ($deferShutdown !== null) {
+                foreach ($signals as $signal) {
+                    $loop->removeSignal($signal, $deferShutdown);
+                }
             }
 
             try {

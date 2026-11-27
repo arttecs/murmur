@@ -352,3 +352,29 @@ it('uses the subscription authorizer registered in a laravel provider boot metho
         Loop::set($previousLoop);
     }
 });
+
+it('defers shutdown out of the signal handler so the loop never selects a closed socket', function () {
+    $port = ServerHarness::availablePort();
+    $previousLoop = Loop::get();
+    $loop = new StreamSelectLoop;
+    Loop::set($loop);
+    $stillListening = null;
+    $loop->addTimer(0.05, function () use ($port, &$stillListening): void {
+        posix_kill(getmypid(), SIGTERM);
+        pcntl_signal_dispatch();
+        $client = @stream_socket_client("tcp://127.0.0.1:{$port}", $code, $message, 0.5);
+        $stillListening = $client !== false;
+
+        if ($client !== false) {
+            fclose($client);
+        }
+    });
+
+    try {
+        $this->artisan('murmur:serve', ['--port' => $port])->assertSuccessful();
+
+        expect($stillListening)->toBeTrue();
+    } finally {
+        Loop::set($previousLoop);
+    }
+})->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'Signal handling requires ext-pcntl and ext-posix.');

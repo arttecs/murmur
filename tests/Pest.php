@@ -272,14 +272,14 @@ function workerServingProcess(int $port, array $env): Process
 }
 
 /**
- * Assert the expected serving process exit and expose PHP crashes on stderr.
+ * Assert the expected serving process exit and expose PHP crashes in either output stream.
  */
 function assertServingProcessExit(Process $process, int $code = 0): void
 {
-    $stderr = $process->getErrorOutput();
+    $output = $process->getOutput().$process->getErrorOutput();
 
-    expect($process->getExitCode())->toBe($code, $process->getOutput().$stderr);
-    expect($stderr)->not->toMatch('/TypeError|Fatal error|Uncaught/i');
+    expect($process->getExitCode())->toBe($code, $output);
+    expect($output)->not->toMatch('/TypeError|Fatal error|Uncaught/i');
 }
 
 /**
