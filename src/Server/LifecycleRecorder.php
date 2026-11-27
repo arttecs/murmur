@@ -1,0 +1,155 @@
+<?php
+
+namespace Arttecs\Murmur\Server;
+
+use Closure;
+use RuntimeException;
+use SplQueue;
+use Throwable;
+
+/**
+ * Buffer connection lifecycle records in order until the worker can accept them.
+ *
+ * @internal
+ */
+class LifecycleRecorder
+{
+    /**
+     * The pending records, or null after the worker stops.
+     *
+     * @var SplQueue<array{connectionId: string, topics: list<string>, occurredAt: int, durationSeconds?: float, reason?: string}>|null
+     */
+    protected ?SplQueue $records;
+
+    /**
+     * The number of waiting records that makes a batch ready.
+     */
+    protected int $batchSize = 0;
+
+    /**
+     * The worker's callback for scheduling a flush when a full batch is ready.
+     *
+     * @var (Closure(): void)|null
+     */
+    protected ?Closure $batchReady = null;
+
+    /**
+     * Create an empty queue with a fixed record capacity.
+     */
+    public function __construct(protected int $capacity)
+    {
+        $this->records = new SplQueue;
+    }
+
+    /**
+     * Notify the worker when an enqueue leaves a full batch waiting.
+     *
+     * @param  Closure(): void  $callback
+     */
+    public function whenBatchReady(int $batchSize, Closure $callback): void
+    {
+        $this->batchSize = $batchSize;
+        $this->batchReady = $callback;
+    }
+
+    /**
+     * Enqueue a record and return the number of records dropped.
+     *
+     * @param  array{connectionId: string, topics: list<string>, occurredAt: int, durationSeconds?: float, reason?: string}  $record
+     */
+    public function enqueue(array $record): int
+    {
+        if ($this->records === null) {
+            return 1;
+        }
+
+        $full = $this->records->count() === $this->capacity;
+
+        if ($full) {
+            $this->records->dequeue();
+        }
+
+        $this->records->enqueue($record);
+
+        if ($this->batchReady !== null && $this->records->count() >= $this->batchSize) {
+            ($this->batchReady)();
+        }
+
+        return (int) $full;
+    }
+
+    /**
+     * Determine whether at least the given number of records are waiting.
+     */
+    public function pending(int $minimum = 1): bool
+    {
+        return ($this->records?->count() ?? 0) >= $minimum;
+    }
+
+    /**
+     * Take an ordered batch within the worker's count and byte limits.
+     *
+     * @return array{string, int, int} The encoded batch, record count, and drop count.
+     */
+    public function batch(string $node, int $limit, int $maxBytes): array
+    {
+        $encodedNode = json_encode($node);
+
+        if ($encodedNode === false) {
+            ErrorReporter::report(new RuntimeException('Murmur could not encode the lifecycle batch node.'));
+
+            return ['', 0, $this->stop()];
+        }
+
+        $prefix = '{"type":"lifecycle","node":'.$encodedNode.',"records":[';
+        $suffix = ']}';
+        $bytes = strlen($prefix) + strlen($suffix);
+        $encoded = [];
+        $dropped = 0;
+
+        while ($this->pending() && count($encoded) + $dropped < $limit) {
+            try {
+                $record = $this->records->bottom();
+                $record['topics'] = array_map(base64_encode(...), $record['topics']);
+                $json = json_encode($record, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+            } catch (Throwable) {
+                $this->records->dequeue();
+                $dropped++;
+                ErrorReporter::report(new RuntimeException('Murmur could not encode a lifecycle record.'));
+
+                continue;
+            }
+
+            $size = strlen($json) + (int) ($encoded !== []);
+
+            if ($bytes + $size > $maxBytes) {
+                if ($encoded !== []) {
+                    break;
+                }
+
+                $this->records->dequeue();
+                $dropped++;
+
+                continue;
+            }
+
+            $this->records->dequeue();
+            $bytes += $size;
+            $encoded[] = $json;
+        }
+
+        return [$prefix.implode(',', $encoded).$suffix, count($encoded), $dropped];
+    }
+
+    /**
+     * Drop outstanding records and refuse future records.
+     */
+    public function stop(): int
+    {
+        $dropped = $this->records?->count() ?? 0;
+        $this->records = null;
+        $this->batchReady = null;
+
+        return $dropped;
+    }
+}

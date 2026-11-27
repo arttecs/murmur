@@ -1,0 +1,58 @@
+{
+  "name": "@arttecs/murmur",
+  "version": "0.1.0",
+  "description": "JavaScript client for Murmur server-sent events.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Arthur Purcino (https://github.com/pvrcino)",
+  "homepage": "https://github.com/arttecs/murmur/tree/main/js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arttecs/murmur.git",
+    "directory": "js"
+  },
+  "bugs": {
+    "url": "https://github.com/arttecs/murmur/issues"
+  },
+  "keywords": [
+    "sse",
+    "server-sent-events",
+    "eventsource",
+    "laravel",
+    "realtime",
+    "murmur"
+  ],
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./echo": {
+      "types": "./dist/echo.d.ts",
+      "default": "./dist/echo.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "eventsource": "^5.1.5",
+    "laravel-echo": "^2.6.3",
+    "tsup": "^9.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}

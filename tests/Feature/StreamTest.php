@@ -1,0 +1,83 @@
+<?php
+
+use Arttecs\Murmur\Facades\Murmur;
+use Arttecs\Murmur\Server\Auth\TokenVerifier;
+use Illuminate\Support\Carbon;
+
+it('emits stream events and an end marker', function () {
+    $publisher = fakePublisher();
+    $stream = Murmur::stream('private-chat.42');
+    $stream->emit('token', ['text' => 'Hello']);
+    $stream->close();
+    expect($publisher->events)->toHaveCount(2);
+    expect($publisher->events[0]->name)->toBe('token');
+    expect($publisher->events[1]->name)->toBe('murmur.end');
+});
+
+it('builds a private stream url with a scoped token and a start cursor', function () {
+    Carbon::setTestNow(Carbon::createFromTimestampMs(1732360005000));
+    parse_str(parse_url(Murmur::stream('private-chat.42')->url(), PHP_URL_QUERY), $q);
+    expect($q['topics'])->toBe('private-chat.42');
+    expect($q['lastEventId'])->toBe('1732360004000-0');
+    expect((new TokenVerifier('test-secret-with-at-least-32-bytes', fn () => now()->timestamp))->verify($q['token'])->topics)->toBe(['private-chat.42']);
+});
+
+it('builds a public stream url without a token', function () {
+    parse_str(parse_url(Murmur::stream('progress.9')->url(), PHP_URL_QUERY), $q);
+    expect($q)->not->toHaveKey('token');
+});
+
+it('honours a custom ttl', function () {
+    Carbon::setTestNow('2026-01-01 00:00:00');
+    parse_str(parse_url(Murmur::stream('private-x')->url(ttl: 3600), PHP_URL_QUERY), $q);
+    expect((new TokenVerifier('test-secret-with-at-least-32-bytes', fn () => now()->timestamp))->verify($q['token'])->expiresAt)->toBe(now()->timestamp + 3600);
+});
+
+it('sends the end marker without data', function () {
+    $publisher = fakePublisher();
+    Murmur::stream('progress.9')->close();
+
+    expect($publisher->events[0]->topic)->toBe('progress.9');
+    expect($publisher->events[0]->data)->toBeNull();
+});
+
+it('fixes the start cursor when the stream is created', function () {
+    Carbon::setTestNow(Carbon::createFromTimestampMs(1732360005000));
+    $stream = Murmur::stream('progress.9');
+    Carbon::setTestNow(Carbon::createFromTimestampMs(1732360099000));
+
+    parse_str(parse_url($stream->url(), PHP_URL_QUERY), $q);
+
+    expect($q['lastEventId'])->toBe('1732360004000-0');
+});
+
+it('rejects reserved event names when publishing or emitting application events', function () {
+    $publisher = fakePublisher();
+    $stream = Murmur::stream('progress.9');
+
+    expect(fn () => Murmur::publish('progress.9', 'murmur.gap'))
+        ->toThrow(InvalidArgumentException::class, 'Event names starting with "murmur." are reserved.');
+    expect(fn () => $stream->emit('murmur.end'))->toThrow(InvalidArgumentException::class);
+    expect($publisher->events)->toBe([]);
+});
+
+it('validates wire topic names before publishing, creating streams, or signing tokens', function (string $topic, bool $valid) {
+    $publisher = fakePublisher();
+
+    if (! $valid) {
+        expect(fn () => Murmur::publish($topic, 'updated'))->toThrow(InvalidArgumentException::class)
+            ->and(fn () => Murmur::stream($topic))->toThrow(InvalidArgumentException::class)
+            ->and(fn () => Murmur::token([$topic]))->toThrow(InvalidArgumentException::class)
+            ->and($publisher->events)->toBe([]);
+
+        return;
+    }
+
+    Murmur::publish($topic, 'updated');
+    parse_str(parse_url(Murmur::stream($topic)->url(), PHP_URL_QUERY), $query);
+    $grant = (new TokenVerifier(config('murmur.secret')))->verify(Murmur::token([$topic]));
+
+    expect($publisher->events[0]->topic)->toBe($topic)
+        ->and($query['topics'])->toBe($topic)
+        ->and($grant->topics)->toBe([$topic]);
+})->with('wire topic boundaries');

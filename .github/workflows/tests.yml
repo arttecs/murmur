@@ -1,0 +1,98 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  php:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4', '8.5']
+        laravel: ['12', '13']
+        redis_client: [phpredis]
+        loop: [stream_select]
+        include:
+          - php: '8.5'
+            laravel: '13'
+            redis_client: predis
+            loop: stream_select
+          - php: '8.5'
+            laravel: '13'
+            redis_client: phpredis
+            loop: uv
+          - php: '8.5'
+            laravel: '13'
+            redis_client: phpredis
+            loop: ev
+          - php: '8.5'
+            laravel: '13'
+            redis_client: phpredis
+            loop: event
+    env:
+      REDIS_CLIENT: ${{ matrix.redis_client }}
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: redis${{ matrix.loop != 'stream_select' && format(', {0}', matrix.loop) || '' }}
+          coverage: none
+      - if: matrix.loop != 'stream_select'
+        run: php -r 'extension_loaded("${{ matrix.loop }}") || exit(1);'
+      - run: composer update --with illuminate/support:^${{ matrix.laravel }} --no-interaction --no-progress
+      - if: matrix.redis_client == 'predis'
+        run: composer require --dev predis/predis --no-interaction --no-progress
+      - run: vendor/bin/pint --test
+      - run: vendor/bin/pest
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sh tests/Docker/smoke.sh
+
+  javascript:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 'lts/*'
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pcntl
+          coverage: none
+      - run: composer install --no-interaction --no-progress
+        working-directory: .
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:integration
+      - run: npm run build
+      - run: npm pack --dry-run
+      - run: node --input-type=module -e "import { Murmur } from './dist/index.js'; if (typeof Murmur !== 'function') process.exit(1)" && node --input-type=module -e "import { MurmurConnector } from './dist/echo.js'; if (typeof MurmurConnector !== 'function') process.exit(1)"

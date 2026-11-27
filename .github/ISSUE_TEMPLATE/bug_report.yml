@@ -1,0 +1,64 @@
+name: Bug report
+description: Report something that does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security vulnerabilities here. Follow the [security policy](https://github.com/arttecs/murmur/security/policy).
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - arttecs/murmur (PHP)
+        - "@arttecs/murmur (JavaScript)"
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Murmur version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: PHP, Laravel, and Redis versions, operating system, and the event loop extension (`ext-uv`, `ext-ev`, `ext-event`, or none). For the client, the browser or Node.js version.
+      placeholder: PHP 8.4, Laravel 12, Redis 7.2, Ubuntu 24.04, ext-uv
+    validations:
+      required: true
+  - type: dropdown
+    id: driver
+    attributes:
+      label: Driver
+      options:
+        - http
+        - redis
+        - custom
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The smallest code, configuration, and commands that reproduce the problem. Remove secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and output
+      description: Output of `murmur:serve`, `murmur:status`, the browser console, or failing requests. Remove secrets and tokens.
+      render: text
