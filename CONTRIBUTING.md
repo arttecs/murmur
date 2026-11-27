@@ -65,6 +65,15 @@ CI runs the PHP suite on PHP 8.3, 8.4, and 8.5 with Laravel 12 and 13, with both
 - Update the README or `js/README.md` when behaviour, configuration, or public API changes.
 - Open the pull request against `main` and fill in the template. A maintainer reviews it once CI is green.
 
+## Releasing
+
+Maintainers release from `main`:
+
+1. Set the same version in `js/package.json` and `js/package-lock.json`, and rename the `Unreleased` section of [`CHANGELOG.md`](CHANGELOG.md) to `<version> - <date>`, leaving an empty `Unreleased` section above it.
+2. Merge that change, then tag the merge commit as `v<version>` and push the tag.
+
+The `Release` workflow publishes `@arttecs/murmur` to npm and creates the GitHub release from the changelog entry. Packagist picks the tag up on its own.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
