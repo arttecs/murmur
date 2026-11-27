@@ -1,4 +1,9 @@
-# Murmur
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/arttecs/murmur/main/art/logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/arttecs/murmur/main/art/logo-light.svg" alt="Murmur" width="300">
+  </picture>
+</p>
 
 [![Tests](https://github.com/arttecs/murmur/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/arttecs/murmur/actions/workflows/tests.yml)
 [![Packagist Version](https://img.shields.io/packagist/v/arttecs/murmur)](https://packagist.org/packages/arttecs/murmur)
