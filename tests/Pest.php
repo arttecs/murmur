@@ -29,6 +29,8 @@ pest()->in('Feature')->afterEach(function () {
     ServerHarness::stopAll();
 
     cleanRedisFixtures($this->redisFixtures ?? []);
+    gc_collect_cycles();
+    gc_mem_caches();
 });
 
 /**

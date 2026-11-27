@@ -149,7 +149,7 @@ class Worker
         protected ?LifecycleRecorder $recorder = null,
     ) {
         if (! Snapshot::validNode($node)) {
-            throw new InvalidArgumentException('Murmur could not derive a valid worker node name. Set MURMUR_NODE explicitly.');
+            throw new InvalidArgumentException(Snapshot::INVALID_NODE_MESSAGE);
         }
 
         if (PHP_OS_FAMILY === 'Windows' || ! function_exists('proc_open')) {

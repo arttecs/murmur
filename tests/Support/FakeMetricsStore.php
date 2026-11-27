@@ -23,8 +23,24 @@ class FakeMetricsStore implements MetricsStore
 
         if ($this->mode === 'query-log') {
             $connection = DB::connection('sqlite');
+            if ($first) {
+                $connection->whenQueryingForLongerThan(0, fn () => $this->append(['phase' => 'duration threshold']));
+            }
+
+            $duration = $connection->totalQueryDuration();
+            $peak = memory_get_peak_usage();
+            $allocation = str_repeat('x', 2 * 1024 * 1024);
+            $raisedPeak = memory_get_peak_usage();
+            unset($allocation);
+            $connection->logQuery('select 1', [], 10.0);
             $connection->select('select 1');
-            $this->append(['phase' => 'queries', 'count' => count($connection->getQueryLog())]);
+            $this->append([
+                'phase' => 'queries',
+                'count' => count($connection->getQueryLog()),
+                'duration' => $duration,
+                'peak' => $peak,
+                'raisedPeak' => $raisedPeak,
+            ]);
         }
 
         if ($this->mode === 'noisy' && $first) {

@@ -24,7 +24,7 @@ Open a GET request to `/sse` with these URL query parameters.
 | `connection` | No | A previously announced connection ID to reuse across reconnects. |
 | `lastEventId` | No | A fallback replay cursor when `Last-Event-ID` is absent or malformed. |
 
-A topic is 1–200 bytes of valid UTF-8 and cannot contain a comma or any byte in `\x00–\x20` or `\x7F` (ASCII whitespace, C0 controls, and DEL). Topic names are case-sensitive. A request may contain at most `server.max_topics_per_connection` entries, 50 by default. Commas delimit entries after URL decoding, and empty entries are invalid.
+A topic is 1–200 bytes of valid UTF-8 and cannot contain a comma or any byte in `\x00–\x20` or `\x7F` (ASCII whitespace, C0 controls, and DEL). Unicode whitespace and format characters outside ASCII are allowed. Topic names are case-sensitive. A request may contain at most `server.max_topics_per_connection` entries, 50 by default. Commas delimit entries after URL decoding, and empty entries are invalid.
 
 | Status | Meaning |
 | --- | --- |

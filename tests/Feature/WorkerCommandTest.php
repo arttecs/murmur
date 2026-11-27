@@ -153,16 +153,20 @@ it('acknowledges a failed write and continues even when the exception handler th
     }
 });
 
-it('keeps the database query log empty across writes', function () {
+it('resets database query state and peak memory across writes', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-record-');
 
     try {
         $line = json_encode(metricsRecordPayload(), JSON_THROW_ON_ERROR)."\n";
         $process = recordMetricsInput($line.$line, 'fake', $file, 'query-log');
 
-        expect($process->getExitCode())->toBe(0);
+        expect($process->getExitCode())->toBe(0, $process->getErrorOutput());
         expect($process->getOutput())->toBe("ok\nok\n");
-        expect(array_column(metricsTrace($file, 'queries'), 'count'))->toBe([0, 0]);
+        [$first, $second] = metricsTrace($file, 'queries');
+        expect([$first->count, $second->count])->toBe([0, 0]);
+        expect((float) $second->duration)->toBe(0.0);
+        expect(metricsTrace($file, 'duration threshold'))->toHaveCount(2);
+        expect($first->raisedPeak - $second->peak)->toBeGreaterThan(1024 * 1024);
     } finally {
         unlink($file);
     }

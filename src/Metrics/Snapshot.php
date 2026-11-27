@@ -16,6 +16,11 @@ use stdClass;
 class Snapshot
 {
     /**
+     * The validation error for an invalid configured or derived node name.
+     */
+    public const INVALID_NODE_MESSAGE = 'Murmur MURMUR_NODE is invalid. The metrics.node setting must use 1 to 128 ASCII letters, digits, dots, underscores, colons, or hyphens.';
+
+    /**
      * Prepare samples for JSON so even an empty label set encodes as an object.
      *
      * @param  list<Sample>  $samples

@@ -163,10 +163,16 @@ it('closes every connection with the shutdown reason', function () {
     [$b] = fakeConnection();
     $hub->attach($a, ['news']);
     $hub->attach($b, ['other']);
+    $reasons = [];
+    $capture = function (string $reason) use (&$reasons): void {
+        $reasons[] = $reason;
+    };
+    $a->onClose($capture);
+    $b->onClose($capture);
+
     $hub->closeAll();
 
-    $a->onClose(fn (string $reason) => expect($reason)->toBe('shutdown'));
-    $b->onClose(fn (string $reason) => expect($reason)->toBe('shutdown'));
+    expect($reasons)->toBe(['shutdown', 'shutdown']);
     expect($a->isClosed())->toBeTrue();
     expect($b->isClosed())->toBeTrue();
     expect($hub->connectionCount())->toBe(0);
@@ -184,12 +190,16 @@ it('closes a failed connection, reports its error and continues fan-out', functi
         [$healthy, $output] = fakeConnection();
         $hub->attach($failing, ['news']);
         $hub->attach($healthy, ['news']);
+        $reasons = [];
+        $failing->onClose(function (string $reason) use (&$reasons): void {
+            $reasons[] = $reason;
+        });
 
         $hub->dispatch(new Event('news', 'updated'));
 
         expect($failing->isClosed())->toBeTrue();
         expect($hub->connectionCount())->toBe(1);
-        $failing->onClose(fn (string $reason) => expect($reason)->toBe('error'));
+        expect($reasons)->toBe(['error']);
         expect($output())->toContain("event: updated\n");
         expect(file_get_contents($errorLog))->toContain('The subscriber write failed.');
     } finally {

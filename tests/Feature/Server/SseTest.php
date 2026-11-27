@@ -161,7 +161,10 @@ it('force-closes a stalled subscriber after the token expiry grace period', func
 
     try {
         expect((string) $h->pollHealth(1)->getBody())->toBe('{"status":"ok","connections":1}');
-        $h->log->append(new Event('private-a', 'large', str_repeat('x', 16 * 1024 * 1024)));
+        $payload = str_repeat('x', 1024 * 1024);
+        for ($i = 0; $i < 16; $i++) {
+            $h->log->append(new Event('private-a', 'large', $payload));
+        }
 
         expect((string) $h->pollHealth(0, timeout: 2.5)->getBody())->toBe('{"status":"ok","connections":0}');
         expect($h->trackedSocketCount())->toBe(1);

@@ -181,7 +181,7 @@ class ServeCommand extends Command
 
         if ($node !== null && (! is_string($node) || trim($node) !== '')) {
             if (! Snapshot::validNode($node)) {
-                throw new InvalidArgumentException('Murmur MURMUR_NODE is invalid. Use 1 to 128 ASCII letters, digits, dots, underscores, colons, or hyphens.');
+                throw new InvalidArgumentException(Snapshot::INVALID_NODE_MESSAGE);
             }
 
             return $node;

@@ -50,7 +50,7 @@ class MetricsConfig
         }
 
         if ($node !== null && ! Snapshot::validNode($node)) {
-            throw new InvalidArgumentException('Murmur MURMUR_NODE is invalid. The metrics.node setting must use 1 to 128 ASCII letters, digits, dots, underscores, colons, or hyphens.');
+            throw new InvalidArgumentException(Snapshot::INVALID_NODE_MESSAGE);
         }
 
         $only = $config->get('murmur.metrics.only');

@@ -302,6 +302,8 @@ class MurmurManager
 
     /**
      * Create a stream for the given topic.
+     *
+     * @throws InvalidArgumentException
      */
     public function stream(string $topic): Stream
     {
@@ -312,6 +314,8 @@ class MurmurManager
      * Issue a subscription token for the given topics.
      *
      * @param  array<string>  $topics
+     *
+     * @throws InvalidArgumentException
      */
     public function token(array $topics, ?int $ttl = null): string
     {

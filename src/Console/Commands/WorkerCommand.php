@@ -76,7 +76,7 @@ class WorkerCommand extends Command
                 return $this->failure('Murmur worker requires a metrics store or lifecycle events.');
             }
 
-            $this->clearQueryLogs();
+            $this->resetDatabaseConnections();
 
             while (($line = @fgets(STDIN, Worker::MAX_LINE_BYTES + 2)) !== false) {
                 if (str_ends_with($line, "\n")) {
@@ -188,12 +188,13 @@ class WorkerCommand extends Command
         }
 
         if ($invalid > 0) {
-            $records = $invalid === 1 ? 'record' : 'records';
-            $this->reportFailure(new RuntimeException("Murmur lifecycle batch had {$invalid} invalid {$records}."));
+            $recordLabel = $invalid === 1 ? 'record' : 'records';
+            $this->reportFailure(new RuntimeException("Murmur lifecycle batch had {$invalid} invalid {$recordLabel}."));
         }
 
         if ($failures > 0) {
-            fwrite(STDERR, "Murmur lifecycle batch had {$failures} failed events.\n");
+            $eventLabel = $failures === 1 ? 'event' : 'events';
+            fwrite(STDERR, "Murmur lifecycle batch had {$failures} failed {$eventLabel}.\n");
         }
 
         return $invalid === 0 && $failures === 0;
@@ -255,11 +256,11 @@ class WorkerCommand extends Command
     }
 
     /**
-     * Reset per-message database logs, logging context, and container scope.
+     * Reset per-message database, logging, container, and memory state.
      */
     protected function resetMessageState(): void
     {
-        $this->clearQueryLogs();
+        $this->resetDatabaseConnections();
         $app = app();
 
         if ($app->resolved('log')) {
@@ -284,12 +285,16 @@ class WorkerCommand extends Command
 
         $app->forgetScopedInstances();
         Facade::clearResolvedInstances();
+
+        if (function_exists('memory_reset_peak_usage')) {
+            memory_reset_peak_usage();
+        }
     }
 
     /**
-     * Disable and clear query logs on Laravel database connections used by the worker.
+     * Reset query logging and duration tracking on existing database connections.
      */
-    protected function clearQueryLogs(): void
+    protected function resetDatabaseConnections(): void
     {
         if (! app()->resolved('db')) {
             return;
@@ -298,6 +303,14 @@ class WorkerCommand extends Command
         foreach (DB::getConnections() as $connection) {
             $connection->disableQueryLog();
             $connection->flushQueryLog();
+
+            if (method_exists($connection, 'resetTotalQueryDuration')) {
+                $connection->resetTotalQueryDuration();
+            }
+
+            if (method_exists($connection, 'allowQueryDurationHandlersToRunAgain')) {
+                $connection->allowQueryDurationHandlersToRunAgain();
+            }
         }
     }
 

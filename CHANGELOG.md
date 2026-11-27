@@ -36,8 +36,7 @@
 
 ### Changed
 
-- Topic names must be valid UTF-8. The limit remains 200 bytes.
-
+- Topic names are validated independently of the process locale. They must be 1–200 bytes of valid UTF-8 without commas, ASCII whitespace, C0 control characters, or DEL.
 - Private channel authorization uses Laravel's broadcasting route and issues one token per channel.
 - The JavaScript client authorizes each private channel through `/broadcasting/auth`, isolates denied channels, retries throttled authorization with `Retry-After`, and budgets the stream URL for its largest reconnect.
 - The JavaScript client marks newly joined channels as fresh until the server attaches them, follows numbered heartbeats, backs off with jitter until a stream attaches, and expires independent streams after eight attempts without progress.
@@ -51,7 +50,10 @@
 - Lifecycle listener failures no longer stop delivery of later events in the same batch.
 - Worker acknowledgements use a dedicated pipe so application output reaches the server log.
 - Lifecycle delivery flushes queued batches through the shutdown grace period and counts unacknowledged records when the worker stops.
-
+- The worker drops malformed lifecycle records individually, reports their count, and dispatches the remaining records in order.
+- Full lifecycle batches flush on the next event-loop tick when the worker is idle.
+- Murmur detects worker exit even when a descendant inherits the acknowledgement pipe, closes its pipe watchers before reaping, and logs lifecycle drops at shutdown.
+- The worker resets database query duration tracking and peak memory usage between messages.
 - Cursorless connections sample the log tail so quiet subscribers can replay from their attach point when it has an ID.
 - Custom authorizer grants are validated, duplicate tokens are verified once per request, and distant expiries avoid scheduling timers outside the supported range.
 - Conformance suites share a bounded ReactPHP loop waiter and exercise replay snapshots during appends.

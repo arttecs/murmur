@@ -235,6 +235,7 @@ it('keeps serving and sends subsequent batches after a lifecycle listener fails'
         $reader->close();
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'closed')) === 1, $process);
 
+        expect($process->getErrorOutput())->toContain('Murmur lifecycle batch had 1 failed event.');
         expect($process->getErrorOutput())->not->toContain('The worker reported the cause through the exception handler.');
         expect(array_column(metricsTrace($file), 'phase'))->toBe(['opened', 'reported', 'closed']);
         expect(array_unique(array_column(metricsTrace($file), 'pid')))->toHaveCount(1);

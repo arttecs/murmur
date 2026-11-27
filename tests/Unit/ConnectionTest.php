@@ -7,9 +7,15 @@ it('closes a connection whose client stopped reading', function () {
     $stream = new ThroughStream;
     $stream->pause();
     $connection = new Connection($stream, maxBufferBytes: 10);
+    $reasons = [];
+    $connection->onClose(function (string $reason) use (&$reasons): void {
+        $reasons[] = $reason;
+    });
+
     $connection->send(str_repeat('x', 11));
+
     expect($connection->isClosed())->toBeTrue();
-    $connection->onClose(fn (string $reason) => expect($reason)->toBe('slow_consumer'));
+    expect($reasons)->toBe(['slow_consumer']);
 });
 
 it('runs close listeners once', function () {
