@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "author": "Arthur Purcino (https://github.com/pvrcino)",
-  "homepage": "https://github.com/arttecs/murmur/tree/main/js#readme",
+  "homepage": "https://murmur.arttecs.com/docs/javascript",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/arttecs/murmur.git",

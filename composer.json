@@ -11,8 +11,9 @@
     ],
     "type": "library",
     "license": "MIT",
-    "homepage": "https://github.com/arttecs/murmur",
+    "homepage": "https://murmur.arttecs.com",
     "support": {
+        "docs": "https://murmur.arttecs.com/docs",
         "issues": "https://github.com/arttecs/murmur/issues",
         "source": "https://github.com/arttecs/murmur",
         "security": "https://github.com/arttecs/murmur/security/policy"
