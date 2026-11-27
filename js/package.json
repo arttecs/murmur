@@ -1,6 +1,6 @@
 {
   "name": "@arttecs/murmur",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "JavaScript client for Murmur server-sent events.",
   "type": "module",
   "license": "MIT",
