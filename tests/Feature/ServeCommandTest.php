@@ -345,7 +345,7 @@ it('uses the subscription authorizer registered in a laravel provider boot metho
     });
 
     try {
-        $this->artisan('murmur:serve', ['--port' => $port])->assertSuccessful();
+        $this->artisan('murmur:serve', ['--port' => $port])->assertSuccessful()->run();
         expect(await($response->promise())->status())->toBe(200);
         expect($provider->resolved)->toBe([$this->app]);
     } finally {
