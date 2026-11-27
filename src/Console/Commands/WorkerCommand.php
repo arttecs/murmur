@@ -18,6 +18,7 @@ use Illuminate\Log\Context\Repository as ContextRepository;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Facade;
 use InvalidArgumentException;
+use RuntimeException;
 use stdClass;
 use Throwable;
 
@@ -155,7 +156,7 @@ class WorkerCommand extends Command
     }
 
     /**
-     * Validate the entire batch before dispatching events in record order.
+     * Validate the envelope and dispatch valid events in record order.
      */
     protected function dispatchBatch(Dispatcher $events, stdClass $data, int $batchLimit): bool
     {
@@ -167,19 +168,16 @@ class WorkerCommand extends Command
         }
 
         $topicLimit = (int) config('murmur.server.max_topics_per_connection');
-        $batch = [];
+        $invalid = 0;
+        $failures = 0;
 
         foreach ($records as $record) {
             if (! $record instanceof stdClass || ($event = $this->lifecycleEvent($data->node, $record, $topicLimit)) === null) {
-                return false;
+                $invalid++;
+
+                continue;
             }
 
-            $batch[] = $event;
-        }
-
-        $failures = 0;
-
-        foreach ($batch as $event) {
             try {
                 $events->dispatch($event);
             } catch (Throwable $error) {
@@ -189,11 +187,16 @@ class WorkerCommand extends Command
             }
         }
 
+        if ($invalid > 0) {
+            $records = $invalid === 1 ? 'record' : 'records';
+            $this->reportFailure(new RuntimeException("Murmur lifecycle batch had {$invalid} invalid {$records}."));
+        }
+
         if ($failures > 0) {
             fwrite(STDERR, "Murmur lifecycle batch had {$failures} failed events.\n");
         }
 
-        return $failures === 0;
+        return $invalid === 0 && $failures === 0;
     }
 
     /**

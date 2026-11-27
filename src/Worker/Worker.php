@@ -452,7 +452,7 @@ class Worker
 
         if ($reply === 'error') {
             $message = $type === 'metrics' ? 'write the metrics snapshot' : "process the {$type} message";
-            ErrorReporter::report(new RuntimeException("Murmur could not {$message}. The worker reported the cause through the exception handler."));
+            ErrorReporter::report(new RuntimeException("Murmur could not {$message}."));
         }
     }
 

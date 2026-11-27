@@ -163,7 +163,7 @@ class MetricsTestServiceProvider extends ServiceProvider
             }
         });
 
-        if ($mode === 'fail-first') {
+        if (in_array($mode, ['fail-first', 'report'], true)) {
             $this->app->make(ExceptionHandler::class)->reportable(function (RuntimeException $error) use ($record): void {
                 $record(['phase' => 'reported', 'message' => $error->getMessage()]);
 

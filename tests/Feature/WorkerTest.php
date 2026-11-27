@@ -125,7 +125,7 @@ it('reports failed acknowledgements and keeps recording with the same writer', f
         $process->start();
         waitForMetricsCondition(fn () => count(metricsTrace($file, 'saved')) >= 1, $process);
 
-        expect($process->getErrorOutput())->toContain('The worker reported the cause through the exception handler.')
+        expect($process->getErrorOutput())->toContain('Murmur could not write the metrics snapshot.')
             ->not->toContain('sensitive store exception', 'The test exception handler failed.');
         [$failed, $reported, $next, $saved] = metricsTrace($file);
         expect([$failed->phase, $reported->phase, $next->phase, $saved->phase])->toBe(['start', 'reported', 'start', 'saved']);

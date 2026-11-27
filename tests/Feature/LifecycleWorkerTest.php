@@ -41,18 +41,25 @@ function lifecycleWorkerProcess(string $file, string|iterable $input, array $env
     return $process;
 }
 
-it('rejects a malformed lifecycle batch in its entirety and dispatches the next valid batch', function (Closure $invalid) {
+it('rejects malformed envelopes and drops malformed records individually', function (Closure $invalid, bool $validEnvelope = false) {
     $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-worker-');
 
     try {
         $open = lifecycleWorkerRecord();
         $closed = lifecycleWorkerRecord(['occurredAt' => 124, 'durationSeconds' => 1.5, 'reason' => 'expired']);
-        $process = lifecycleWorkerProcess($file, $invalid($open, $closed).lifecycleWorkerLine([$open, $closed]));
+        $process = lifecycleWorkerProcess($file, $invalid($open, $closed).lifecycleWorkerLine([$open, $closed]), [
+            'MURMUR_TEST_LIFECYCLE_MODE' => 'report',
+        ]);
 
         expect($process->getExitCode())->toBe(0, $process->getErrorOutput());
         expect($process->getOutput())->toBe("error\nok\n");
         expect($process->getErrorOutput())->toBe('');
-        expect(array_column(metricsTrace($file), 'phase'))->toBe(['opened', 'closed']);
+        expect(array_column(metricsTrace($file), 'phase'))->toBe($validEnvelope
+            ? ['opened', 'reported', 'opened', 'closed']
+            : ['opened', 'closed']);
+        expect(array_column(metricsTrace($file, 'reported'), 'message'))->toBe($validEnvelope
+            ? ['Murmur lifecycle batch had 1 invalid record.']
+            : []);
     } finally {
         unlink($file);
     }
@@ -62,24 +69,45 @@ it('rejects a malformed lifecycle batch in its entirety and dispatches the next 
     'too many records' => [fn ($open) => lifecycleWorkerLine([$open, $open, $open])],
     'invalid node' => [fn ($open) => lifecycleWorkerLine([$open], ['node' => "bad\n"])],
     'extra envelope field' => [fn ($open) => lifecycleWorkerLine([$open], ['payload' => 'bad'])],
-    'record is not an object' => [fn ($open) => lifecycleWorkerLine([$open, null])],
-    'unanchored ID' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['connectionId' => str_repeat('a', 32)."\n"])])],
-    'ID is not a string' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['connectionId' => 123])])],
-    'empty topics' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => []])])],
-    'topics are not a list' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => (object) $open['topics']])])],
-    'too many topics' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => array_map(fn ($i) => base64_encode("topic-{$i}"), range(0, 50))])])],
-    'invalid wire topic' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => [base64_encode('not a topic')]])])],
-    'duplicate topic' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => [base64_encode('news'), base64_encode('news')]])])],
-    'invalid topic encoding' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => ['bmV3cw']])])],
-    'zero timestamp' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['occurredAt' => 0])])],
-    'float timestamp' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['occurredAt' => 1.5])])],
-    'unknown reason' => [fn ($open, $closed) => lifecycleWorkerLine([$open, [...$closed, 'reason' => 'unknown']])],
-    'missing duration' => [fn ($open, $closed) => lifecycleWorkerLine([$open, array_diff_key($closed, ['durationSeconds' => true])])],
-    'negative duration' => [fn ($open, $closed) => lifecycleWorkerLine([$open, [...$closed, 'durationSeconds' => -1]])],
-    'string duration' => [fn ($open, $closed) => lifecycleWorkerLine([$open, [...$closed, 'durationSeconds' => '1.5']])],
-    'infinite duration' => [fn ($open, $closed) => str_replace('"durationSeconds":1.5', '"durationSeconds":1e400', lifecycleWorkerLine([$open, $closed]))],
-    'extra record field' => [fn ($open) => lifecycleWorkerLine([$open, [...$open, 'token' => 'bad']])],
+    'record is not an object' => [fn ($open) => lifecycleWorkerLine([$open, null]), true],
+    'unanchored ID' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['connectionId' => str_repeat('a', 32)."\n"])]), true],
+    'ID is not a string' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['connectionId' => 123])]), true],
+    'empty topics' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => []])]), true],
+    'topics are not a list' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => (object) $open['topics']])]), true],
+    'too many topics' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => array_map(fn ($i) => base64_encode("topic-{$i}"), range(0, 50))])]), true],
+    'invalid wire topic' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => [base64_encode('not a topic')]])]), true],
+    'duplicate topic' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => [base64_encode('news'), base64_encode('news')]])]), true],
+    'invalid topic encoding' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['topics' => ['bmV3cw']])]), true],
+    'zero timestamp' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['occurredAt' => 0])]), true],
+    'float timestamp' => [fn ($open) => lifecycleWorkerLine([$open, lifecycleWorkerRecord(['occurredAt' => 1.5])]), true],
+    'unknown reason' => [fn ($open, $closed) => lifecycleWorkerLine([$open, [...$closed, 'reason' => 'unknown']]), true],
+    'missing duration' => [fn ($open, $closed) => lifecycleWorkerLine([$open, array_diff_key($closed, ['durationSeconds' => true])]), true],
+    'negative duration' => [fn ($open, $closed) => lifecycleWorkerLine([$open, [...$closed, 'durationSeconds' => -1]]), true],
+    'string duration' => [fn ($open, $closed) => lifecycleWorkerLine([$open, [...$closed, 'durationSeconds' => '1.5']]), true],
+    'infinite duration' => [fn ($open, $closed) => str_replace('"durationSeconds":1.5', '"durationSeconds":1e400', lifecycleWorkerLine([$open, $closed])), true],
+    'extra record field' => [fn ($open) => lifecycleWorkerLine([$open, [...$open, 'token' => 'bad']]), true],
 ]);
+
+it('reports one invalid record count and dispatches the surrounding records in order', function () {
+    $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-worker-');
+
+    try {
+        $open = lifecycleWorkerRecord();
+        $closed = lifecycleWorkerRecord(['occurredAt' => 124, 'durationSeconds' => 1.0, 'reason' => 'client']);
+        $process = lifecycleWorkerProcess($file, lifecycleWorkerLine([$open, 'sensitive record', $closed, null]), [
+            'MURMUR_LIFECYCLE_BATCH' => '4',
+            'MURMUR_TEST_LIFECYCLE_MODE' => 'report',
+        ]);
+
+        expect($process->getExitCode())->toBe(0, $process->getErrorOutput())
+            ->and($process->getOutput())->toBe("error\n")
+            ->and($process->getErrorOutput())->toBe('')
+            ->and(array_column(metricsTrace($file), 'phase'))->toBe(['opened', 'closed', 'reported'])
+            ->and(array_column(metricsTrace($file, 'reported'), 'message'))->toBe(['Murmur lifecycle batch had 2 invalid records.']);
+    } finally {
+        unlink($file);
+    }
+});
 
 it('isolates listener failures within a batch and reports one exception and one summary', function () {
     $file = tempnam(sys_get_temp_dir(), 'murmur-lifecycle-worker-');
