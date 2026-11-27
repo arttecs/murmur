@@ -244,6 +244,10 @@ class SseHandler
     protected function scheduleExpiry(Connection $connection, ConnectionInterface $client, int $expiresAt, float $delay): void
     {
         $timer = $this->loop->addTimer(max(0.0, $delay), function (TimerInterface $fired) use ($connection, $client, $expiresAt, &$timer): void {
+            if ($timer !== $fired) {
+                return;
+            }
+
             $remaining = $expiresAt - microtime(true);
 
             if ($remaining > 0.0) {

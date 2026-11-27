@@ -7,6 +7,7 @@ use Arttecs\Murmur\Metrics\Snapshot;
 use Arttecs\Murmur\Server\ErrorReporter;
 use Arttecs\Murmur\Server\LifecycleRecorder;
 use Arttecs\Murmur\Server\Metrics;
+use Arttecs\Murmur\Server\PeriodicTimer;
 use InvalidArgumentException;
 use React\ChildProcess\Process;
 use React\EventLoop\LoopInterface;
@@ -46,12 +47,12 @@ class Worker
     /**
      * The timer that takes periodic snapshots.
      */
-    protected ?TimerInterface $interval = null;
+    protected ?PeriodicTimer $interval = null;
 
     /**
      * The timer that marks lifecycle batches due.
      */
-    protected ?TimerInterface $lifecycleInterval = null;
+    protected ?PeriodicTimer $lifecycleInterval = null;
 
     /**
      * The metrics registry used to collect snapshots and count lifecycle records.
@@ -106,7 +107,7 @@ class Worker
     /**
      * The timer that detects process exit independently of pipe EOF.
      */
-    protected ?TimerInterface $exitMonitor = null;
+    protected ?PeriodicTimer $exitMonitor = null;
 
     /**
      * The worker started before the server opened any sockets.
@@ -184,7 +185,7 @@ class Worker
         $ack->on('data', $this->receive(...));
         $ack->on('end', $ack->pause(...));
         $ack->on('error', $ack->pause(...));
-        $this->exitMonitor = $this->loop->addPeriodicTimer(0.1, $this->pollExit(...));
+        $this->exitMonitor = new PeriodicTimer($this->loop, 0.1, $this->pollExit(...));
         $process->stdin->on('drain', function (): void {
             $this->backpressured = false;
         });
@@ -197,11 +198,11 @@ class Worker
     {
         $process = $this->process;
 
-        if ($process->isRunning()) {
+        if ($process === null || $process->isRunning()) {
             return;
         }
 
-        $this->loop->cancelTimer($this->exitMonitor);
+        $this->exitMonitor?->cancel();
         $this->exitMonitor = null;
         $process->stdin->close();
 
@@ -238,14 +239,14 @@ class Worker
                 $this->scheduleLifecycle();
             }
 
-            $this->lifecycleInterval = $this->loop->addPeriodicTimer($this->lifecycle->interval, function (): void {
+            $this->lifecycleInterval = new PeriodicTimer($this->loop, $this->lifecycle->interval, function (): void {
                 $this->lifecycleDue = $this->recorder->pending();
                 $this->flush();
             });
         }
 
         if ($this->config !== null) {
-            $this->interval = $this->loop->addPeriodicTimer($this->config->interval, $this->scheduleMetrics(...));
+            $this->interval = new PeriodicTimer($this->loop, $this->config->interval, $this->scheduleMetrics(...));
             $this->scheduleMetrics();
         }
     }
@@ -443,7 +444,11 @@ class Worker
         $this->pending = $this->lastSent = $type;
 
         if ($this->stopping === null) {
-            $this->deadline = $this->loop->addTimer($timeout, function () use ($type): void {
+            $this->deadline = $this->loop->addTimer($timeout, function (TimerInterface $timer) use ($type): void {
+                if ($this->deadline !== $timer) {
+                    return;
+                }
+
                 $this->deadline = null;
                 ErrorReporter::report(new RuntimeException("Murmur {$type} recorder timed out."));
             });
@@ -525,18 +530,17 @@ class Worker
     protected function exited(?int $code, ?int $signal): void
     {
         $this->process = null;
-        $this->cancelWrites();
-        $this->discardLifecycle();
 
-        if ($this->exitMonitor !== null) {
-            $this->loop->cancelTimer($this->exitMonitor);
-            $this->exitMonitor = null;
-        }
+        $this->exitMonitor?->cancel();
+        $this->exitMonitor = null;
 
         if ($this->shutdownTimer !== null) {
             $this->loop->cancelTimer($this->shutdownTimer);
             $this->shutdownTimer = null;
         }
+
+        $this->cancelWrites();
+        $this->discardLifecycle();
 
         if ($this->stopping !== null) {
             $this->stopping->resolve(null);
@@ -553,13 +557,11 @@ class Worker
      */
     protected function cancelWrites(bool $draining = false): void
     {
-        if ($this->interval !== null) {
-            $this->loop->cancelTimer($this->interval);
-            $this->interval = null;
-        }
+        $this->interval?->cancel();
+        $this->interval = null;
 
-        if (! $draining && $this->lifecycleInterval !== null) {
-            $this->loop->cancelTimer($this->lifecycleInterval);
+        if (! $draining) {
+            $this->lifecycleInterval?->cancel();
             $this->lifecycleInterval = null;
         }
 
@@ -580,13 +582,18 @@ class Worker
     /**
      * Signal a worker that has not exited after EOF and escalate if necessary.
      */
-    protected function terminate(): void
+    protected function terminate(TimerInterface $timer): void
     {
+        $process = $this->process;
+
+        if ($process === null || $this->shutdownTimer !== $timer) {
+            return;
+        }
+
         $this->discardLifecycle();
         $this->cancelWrites();
         $this->inputClosing = true;
 
-        $process = $this->process;
         $process->stdin->close();
         $process->terminate();
         $this->shutdownTimer = $this->loop->addTimer(0.2, fn () => $process->terminate(static::KILL_SIGNAL));

@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## Unreleased
 
+### Fixed
+
+- Worker exit and shutdown timers can no longer crash the server when ext-uv dispatches a cancelled timer. Cancelled worker timers stop repeating and acknowledgement deadlines no longer report stale timeouts.
+- Cancelled heartbeat and loop-lag timers stop repeating after server close.
+- A cancelled HTTP request deadline no longer closes an established SSE stream, and closing an SSE stream no longer lets a cancelled expiry timer rearm itself.
+- Cancelled Redis reader timers no longer disconnect a reader after a completed read or attempt a retry after close.
+
 ## 0.1.1 - 2026-11-27
 
 ### Changed
