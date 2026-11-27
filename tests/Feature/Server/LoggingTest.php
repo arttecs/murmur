@@ -46,6 +46,7 @@ afterEach(function () {
 });
 
 it('sends errors to the logger with the exception context', function () {
+    ini_set('error_log', $this->errorLog);
     ErrorReporter::logUsing($this->logger);
     $error = new RuntimeException("Delivery\nfailed.");
 
@@ -56,6 +57,7 @@ it('sends errors to the logger with the exception context', function () {
 });
 
 it('falls back to the PHP error log and continues delivery when the logger throws', function () {
+    ini_set('error_log', $this->errorLog);
     $this->logger->throws = true;
     ErrorReporter::logUsing($this->logger);
     $log = new MemoryEventLog;
@@ -72,6 +74,7 @@ it('falls back to the PHP error log and continues delivery when the logger throw
 });
 
 it('rate-limits logger calls and includes the number of suppressed errors in the next report', function () {
+    ini_set('error_log', $this->errorLog);
     ErrorReporter::logUsing($this->logger);
     $first = new RuntimeException('First.');
     $last = new LogicException('Last.');
@@ -91,6 +94,7 @@ it('rate-limits logger calls and includes the number of suppressed errors in the
 });
 
 it('uses the server logger while listening and reports graceful shutdown transitions', function () {
+    ini_set('error_log', $this->errorLog);
     $port = ServerHarness::availablePort();
     $config = new ServerConfig('test-secret-with-at-least-32-bytes', port: $port);
     $server = new Server($config, new MemoryEventLog, logger: $this->logger);
@@ -117,6 +121,7 @@ it('uses the server logger while listening and reports graceful shutdown transit
 });
 
 it('still listens and drains when lifecycle logging fails', function () {
+    ini_set('error_log', $this->errorLog);
     $this->logger->throws = true;
     $port = ServerHarness::availablePort();
     $config = new ServerConfig('test-secret-with-at-least-32-bytes', port: $port);
@@ -134,6 +139,7 @@ it('still listens and drains when lifecycle logging fails', function () {
 });
 
 it('keeps the hooks of a server that is still listening when another one closes', function () {
+    ini_set('error_log', $this->errorLog);
     $first = new Server(new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort()), new MemoryEventLog, logger: $this->logger);
     $second = new Server(new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort()), new MemoryEventLog);
     $error = new RuntimeException('Still owned.');
@@ -153,6 +159,7 @@ it('keeps the hooks of a server that is still listening when another one closes'
 });
 
 it('does not let a throwing error counter interrupt a report', function () {
+    ini_set('error_log', $this->errorLog);
     ErrorReporter::logUsing($this->logger);
     ErrorReporter::countUsing(fn () => throw new RuntimeException('Counter failed.'));
 
@@ -162,6 +169,7 @@ it('does not let a throwing error counter interrupt a report', function () {
 });
 
 it('reports and counts a release failure when replay cannot be encoded', function () {
+    ini_set('error_log', $this->errorLog);
     $log = new MemoryEventLog;
     $cursor = $log->append(new Event('news', 'seen'))->id;
     $log->append(new Event('news', 'unencodable', INF));
@@ -179,6 +187,7 @@ it('reports and counts a release failure when replay cannot be encoded', functio
 });
 
 it('measures blocked loop ticks and warns once while counting each breach', function () {
+    ini_set('error_log', $this->errorLog);
     $loop = new StreamSelectLoop;
     $server = new Server(
         new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 80),
@@ -205,6 +214,7 @@ it('measures blocked loop ticks and warns once while counting each breach', func
 });
 
 it('does not warn below the threshold and cancels lag measurement on close', function () {
+    ini_set('error_log', $this->errorLog);
     $loop = new StreamSelectLoop;
     $server = new Server(
         new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 1000),
@@ -233,6 +243,7 @@ it('does not warn below the threshold and cancels lag measurement on close', fun
 });
 
 it('reports a blocked loop through the PHP error log without a logger', function () {
+    ini_set('error_log', $this->errorLog);
     $loop = new StreamSelectLoop;
     $server = new Server(
         new ServerConfig('test-secret-with-at-least-32-bytes', port: ServerHarness::availablePort(), loopLagThresholdMs: 80),

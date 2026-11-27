@@ -39,7 +39,7 @@ it('fails when the server rejects the event', function () {
 it('fails when the transfer breaks after an error status', function () {
     Http::fake(fn () => throw new ResponseTransferException('reset', new PsrRequest('POST', 'http://127.0.0.1:8080/publish'), new PsrResponse(500)));
     app(Publisher::class)->publish(new Event('news', 'x'));
-})->throws(PublishFailed::class, 'The publish request to the Murmur server failed.');
+})->skip(fn () => ! class_exists(ResponseTransferException::class), 'Requires Guzzle 8.')->throws(PublishFailed::class, 'The publish request to the Murmur server failed.');
 
 it('boots without a secret and fails only when murmur is used', function (?string $secret) {
     config(['murmur.secret' => $secret]);
