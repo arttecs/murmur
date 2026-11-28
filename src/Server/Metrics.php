@@ -28,6 +28,7 @@ class Metrics
         'murmur_event_loop_lag_exceeded_total' => ['Event loop lag measurements above the warning threshold.', false],
         'murmur_lifecycle_dropped_total' => ['Connection lifecycle records discarded or left unacknowledged when the worker stops.', false],
         'murmur_lifecycle_sent_total' => ['Connection lifecycle records handed to the worker.', false],
+        'murmur_gc_collected_cycles_total' => ['Cycles collected by scheduled PHP garbage collection.', false],
         'murmur_errors_total' => ['Errors reported, including rate-limited reports.', false],
     ];
 

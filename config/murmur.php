@@ -39,6 +39,9 @@ return [
          */
         'backlog' => (int) env('MURMUR_BACKLOG', 4096),
 
+        /** Seconds between manual cycle collections, at least 1. Set to 0 to keep PHP's automatic collector. */
+        'gc_interval' => is_numeric($gcInterval = env('MURMUR_GC_INTERVAL', 300.0)) ? (float) $gcInterval : $gcInterval,
+
         /** Seconds between SSE heartbeats. Keep this below the proxy idle timeout. */
         'heartbeat' => (float) env('MURMUR_HEARTBEAT', 20),
         /** Milliseconds clients should wait before reconnecting. Increase this to ease reconnect spikes. */
