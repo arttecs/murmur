@@ -257,7 +257,7 @@ class Server
                 : $finish($response);
         });
 
-        $this->socket = new SocketServer($this->config->host.':'.$this->config->port, [], $this->loop);
+        $this->socket = new SocketServer($this->config->host.':'.$this->config->port, ['tcp' => ['backlog' => $this->config->backlog]], $this->loop);
         $this->socket->on('connection', function (ConnectionInterface $client): void {
             if (count($this->clients) >= $this->config->maxSockets) {
                 $client->close();

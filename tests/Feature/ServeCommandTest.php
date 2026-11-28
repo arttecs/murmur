@@ -35,6 +35,7 @@ use function React\Promise\Timer\timeout;
 it('maps laravel config and options onto the server config', function () {
     config([
         'murmur.server.heartbeat' => 5,
+        'murmur.server.backlog' => 2048,
         'murmur.server.allowed_origins' => ['https://app.test'],
         'murmur.server.max_sockets' => 950,
         'murmur.server.request_timeout' => 3.5,
@@ -49,6 +50,7 @@ it('maps laravel config and options onto the server config', function () {
     $command->setInput(new ArrayInput(['--port' => '9999'], $command->getDefinition()));
     $config = $command->makeConfig();
     expect($config->port)->toBe(9999);
+    expect($config->backlog)->toBe(2048);
     expect($config->host)->toBe('127.0.0.1');
     expect($config->heartbeatSeconds)->toBe(5.0);
     expect($config->maxConnections)->toBe(900);

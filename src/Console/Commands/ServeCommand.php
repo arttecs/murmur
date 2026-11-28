@@ -265,6 +265,7 @@ class ServeCommand extends Command
             shutdownGraceSeconds: (float) config('murmur.server.shutdown_grace'),
             loopLagThresholdMs: (int) config('murmur.server.loop_lag_threshold_ms'),
             shutdownSpreadSeconds: (float) config('murmur.server.shutdown_spread'),
+            backlog: (int) config('murmur.server.backlog'),
         );
     }
 
