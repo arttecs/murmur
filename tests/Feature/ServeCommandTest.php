@@ -380,3 +380,11 @@ it('defers shutdown out of the signal handler so the loop never selects a closed
         Loop::set($previousLoop);
     }
 })->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'Signal handling requires ext-pcntl and ext-posix.');
+
+it('refuses an invalid garbage collection interval', function (mixed $interval) {
+    config(['murmur.server.gc_interval' => $interval]);
+
+    $this->artisan('murmur:serve')
+        ->expectsOutputToContain('gc_interval')
+        ->assertExitCode(1);
+})->with([-1, 0.5, 'invalid', '1e999', true]);

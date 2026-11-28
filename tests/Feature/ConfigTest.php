@@ -54,6 +54,7 @@ class ConfigTest extends TestCase
         $this->assertSame([], config('murmur.server.allowed_origins'));
         $this->assertSame(['enabled' => false, 'buffer' => 1000, 'batch' => 100, 'interval' => 1.0, 'timeout' => 10.0], config('murmur.lifecycle'));
         $this->assertSame('app-events', config('murmur.redis.stream'));
+        $this->assertSame(300.0, config('murmur.server.gc_interval'));
         $this->assertSame(4096, config('murmur.server.backlog'));
         $this->assertSame(5.0, config('murmur.server.shutdown_grace'));
         $this->assertSame(2.0, config('murmur.server.shutdown_spread'));
@@ -85,6 +86,9 @@ class ConfigTest extends TestCase
             ['MURMUR_DRIVER', 'custom', 'driver', 'custom'],
             ['MURMUR_SECRET', 'different-secret-with-at-least-32-bytes', 'secret', 'different-secret-with-at-least-32-bytes'],
             ['MURMUR_HOST', '0.0.0.0', 'server.host', '0.0.0.0'],
+            ['MURMUR_GC_INTERVAL', '0.25', 'server.gc_interval', 0.25],
+            ['MURMUR_GC_INTERVAL', '0', 'server.gc_interval', 0.0],
+            ['MURMUR_GC_INTERVAL', 'invalid', 'server.gc_interval', 'invalid'],
             ['MURMUR_BACKLOG', '2048', 'server.backlog', 2048],
             ['MURMUR_PORT', '8081', 'server.port', 8081],
             ['MURMUR_HEARTBEAT', '15.5', 'server.heartbeat', 15.5],

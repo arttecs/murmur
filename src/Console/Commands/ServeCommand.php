@@ -7,6 +7,7 @@ use Arttecs\Murmur\Metrics\Snapshot;
 use Arttecs\Murmur\MurmurManager;
 use Arttecs\Murmur\Server\LifecycleRecorder;
 use Arttecs\Murmur\Server\LoopBackend;
+use Arttecs\Murmur\Server\PeriodicTimer;
 use Arttecs\Murmur\Server\Server;
 use Arttecs\Murmur\Server\ServerConfig;
 use Arttecs\Murmur\Worker\LifecycleConfig;
@@ -53,6 +54,13 @@ class ServeCommand extends Command
 
         try {
             $config = $this->makeConfig();
+            $gcInterval = config('murmur.server.gc_interval');
+
+            if (! is_numeric($gcInterval) || ! is_finite((float) $gcInterval) || ((float) $gcInterval !== 0.0 && (float) $gcInterval < 1)) {
+                throw new InvalidArgumentException('The gc_interval setting must be 0 or at least 1 second.');
+            }
+
+            $gcInterval = (float) $gcInterval;
             $backend->validate($config->maxSockets);
             $metrics = $manager->metricsConfiguration();
             $lifecycle = LifecycleConfig::from(config());
@@ -96,6 +104,8 @@ class ServeCommand extends Command
         $deferShutdown = null;
         $shuttingDown = false;
         $exitCode = self::SUCCESS;
+        $gcTimer = null;
+        $restoreGc = false;
 
         try {
             try {
@@ -155,8 +165,20 @@ class ServeCommand extends Command
                 $loop->futureTick($loop->stop(...));
             });
 
+            if ($gcInterval > 0) {
+                $restoreGc = gc_enabled();
+                gc_disable();
+                $gcTimer = new PeriodicTimer($loop, $gcInterval, (new CollectCycles($server->metrics()))(...));
+            }
+
             $loop->run();
         } finally {
+            $gcTimer?->cancel();
+
+            if ($restoreGc) {
+                gc_enable();
+            }
+
             if ($deferShutdown !== null) {
                 foreach ($signals as $signal) {
                     $loop->removeSignal($signal, $deferShutdown);
