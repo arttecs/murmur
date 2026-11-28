@@ -23,9 +23,16 @@ class PeriodicTimer
     protected ?TimerInterface $timer = null;
 
     /**
+     * The monotonic time in seconds at which the next invocation is due.
+     */
+    protected float $dueAt;
+
+    /**
      * Schedule the first invocation.
      *
-     * Use the same one-millisecond minimum repeat interval as ExtUvLoop.
+     * Use the same one-millisecond minimum repeat interval as ExtUvLoop. A fixed-rate
+     * timer keeps its deadlines one interval apart, so a late invocation shortens the
+     * wait for the next one instead of delaying every later invocation.
      *
      * @param  Closure(): void  $callback
      */
@@ -33,11 +40,13 @@ class PeriodicTimer
         protected LoopInterface $loop,
         protected float $interval,
         protected Closure $callback,
+        protected bool $fixedRate = false,
     ) {
         if ($loop instanceof ExtUvLoop) {
             $this->interval = max(0.001, $interval);
         }
 
+        $this->dueAt = hrtime(true) / 1_000_000_000 + $interval;
         $this->schedule($interval);
     }
 
@@ -54,6 +63,21 @@ class PeriodicTimer
     }
 
     /**
+     * Get the delay before the next invocation.
+     */
+    protected function nextDelay(): float
+    {
+        if (! $this->fixedRate) {
+            return $this->interval;
+        }
+
+        $this->dueAt += $this->interval;
+        $minimum = $this->loop instanceof ExtUvLoop ? 0.001 : 0.0;
+
+        return max($minimum, $this->dueAt - hrtime(true) / 1_000_000_000);
+    }
+
+    /**
      * Schedule the next tick before calling the listener, which may cancel it.
      */
     protected function schedule(float $delay): void
@@ -63,7 +87,7 @@ class PeriodicTimer
                 return;
             }
 
-            $this->schedule($this->interval);
+            $this->schedule($this->nextDelay());
             ($this->callback)();
         });
     }

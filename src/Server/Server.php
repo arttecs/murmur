@@ -168,7 +168,8 @@ class Server
         $this->authorizer = $authorizer ?? new JwtSubscriptionAuthorizer($config->secret);
         $this->loop = $loop ?? Loop::get();
         $this->metrics = new Metrics;
-        $this->hub = new Hub($this->metrics, $lifecycle);
+        $heartbeatSlices = (int) max(1, min(50, floor($config->heartbeatSeconds / 0.1)));
+        $this->hub = new Hub($this->metrics, $lifecycle, $heartbeatSlices);
 
         $this->metrics->gauge('murmur_connections', 'Open SSE connections.', $this->hub->connectionCount(...));
         $this->metrics->gauge('murmur_sockets', 'Accepted TCP sockets currently open.', fn (): int => count($this->clients));
@@ -298,7 +299,12 @@ class Server
             ErrorReporter::logUsing($this->logger);
         }
 
-        $this->heartbeat = new PeriodicTimer($this->loop, $this->config->heartbeatSeconds, $this->hub->heartbeat(...));
+        $this->heartbeat = new PeriodicTimer(
+            $this->loop,
+            $this->config->heartbeatSeconds / $this->hub->heartbeatSliceCount(),
+            $this->hub->heartbeatSlice(...),
+            fixedRate: true,
+        );
         $previousTick = hrtime(true);
         $ticks = 0;
         $worst = 0.0;
