@@ -76,7 +76,7 @@ Maintainers release from `main`:
 1. Set the same version in `js/package.json` and `js/package-lock.json`, and rename the `Unreleased` section of [`CHANGELOG.md`](CHANGELOG.md) to `<version> - <date>`, leaving an empty `Unreleased` section above it.
 2. Merge that change, then tag the merge commit as `v<version>` and push the tag.
 
-The `Release` workflow publishes `@arttecs/murmur` to npm and creates the GitHub release from the changelog entry. Packagist picks the tag up on its own.
+The `Release` workflow publishes `@arttecs/murmur` to npm, creates the GitHub release from the changelog entry, and asks the documentation site to rebuild so its changelog picks up the new version. Packagist picks the tag up on its own.
 
 ## License
 
