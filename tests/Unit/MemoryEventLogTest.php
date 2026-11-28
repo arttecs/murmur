@@ -118,3 +118,60 @@ it('limits delivery error logs to one line per second and counts suppressed erro
         unlink($errorLog);
     }
 });
+
+it('merges interleaved topics and deduplicates subscriptions', function () {
+    $log = logAt();
+    $first = $log->append(new Event('b', 'first'));
+    $second = $log->append(new Event('a', 'second'));
+    $third = $log->append(new Event('b', 'third'));
+
+    expect(await($log->since(new EventId(1000, 0), ['a', 'b', 'a'], 3))->events)
+        ->toBe([$first, $second, $third]);
+});
+
+it('matches a brute-force replay across repeated wraps', function () {
+    $log = logAt(capacity: 5);
+    $history = [];
+
+    for ($i = 0; $i < 300; $i++) {
+        $history[] = $log->append(new Event(['a', 'b', 'c'][$i % 3], 'updated'));
+        $after = $history[max(0, $i - ($i % 8))]->id;
+        $expected = array_values(array_filter(array_slice($history, -5), fn (Event $event) => $event->topic !== 'b' && $event->id->compare($after) > 0));
+
+        expect(await($log->since($after, ['c', 'a'], 5))->events)->toBe($expected);
+    }
+});
+
+it('drops the index entry for a fully evicted topic', function () {
+    $log = logAt(capacity: 1);
+    $evicted = $log->append(new Event('old', 'updated'));
+    $log->append(new Event('new', 'updated'));
+
+    expect(await($log->since($evicted->id, ['old'], 5))->events)->toBe([]);
+    expect((new ReflectionProperty($log, 'topicPositions'))->getValue($log))->not->toHaveKey('old');
+});
+
+it('counts only filtered events toward replay overflow', function () {
+    $log = logAt();
+    $first = $log->append(new Event('a', 'updated'));
+    $second = $log->append(new Event('b', 'updated'));
+    $third = $log->append(new Event('a', 'updated'));
+    $after = new EventId(1000, 0);
+    $filter = fn (Event $event) => $event !== $second;
+
+    $overflow = await($log->since($after, ['a', 'b'], 1, $filter));
+
+    expect($overflow->gap)->toBeTrue()
+        ->and($overflow->events)->toBe([])
+        ->and($overflow->tail)->toBe($third->id)
+        ->and(await($log->since($after, ['a', 'b'], 2, $filter))->events)->toBe([$first, $third]);
+});
+
+it('finds a cursor between event sequences in the same millisecond', function () {
+    $log = new MemoryEventLog(ids: new EventIdGenerator(fn () => 1000));
+    $log->append(new Event('a', 'updated'));
+    $between = $log->append(new Event('b', 'updated'));
+    $later = $log->append(new Event('a', 'updated'));
+
+    expect(await($log->since($between->id, ['a'], 2))->events)->toBe([$later]);
+});
