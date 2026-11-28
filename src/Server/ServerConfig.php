@@ -45,6 +45,7 @@ readonly class ServerConfig
         public float $shutdownGraceSeconds = 5.0,
         public int $loopLagThresholdMs = 100,
         public float $shutdownSpreadSeconds = 2.0,
+        public int $backlog = 4096,
     ) {
         Secret::assertValid($secret);
 
@@ -68,6 +69,7 @@ readonly class ServerConfig
 
         foreach (compact(
             'heartbeatSeconds',
+            'backlog',
             'retryMs',
             'maxConnections',
             'maxSockets',
@@ -87,6 +89,10 @@ readonly class ServerConfig
 
         if (! is_finite($shutdownSpreadSeconds) || $shutdownSpreadSeconds < 0 || $shutdownSpreadSeconds >= $shutdownGraceSeconds) {
             throw new InvalidArgumentException('The shutdownSpreadSeconds setting must be non-negative and less than shutdownGraceSeconds.');
+        }
+
+        if ($backlog > 65535) {
+            throw new InvalidArgumentException('The backlog setting must not exceed 65535.');
         }
 
         if ($maxSockets < $maxConnections) {

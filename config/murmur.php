@@ -34,6 +34,11 @@ return [
         'host' => (string) env('MURMUR_HOST', '127.0.0.1'),
         /** TCP port to listen on. Change this if the default port is in use. */
         'port' => (int) env('MURMUR_PORT', 8080),
+        /**
+         * Listen backlog, capped by net.core.somaxconn (Linux) or kern.ipc.somaxconn (macOS).
+         */
+        'backlog' => (int) env('MURMUR_BACKLOG', 4096),
+
         /** Seconds between SSE heartbeats. Keep this below the proxy idle timeout. */
         'heartbeat' => (float) env('MURMUR_HEARTBEAT', 20),
         /** Milliseconds clients should wait before reconnecting. Increase this to ease reconnect spikes. */

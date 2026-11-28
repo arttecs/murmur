@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## Unreleased
 
+### Added
+
+- Configure the listen backlog with `MURMUR_BACKLOG` (default 4096) to handle bursts of connections.
+
 ### Changed
 
 - In-memory replay uses a topic index to find matching events after a reconnect cursor.

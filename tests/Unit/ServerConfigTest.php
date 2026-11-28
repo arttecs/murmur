@@ -7,6 +7,9 @@ it('rejects an invalid server setting and names it in the error', function (stri
     expect(fn () => new ServerConfig('test-secret-with-at-least-32-bytes', ...[$setting => $value]))
         ->toThrow(InvalidArgumentException::class, $setting);
 })->with([
+    ['backlog', 0],
+    ['backlog', -1],
+    ['backlog', 65536],
     ['port', 0],
     ['port', 65536],
     ['heartbeatSeconds', 0.0],
