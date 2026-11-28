@@ -55,8 +55,8 @@ class MurmurBroadcaster extends Broadcaster
         $except = is_string($socket) && ConnectionId::isValid($socket) ? $socket : null;
         unset($payload['socket']);
 
-        foreach ($topics as $topic) {
-            $this->manager->publish($topic, $event, $payload, $except);
+        if ($topics !== []) {
+            $this->manager->publishToTopics(array_values(array_unique($topics)), $event, $payload, $except);
         }
     }
 

@@ -104,3 +104,15 @@ it('records a direct publication with its excluded connection and rejects invali
         ->toThrow(InvalidArgumentException::class);
     $fake->assertPublishedTimes('news', 'updated', 1);
 });
+
+it('records each topic and validates all topics before publishing', function () {
+    $fake = Murmur::fake();
+    Murmur::publishToTopics(['news'], 'updated');
+    Murmur::publishToTopics(['updates', 'other'], 'updated');
+
+    expect(fn () => Murmur::publishToTopics([], 'updated'))->toThrow(InvalidArgumentException::class);
+    expect(fn () => Murmur::publishToTopics(['news', 'news'], 'updated'))->toThrow(InvalidArgumentException::class);
+    expect(fn () => Murmur::publishToTopics(['news', 'bad topic'], 'updated'))->toThrow(InvalidArgumentException::class);
+    expect(fn () => Murmur::publishToTopics(['news'], 'murmur.end'))->toThrow(InvalidArgumentException::class);
+    expect(array_column($fake->published(), 'topic'))->toBe(['news', 'updates', 'other']);
+});

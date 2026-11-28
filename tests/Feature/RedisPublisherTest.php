@@ -168,3 +168,25 @@ it('excludes a sender on another redis-backed node and skips invalid stored iden
     expect($reopened->next()['event'])->toBe('visible');
     $reopened->attached();
 });
+
+it('appends Redis fan-out entries in order with the single-publish fields', function () {
+    [$client, $key, $url] = redisStream();
+    config(['murmur.driver' => 'redis', 'murmur.redis.stream' => $key, 'database.redis.default' => ['url' => $url], 'database.redis.options.prefix' => '']);
+    $except = str_repeat('a', 32);
+    Murmur::publish('news', 'updated', ['id' => 7], $except);
+    Murmur::publishToTopics(['news', 'updates'], 'updated', ['id' => 7], $except);
+    $entries = await($client->xrange($key, '-', '+'));
+
+    expect($entries)->toHaveCount(3);
+    expect($entries[1][1])->toBe($entries[0][1]);
+    expect($entries[2][1])->toBe(['topic', 'updates', 'name', 'updated', 'data', '{"id":7}', 'except', $except]);
+});
+
+it('leaves an incompatible Redis key untouched when a batch fails', function () {
+    [$client, $key, $url] = redisStream();
+    config(['murmur.driver' => 'redis', 'murmur.redis.stream' => $key, 'database.redis.default' => ['url' => $url], 'database.redis.options.prefix' => '']);
+    await($client->set($key, 'not a stream'));
+
+    expect(fn () => Murmur::publishToTopics(['news', 'updates'], 'updated'))->toThrow(PublishFailed::class);
+    expect(await($client->get($key)))->toBe('not a stream');
+});

@@ -191,16 +191,17 @@ it('counts slow consumers only when their output or pending replay queue exceeds
 it('counts publish responses by status and only accepted publishes reach the hub', function () {
     $h = ServerHarness::start(['maxPayloadBytes' => 64]);
     expect($h->publish('news', 'accepted')->getStatusCode())->toBe(202);
+    expect($h->rawPublish('{"topics":["news","updates"],"event":"accepted"}')->getStatusCode())->toBe(202);
     expect($h->rawPublish('{}', signature: 'bad')->getStatusCode())->toBe(401);
     expect($h->rawPublish(str_repeat('x', 65))->getStatusCode())->toBe(413);
     expect($h->rawPublish('{}')->getStatusCode())->toBe(422);
 
     expect(serverMetricValues($h))->toMatchArray([
-        'murmur_publish_requests_total.202' => 1,
+        'murmur_publish_requests_total.202' => 2,
         'murmur_publish_requests_total.401' => 1,
         'murmur_publish_requests_total.413' => 1,
         'murmur_publish_requests_total.422' => 1,
-        'murmur_events_received_total' => 1,
+        'murmur_events_received_total' => 3,
         'murmur_events_sent_total' => 0,
     ]);
 });

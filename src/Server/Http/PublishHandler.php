@@ -86,7 +86,7 @@ class PublishHandler
     }
 
     /**
-     * Verify the raw body and append a valid event.
+     * Verify the raw body and append events after validating the entire payload.
      */
     protected function publish(string $body, int $timestamp, string $signature): ResponseInterface
     {
@@ -101,22 +101,55 @@ class PublishHandler
         $payload = json_decode($body);
 
         if (! $payload instanceof stdClass
-            || ! is_string($payload->topic ?? null) || ! Topic::isValid($payload->topic)
+            || property_exists($payload, 'topic') === property_exists($payload, 'topics')
             || ! is_string($payload->event ?? null) || ! Event::isPublishableName($payload->event)
             || (property_exists($payload, 'except') && (! is_string($payload->except) || ! ConnectionId::isValid($payload->except)))) {
-            return new Response(422);
+            return $this->invalid();
         }
 
         $data = $payload->data ?? null;
 
         if (json_encode($data) === false) {
-            return new Response(422);
+            return $this->invalid();
         }
 
-        $event = $this->log->append(new Event($payload->topic, $payload->event, $data, except: $payload->except ?? null));
+        $batch = property_exists($payload, 'topics');
+        $topics = $batch ? $payload->topics : [$payload->topic];
 
-        return new Response(202, ['Content-Type' => 'application/json'], json_encode([
-            'id' => (string) $event->id,
-        ], JSON_THROW_ON_ERROR));
+        if (! is_array($topics) || $topics === [] || count($topics) > $this->config->maxTopicsPerPublish) {
+            return $this->invalid();
+        }
+
+        $events = [];
+
+        foreach ($topics as $topic) {
+            if (! is_string($topic) || ! Topic::isValid($topic) || isset($events[$topic])) {
+                return $this->invalid();
+            }
+
+            $events[$topic] = new Event($topic, $payload->event, $data, except: $payload->except ?? null);
+        }
+
+        $ids = [];
+
+        foreach ($events as $event) {
+            $ids[] = (string) $this->log->append($event)->id;
+        }
+
+        return new Response(202, ['Content-Type' => 'application/json'], json_encode(
+            $batch ? ['ids' => $ids] : ['id' => $ids[0]],
+            JSON_THROW_ON_ERROR,
+        ));
+    }
+
+    /**
+     * Reject a payload and advertise multi-topic support and its limit.
+     *
+     * The header lets a publisher tell this rejection from an older server that
+     * does not understand the topics field.
+     */
+    protected function invalid(): ResponseInterface
+    {
+        return new Response(422, ['X-Murmur-Publish-Topics' => (string) $this->config->maxTopicsPerPublish]);
     }
 }

@@ -6,11 +6,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- Publish one event to multiple topics with `Murmur::publishToTopics()` or a signed HTTP request containing `topics`. Configure the HTTP batch limit with `MURMUR_MAX_TOPICS_PER_PUBLISH` (default 100).
 - Schedule PHP cycle collection with `MURMUR_GC_INTERVAL` and report collected cycles in `murmur_gc_collected_cycles_total`.
 - Configure the listen backlog with `MURMUR_BACKLOG` (default 4096) to handle bursts of connections.
 
 ### Changed
 
+- Batch Laravel broadcasts across distinct channels in one HTTP request or Redis command. A channel listed twice in one broadcast is published once. HTTP publishers split a batch that exceeds the server's topic or payload limit and fall back to individual requests when an older server rejects the batch. Redis publishers need permission for `EVAL` in addition to `XADD`.
 - Spread SSE heartbeat writes across the configured heartbeat interval to reduce event-loop stalls.
 - In-memory replay uses a topic index to find matching events after a reconnect cursor.
 

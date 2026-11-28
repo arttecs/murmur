@@ -3,13 +3,14 @@
 namespace Arttecs\Murmur\Testing;
 
 use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Contracts\PublishesToManyTopics;
 use Arttecs\Murmur\Server\Event;
 use PHPUnit\Framework\Assert;
 
 /**
  * Record publications in memory and assert against them in application tests.
  */
-class MurmurFake implements Publisher
+class MurmurFake implements Publisher, PublishesToManyTopics
 {
     /**
      * The events in publication order.
@@ -24,6 +25,20 @@ class MurmurFake implements Publisher
     public function publish(Event $event): void
     {
         $this->events[] = $event;
+    }
+
+    /**
+     * Record one event for each topic in order.
+     *
+     * @param  list<string>  $topics
+     */
+    public function publishToTopics(array $topics, string $name, mixed $data = null, ?string $except = null): void
+    {
+        $events = array_map(fn (string $topic) => new Event($topic, $name, $data, except: $except), $topics);
+
+        foreach ($events as $event) {
+            $this->publish($event);
+        }
     }
 
     /**
