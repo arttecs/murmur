@@ -7,11 +7,11 @@ All notable changes to this project are documented in this file. The format is b
 ### Added
 
 - Schedule PHP cycle collection with `MURMUR_GC_INTERVAL` and report collected cycles in `murmur_gc_collected_cycles_total`.
-
 - Configure the listen backlog with `MURMUR_BACKLOG` (default 4096) to handle bursts of connections.
 
 ### Changed
 
+- Spread SSE heartbeat writes across the configured heartbeat interval to reduce event-loop stalls.
 - In-memory replay uses a topic index to find matching events after a reconnect cursor.
 
 ## 0.1.3 - 2026-11-27

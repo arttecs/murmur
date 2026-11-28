@@ -1,5 +1,6 @@
 <?php
 
+use Arttecs\Murmur\Server\Connection;
 use Arttecs\Murmur\Server\Event;
 use Arttecs\Murmur\Server\EventId;
 use Arttecs\Murmur\Server\Http\HeldConnection;
@@ -235,3 +236,209 @@ it('encodes a dispatched event once across held and live connections', function 
     expect($heldOutput())->toBe(Frame::attached(null).$liveOutput());
     expect($payload->encodes)->toBe(1);
 });
+
+it('sends one heartbeat per connection over a full rotation', function () {
+    $hub = new Hub(heartbeatSlices: 4);
+    $outputs = [];
+
+    for ($i = 0; $i < 8; $i++) {
+        [$connection, $outputs[]] = fakeConnection();
+        $hub->attach($connection, ['news']);
+    }
+
+    for ($tick = 0; $tick < 4; $tick++) {
+        $hub->heartbeatSlice();
+    }
+
+    expect(array_map(fn ($out) => $out(), $outputs))->toBe(array_fill(0, 8, Frame::comment()));
+
+    for ($tick = 0; $tick < 4; $tick++) {
+        $hub->heartbeatSlice();
+    }
+
+    expect(array_map(fn ($out) => $out(), $outputs))->toBe(array_fill(0, 8, Frame::comment().Frame::comment()));
+});
+
+it('delays the first heartbeat of a new connection by at least half a rotation', function () {
+    $hub = new Hub(heartbeatSlices: 4);
+    $hub->heartbeatSlice();
+    $outputs = [];
+
+    for ($i = 0; $i < 6; $i++) {
+        [$connection, $outputs[]] = fakeConnection();
+        $hub->attach($connection, ['news']);
+    }
+
+    $written = fn (): int => count(array_filter($outputs, fn ($out) => $out() !== ''));
+
+    $hub->heartbeatSlice();
+    $hub->heartbeatSlice();
+    expect($written())->toBe(0);
+
+    $hub->heartbeatSlice();
+    expect($written())->toBe(3);
+
+    $hub->heartbeatSlice();
+    expect($written())->toBe(6);
+});
+
+it('spreads a burst of connections evenly across the eligible heartbeat slices', function () {
+    $hub = new class(heartbeatSlices: 6) extends Hub
+    {
+        /**
+         * Get the number of connections in each heartbeat bucket.
+         */
+        public function bucketSizes(): array
+        {
+            return array_map('count', $this->heartbeatBuckets);
+        }
+    };
+
+    for ($i = 0; $i < 10; $i++) {
+        [$connection] = fakeConnection();
+        $hub->attach($connection, ['news']);
+    }
+
+    expect($hub->bucketSizes())->toBe([0, 0, 0, 3, 3, 4]);
+});
+
+it('keeps every connection in its heartbeat slice when another one detaches', function () {
+    $hub = new class(heartbeatSlices: 4) extends Hub
+    {
+        /**
+         * Get the heartbeat slice of an attached connection.
+         */
+        public function sliceOf(Connection $connection): int
+        {
+            return $this->connections[$connection]['slice'];
+        }
+    };
+    $connections = [];
+
+    for ($i = 0; $i < 6; $i++) {
+        [$connections[]] = fakeConnection();
+        $hub->attach($connections[$i], ['news']);
+    }
+
+    $slices = array_map($hub->sliceOf(...), $connections);
+
+    foreach ([0, 2, 4] as $i) {
+        $hub->detach($connections[$i]);
+    }
+
+    foreach ([1, 3, 5] as $i) {
+        expect($hub->sliceOf($connections[$i]))->toBe($slices[$i]);
+    }
+
+    expect($hub->connectionCount())->toBe(3);
+});
+
+it('keeps a reattached connection in its original heartbeat slice', function () {
+    $hub = new Hub(heartbeatSlices: 2);
+    [$first, $firstOutput] = fakeConnection();
+    [$second, $secondOutput] = fakeConnection();
+    $hub->attach($first, ['news']);
+    $hub->heartbeatSlice();
+    $hub->attach($second, ['news']);
+    $hub->attach($second, ['other']);
+
+    $hub->heartbeatSlice();
+    expect($firstOutput())->toBe(Frame::comment())->and($secondOutput())->toBe('');
+
+    $hub->heartbeatSlice();
+    expect($secondOutput())->toBe(Frame::comment());
+});
+
+it('reads the latest dispatched position when each heartbeat slice runs', function () {
+    $hub = new Hub(heartbeatSlices: 2);
+    [$first, $firstOutput] = fakeConnection();
+    [$second, $secondOutput] = fakeConnection();
+    $hub->attach($first, ['news']);
+    $hub->heartbeatSlice();
+    $hub->attach($second, ['news']);
+
+    $hub->heartbeatSlice();
+    $position = new EventId(10, 4);
+    $hub->dispatch(new Event('other', 'updated', id: $position));
+    $hub->heartbeatSlice();
+
+    expect($firstOutput())->toBe(Frame::comment())->and($secondOutput())->toBe(Frame::heartbeat($position));
+});
+
+it('closes a failing connection and still writes to the rest of its slice', function () {
+    $hub = new Hub(heartbeatSlices: 2);
+    [$broken, , $stream] = fakeConnection();
+    [$earlier, $earlierOutput] = fakeConnection();
+    [$healthy, $healthyOutput] = fakeConnection();
+    $reason = null;
+    $broken->onClose(function (string $value) use (&$reason): void {
+        $reason = $value;
+    });
+    $stream->on('data', fn () => throw new RuntimeException('Heartbeat write failed.'));
+    $hub->attach($earlier, ['news']);
+    $hub->heartbeatSlice();
+    $hub->attach($broken, ['news']);
+    $hub->attach($healthy, ['news']);
+    $hub->heartbeatSlice();
+    expect($earlierOutput())->toBe(Frame::comment());
+
+    $hub->heartbeatSlice();
+
+    expect($reason)->toBe('error')
+        ->and($hub->connectionCount())->toBe(2)
+        ->and($healthyOutput())->toBe(Frame::comment())
+        ->and($earlierOutput())->toBe(Frame::comment());
+});
+
+it('never schedules the first heartbeat earlier than half a rotation for any slice count', function (int $slices) {
+    $hub = new class(heartbeatSlices: $slices) extends Hub
+    {
+        /**
+         * Get the number of ticks until the given connection's slice is sent.
+         */
+        public function ticksUntil(Connection $connection): int
+        {
+            $count = count($this->heartbeatBuckets);
+
+            return (($this->connections[$connection]['slice'] - $this->nextHeartbeatSlice) % $count + $count) % $count + 1;
+        }
+    };
+
+    for ($tick = 0; $tick < $slices * 2; $tick++) {
+        [$connection] = fakeConnection();
+        $hub->attach($connection, ['news']);
+
+        expect($hub->ticksUntil($connection))->toBeGreaterThanOrEqual((int) ceil($slices / 2))->toBeLessThanOrEqual($slices);
+
+        $hub->heartbeatSlice();
+    }
+})->with([2, 3, 5, 25, 50]);
+
+it('removes a closed connection from its heartbeat slice', function () {
+    $hub = new class(heartbeatSlices: 3) extends Hub
+    {
+        /**
+         * Get the number of connections in each heartbeat bucket.
+         */
+        public function bucketSizes(): array
+        {
+            return array_map('count', $this->heartbeatBuckets);
+        }
+    };
+    [$closed] = fakeConnection();
+    [$detached] = fakeConnection();
+    [$kept] = fakeConnection();
+    $hub->attach($closed, ['news']);
+    $hub->attach($detached, ['news']);
+    $hub->attach($kept, ['news']);
+    expect(array_sum($hub->bucketSizes()))->toBe(3);
+
+    $closed->close();
+    $hub->detach($detached);
+
+    expect(array_sum($hub->bucketSizes()))->toBe(1)->and($hub->connectionCount())->toBe(1);
+});
+
+it('refuses a hub without heartbeat slices', function () {
+    new Hub(heartbeatSlices: 0);
+})->throws(InvalidArgumentException::class);
