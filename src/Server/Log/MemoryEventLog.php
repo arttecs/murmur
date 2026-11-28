@@ -11,6 +11,7 @@ use Arttecs\Murmur\Server\Replay;
 use InvalidArgumentException;
 use React\Promise\PromiseInterface;
 use RuntimeException;
+use SplPriorityQueue;
 use Throwable;
 
 use function React\Promise\reject;
@@ -44,6 +45,25 @@ class MemoryEventLog implements EventLog
      * The buffer position where the next event will be stored.
      */
     protected int $next = 0;
+
+    /**
+     * The sequence number of the next append.
+     */
+    protected int $sequence = 0;
+
+    /**
+     * Append sequences indexed by topic and contiguous topic-local offsets.
+     *
+     * @var array<string, array<int, int>>
+     */
+    protected array $topicPositions = [];
+
+    /**
+     * The first retained offset for each indexed topic.
+     *
+     * @var array<string, int>
+     */
+    protected array $topicHeads = [];
 
     /**
      * The listeners notified when an event is appended.
@@ -87,10 +107,19 @@ class MemoryEventLog implements EventLog
         $event = $event->withId($this->ids->next());
 
         if (isset($this->events[$this->next])) {
-            $this->floor = $this->events[$this->next]->id;
+            $evicted = $this->events[$this->next];
+            $this->floor = $evicted->id;
+            $head = $this->topicHeads[$evicted->topic]++;
+            unset($this->topicPositions[$evicted->topic][$head]);
+
+            if ($this->topicPositions[$evicted->topic] === []) {
+                unset($this->topicPositions[$evicted->topic], $this->topicHeads[$evicted->topic]);
+            }
         }
 
         $this->events[$this->next] = $event;
+        $this->topicHeads[$event->topic] ??= 0;
+        $this->topicPositions[$event->topic][] = $this->sequence++;
         $this->next = ($this->next + 1) % $this->capacity;
 
         foreach ($this->listeners as $listener) {
@@ -115,7 +144,6 @@ class MemoryEventLog implements EventLog
     {
         $events = [];
         $count = count($this->events);
-        $oldest = $count === $this->capacity ? $this->next : 0;
         $tail = $count === 0 ? null : $this->events[($this->next + $this->capacity - 1) % $this->capacity]->id;
 
         if ($topics === []) {
@@ -125,10 +153,33 @@ class MemoryEventLog implements EventLog
         $snapshot = $this->events;
         $gap = $after->compare($this->floor) < 0;
 
-        for ($offset = 0; $offset < $count; $offset++) {
-            $event = $snapshot[($oldest + $offset) % $this->capacity];
+        $queue = new SplPriorityQueue;
+        $tails = [];
 
-            if ($event->id->compare($after) > 0 && in_array($event->topic, $topics, true) && ($filter === null || $filter($event))) {
+        foreach (array_unique($topics) as $topic) {
+            if (! isset($this->topicPositions[$topic])) {
+                continue;
+            }
+
+            $positions = $this->topicPositions[$topic];
+            $offset = $this->firstAfter($positions, $this->topicHeads[$topic], $after);
+
+            if (isset($positions[$offset])) {
+                $tails[$topic] = $positions;
+                $queue->insert([$topic, $offset], -$positions[$offset]);
+            }
+        }
+
+        while (! $queue->isEmpty()) {
+            [$topic, $offset] = $queue->extract();
+            $event = $snapshot[$tails[$topic][$offset] % $this->capacity];
+            $offset++;
+
+            if (isset($tails[$topic][$offset])) {
+                $queue->insert([$topic, $offset], -$tails[$topic][$offset]);
+            }
+
+            if ($filter === null || $filter($event)) {
                 if (count($events) === $limit) {
                     return resolve(new Replay(true, [], $tail));
                 }
@@ -138,6 +189,29 @@ class MemoryEventLog implements EventLog
         }
 
         return resolve(new Replay($gap, $events, $tail));
+    }
+
+    /**
+     * Find the first topic offset strictly after the cursor.
+     *
+     * @param  array<int, int>  $positions
+     */
+    protected function firstAfter(array $positions, int $low, EventId $after): int
+    {
+        $high = array_key_last($positions) + 1;
+
+        while ($low < $high) {
+            $middle = $low + intdiv($high - $low, 2);
+            $event = $this->events[$positions[$middle] % $this->capacity];
+
+            if ($event->id->compare($after) <= 0) {
+                $low = $middle + 1;
+            } else {
+                $high = $middle;
+            }
+        }
+
+        return $low;
     }
 
     /**
