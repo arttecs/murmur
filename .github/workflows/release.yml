@@ -52,3 +52,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+
+  site:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Request a site rebuild
+        env:
+          SITE_DEPLOY_HOOK_URL: ${{ secrets.SITE_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$SITE_DEPLOY_HOOK_URL" ]; then
+            echo "::notice::SITE_DEPLOY_HOOK_URL is unset. Skipping the site rebuild."
+            exit 0
+          fi
+          if ! curl --fail --silent --max-time 30 --proto '=https' --request POST -- "$SITE_DEPLOY_HOOK_URL" > /dev/null; then
+            echo "::error::The site deploy hook rejected the rebuild request."
+            exit 1
+          fi
