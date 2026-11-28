@@ -55,6 +55,7 @@ class ConfigTest extends TestCase
         $this->assertSame(['enabled' => false, 'buffer' => 1000, 'batch' => 100, 'interval' => 1.0, 'timeout' => 10.0], config('murmur.lifecycle'));
         $this->assertSame('app-events', config('murmur.redis.stream'));
         $this->assertSame(300.0, config('murmur.server.gc_interval'));
+        $this->assertSame(100, config('murmur.server.max_topics_per_publish'));
         $this->assertSame(4096, config('murmur.server.backlog'));
         $this->assertSame(5.0, config('murmur.server.shutdown_grace'));
         $this->assertSame(2.0, config('murmur.server.shutdown_spread'));
@@ -99,6 +100,7 @@ class ConfigTest extends TestCase
             ['MURMUR_REQUEST_TIMEOUT', '8.5', 'server.request_timeout', 8.5],
             ['MURMUR_MAX_REPLAY_EVENTS', '500', 'server.max_replay_events', 500],
             ['MURMUR_MAX_TOPICS_PER_CONNECTION', '25', 'server.max_topics_per_connection', 25],
+            ['MURMUR_MAX_TOPICS_PER_PUBLISH', '25', 'server.max_topics_per_publish', 25],
             ['MURMUR_MAX_PAYLOAD_BYTES', '32000', 'server.max_payload_bytes', 32000],
             ['MURMUR_MAX_BUFFER_BYTES', '65536', 'server.max_buffer_bytes', 65536],
             ['MURMUR_ALLOWED_ORIGINS', 'https://a.test, https://b.test,,https://c.test', 'server.allowed_origins', ['https://a.test', 'https://b.test', 'https://c.test']],

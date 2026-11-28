@@ -5,6 +5,7 @@ namespace Arttecs\Murmur;
 use Arttecs\Murmur\Contracts\EventLog;
 use Arttecs\Murmur\Contracts\MetricsStore;
 use Arttecs\Murmur\Contracts\Publisher;
+use Arttecs\Murmur\Contracts\PublishesToManyTopics;
 use Arttecs\Murmur\Contracts\SubscriptionAuthorizer;
 use Arttecs\Murmur\Exceptions\MetricsStoreNotConfigured;
 use Arttecs\Murmur\Exceptions\PublishFailed;
@@ -145,6 +146,7 @@ class MurmurManager
                 $secret,
                 $this->config->get('murmur.http.timeout'),
                 $this->config->get('murmur.http.connect_timeout'),
+                (int) $this->config->get('murmur.server.max_topics_per_publish', 100),
             ),
             'redis' => new RedisPublisher(
                 $this->app->make(RedisFactory::class),
@@ -298,6 +300,47 @@ class MurmurManager
         $publication = new Event($topic, $event, $data, except: $except);
 
         $this->app->make(Publisher::class)->publish($publication);
+    }
+
+    /**
+     * Publish one event to each topic in order.
+     *
+     * @param  list<string>  $topics
+     *
+     * @throws InvalidArgumentException
+     * @throws PublishFailed
+     */
+    public function publishToTopics(array $topics, string $event, mixed $data = null, ?string $except = null): void
+    {
+        if (str_starts_with($event, 'murmur.')) {
+            throw new InvalidArgumentException('Event names starting with "murmur." are reserved.');
+        }
+
+        if ($topics === [] || ! array_is_list($topics)) {
+            throw new InvalidArgumentException('Topics must be a non-empty list.');
+        }
+
+        $publications = [];
+
+        foreach ($topics as $topic) {
+            if (! is_string($topic) || isset($publications[$topic])) {
+                throw new InvalidArgumentException('Topics must be distinct strings.');
+            }
+
+            $publications[$topic] = new Event($topic, $event, $data, except: $except);
+        }
+
+        $publisher = $this->app->make(Publisher::class);
+
+        if (count($topics) > 1 && $publisher instanceof PublishesToManyTopics) {
+            $publisher->publishToTopics($topics, $event, $data, $except);
+
+            return;
+        }
+
+        foreach ($publications as $publication) {
+            $publisher->publish($publication);
+        }
     }
 
     /**

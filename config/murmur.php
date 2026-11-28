@@ -60,6 +60,8 @@ return [
         'max_topics_per_connection' => (int) env('MURMUR_MAX_TOPICS_PER_CONNECTION', 50),
         /** Maximum publish payload size in bytes. Increase this if events need more space. */
         'max_payload_bytes' => (int) env('MURMUR_MAX_PAYLOAD_BYTES', 65536),
+        /** Maximum number of topics in one signed publish request. Laravel splits longer lists into several requests. */
+        'max_topics_per_publish' => (int) env('MURMUR_MAX_TOPICS_PER_PUBLISH', 100),
         /** Maximum buffered bytes per SSE connection. Lower this to shed slow subscribers earlier. */
         'max_buffer_bytes' => (int) env('MURMUR_MAX_BUFFER_BYTES', 1048576),
         /**

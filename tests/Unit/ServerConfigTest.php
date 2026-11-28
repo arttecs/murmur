@@ -20,6 +20,7 @@ it('rejects an invalid server setting and names it in the error', function (stri
     ['maxSockets', 0],
     ['maxSockets', 899],
     ['maxTopicsPerConnection', 0],
+    ['maxTopicsPerPublish', 0],
     ['maxPayloadBytes', 0],
     ['maxBufferBytes', 0],
     ['maxReplayEvents', 0],

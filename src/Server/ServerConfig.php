@@ -46,6 +46,7 @@ readonly class ServerConfig
         public int $loopLagThresholdMs = 100,
         public float $shutdownSpreadSeconds = 2.0,
         public int $backlog = 4096,
+        public int $maxTopicsPerPublish = 100,
     ) {
         Secret::assertValid($secret);
 
@@ -74,6 +75,7 @@ readonly class ServerConfig
             'maxConnections',
             'maxSockets',
             'maxTopicsPerConnection',
+            'maxTopicsPerPublish',
             'maxPayloadBytes',
             'maxBufferBytes',
             'maxReplayEvents',

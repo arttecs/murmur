@@ -288,6 +288,7 @@ class ServeCommand extends Command
             loopLagThresholdMs: (int) config('murmur.server.loop_lag_threshold_ms'),
             shutdownSpreadSeconds: (float) config('murmur.server.shutdown_spread'),
             backlog: (int) config('murmur.server.backlog'),
+            maxTopicsPerPublish: (int) config('murmur.server.max_topics_per_publish'),
         );
     }
 
